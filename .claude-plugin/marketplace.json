@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "maheidem-plugins",
+  "description": "Personal Claude Code plugins by maheidem - Windows-compatible versions and custom tools",
+  "owner": {
+    "name": "maheidem",
+    "email": "maheidem@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "ralph-loop-windows",
+      "description": "Windows-compatible Ralph Loop - PowerShell implementation for iterative AI development loops (Ralph Wiggum technique)",
+      "version": "1.0.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/ralph-loop-windows",
+      "category": "development"
+    }
+  ]
+}
