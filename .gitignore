@@ -1,0 +1,10 @@
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local state files (these are created at runtime)
+*.local.md
