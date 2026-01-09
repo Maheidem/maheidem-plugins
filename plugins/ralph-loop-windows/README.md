@@ -42,10 +42,23 @@ The official `ralph-wiggum` plugin uses bash scripts (`.sh` files) that don't wo
 
 ## Usage
 
-### Start a Ralph Loop
+### Interactive Setup (Recommended for Beginners)
 
 ```
-/ralph-loop "Build a REST API for todos" --max-iterations 20 --completion-promise "DONE"
+/ralph-loop-windows:start-loop "Build a REST API for todos"
+```
+
+This launches an **interactive wizard** that:
+- Guides you through defining success criteria
+- Teaches GOOD vs BAD criteria examples
+- Asks for iteration limit preferences
+- Builds a structured, best-practice prompt
+- Handles shell-safety validation
+
+### Direct Execution (Power Users)
+
+```
+/ralph-loop-windows:ralph-loop "Build a REST API for todos" --max-iterations 20 --completion-promise "DONE"
 ```
 
 **Options:**
@@ -55,14 +68,21 @@ The official `ralph-wiggum` plugin uses bash scripts (`.sh` files) that don't wo
 ### Cancel an Active Loop
 
 ```
-/cancel-ralph
+/ralph-loop-windows:cancel-ralph
 ```
 
 ### Get Help
 
 ```
-/help
+/ralph-loop-windows:help
 ```
+
+## Which Command Should I Use?
+
+| Command | Best For |
+|---------|----------|
+| `/ralph-loop-windows:start-loop` | Learning Ralph, first-time users, complex tasks needing structured prompts |
+| `/ralph-loop-windows:ralph-loop` | Experienced users, quick tasks, scripted workflows |
 
 ## How It Works
 
