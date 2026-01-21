@@ -1,6 +1,16 @@
-# Ralph Loop (Mac) v2.0.0
+# Ralph Loop (Mac) v2.1.0
 
 A Mac-compatible Bash implementation of the Ralph Loop plugin for Claude Code.
+
+## What's New in v2.1.0
+
+**Stuck Detection** - Automatically detects when no file changes occur between iterations and warns Claude to try a different approach.
+
+Key changes:
+- Tracks git diff hash between iterations
+- After 2+ consecutive iterations with no file changes, adds warning to system message
+- Hint-only: does not auto-stop, just suggests trying a different approach
+- New state fields: `stuck_count`, `last_file_hash`
 
 ## What's New in v2.0.0
 
@@ -186,7 +196,7 @@ Claude is instructed to read the journal at the start of each iteration and appe
 
 ## Technical Details
 
-### State File Format (v2.0.0)
+### State File Format (v2.1.0)
 
 `.claude/ralph-loop-{loop_id}.local.md`:
 ```yaml
@@ -198,6 +208,8 @@ iteration: 1
 max_iterations: 20
 completion_promise: "DONE"
 started_at: "2026-01-21T12:00:00Z"
+stuck_count: 0              # Consecutive no-progress iterations
+last_file_hash: ""          # MD5 of git diff --stat from last iteration
 ---
 
 Your prompt text here
@@ -229,7 +241,7 @@ Task: Your prompt text here
 ---
 ```
 
-### Stop Hook Behavior (v2.0.0)
+### Stop Hook Behavior (v2.1.0)
 
 The stop hook (`hooks/stop-hook.sh`):
 1. Extracts session_id from hook input JSON
@@ -240,8 +252,11 @@ The stop hook (`hooks/stop-hook.sh`):
    - If `session_id` doesn't match → **skips it**
 4. Checks iteration count and max iterations
 5. Reads transcript for `<promise>` tags
-6. Either allows exit or blocks with same prompt
-7. Appends to journal file on each iteration
+6. **Stuck Detection**: Computes MD5 hash of `git diff --stat`, compares to last iteration
+   - If hash unchanged for 2+ iterations, adds warning to system message
+   - Resets counter when file changes are detected
+7. Either allows exit or blocks with same prompt
+8. Appends to journal file on each iteration
 
 ### Directory Structure
 

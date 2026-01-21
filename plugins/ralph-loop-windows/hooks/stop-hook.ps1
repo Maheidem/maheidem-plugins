@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 
-# Ralph Wiggum Stop Hook (Windows PowerShell version) v2.0.0
+# Ralph Wiggum Stop Hook (Windows PowerShell version) v2.1.0
 # Session-ownership model: scans for loops, claims unclaimed ones, handles owned loops
 # Prevents session exit when a ralph-loop owned by THIS session is active
 
@@ -122,6 +122,8 @@ $Frontmatter = $Matches[1]
 $Iteration = 0
 $MaxIterations = 0
 $CompletionPromise = 'null'
+$StuckCount = 0
+$LastFileHash = ''
 
 foreach ($line in $Frontmatter -split '\r?\n') {
     if ($line -match '^iteration:\s*(\d+)') {
@@ -132,6 +134,12 @@ foreach ($line in $Frontmatter -split '\r?\n') {
     }
     elseif ($line -match '^completion_promise:\s*"?([^"]*)"?') {
         $CompletionPromise = $Matches[1]
+    }
+    elseif ($line -match '^stuck_count:\s*(\d+)') {
+        $StuckCount = [int]$Matches[1]
+    }
+    elseif ($line -match '^last_file_hash:\s*"?([^"]*)"?') {
+        $LastFileHash = $Matches[1].Trim()
     }
 }
 
@@ -234,6 +242,32 @@ if ($CompletionPromise -ne 'null' -and -not [string]::IsNullOrEmpty($CompletionP
     }
 }
 
+# === STUCK DETECTION ===
+# Compute current state hash (what files changed since last commit)
+$GitDiff = git diff --stat 2>$null
+if ($GitDiff) {
+    $CurrentHash = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.MD5]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes($GitDiff -join "`n")
+        )
+    ).Replace("-", "").ToLower()
+} else {
+    $CurrentHash = "no-changes"
+}
+
+# Compare with previous hash
+if ($LastFileHash -and $CurrentHash -eq $LastFileHash) {
+    $StuckCount++
+} else {
+    $StuckCount = 0  # Progress made, reset
+}
+
+# Build stuck warning if stuck for 2+ iterations
+$StuckWarning = ''
+if ($StuckCount -ge 2) {
+    $StuckWarning = " | STUCK: No file changes for $StuckCount iterations - try a DIFFERENT approach!"
+}
+
 # Not complete - continue loop with SAME PROMPT
 $NextIteration = $Iteration + 1
 
@@ -263,8 +297,10 @@ if ([string]::IsNullOrWhiteSpace($PromptText)) {
     exit 0
 }
 
-# Update iteration in state file
+# Update iteration and stuck detection fields in state file
 $UpdatedContent = $StateContent -replace 'iteration:\s*\d+', "iteration: $NextIteration"
+$UpdatedContent = $UpdatedContent -replace 'stuck_count:\s*\d+', "stuck_count: $StuckCount"
+$UpdatedContent = $UpdatedContent -replace 'last_file_hash:\s*"[^"]*"', "last_file_hash: `"$CurrentHash`""
 Set-Content -Path $MyLoopPath -Value $UpdatedContent -NoNewline
 
 # Append to journal file
@@ -281,11 +317,11 @@ if (Test-Path $JournalPath) {
     Add-Content -Path $JournalPath -Value $JournalEntry
 }
 
-# Build system message with iteration count, loop ID, and completion promise info
+# Build system message with iteration count, loop ID, completion promise info, and stuck warning
 if ($CompletionPromise -ne 'null' -and -not [string]::IsNullOrEmpty($CompletionPromise)) {
-    $SystemMsg = "Ralph iteration $NextIteration [Loop: $LoopId] | Journal: $JournalPath | To stop: output <promise>$CompletionPromise</promise> (ONLY when statement is TRUE - do not lie to exit!)"
+    $SystemMsg = "Ralph iteration $NextIteration [Loop: $LoopId] | Journal: $JournalPath | To stop: output <promise>$CompletionPromise</promise> (ONLY when statement is TRUE - do not lie to exit!)$StuckWarning"
 } else {
-    $SystemMsg = "Ralph iteration $NextIteration [Loop: $LoopId] | Journal: $JournalPath | No completion promise set - loop runs infinitely"
+    $SystemMsg = "Ralph iteration $NextIteration [Loop: $LoopId] | Journal: $JournalPath | No completion promise set - loop runs infinitely$StuckWarning"
 }
 
 # Output JSON to block the stop and feed prompt back
