@@ -101,20 +101,20 @@ if [[ ! -f "$TRANSCRIPT_PATH" ]]; then
 fi
 
 # Read transcript (JSONL format - one JSON per line)
-# Find all assistant messages
-ASSISTANT_LINES=$(grep '"role"[[:space:]]*:[[:space:]]*"assistant"' "$TRANSCRIPT_PATH" || true)
+# Find assistant messages that contain text content (not just tool_use or thinking)
+ASSISTANT_WITH_TEXT=$(grep '"role"[[:space:]]*:[[:space:]]*"assistant"' "$TRANSCRIPT_PATH" | grep '"type":"text"' || true)
 
-if [[ -z "$ASSISTANT_LINES" ]]; then
-    echo "Ralph loop: No assistant messages found in transcript" >&2
+if [[ -z "$ASSISTANT_WITH_TEXT" ]]; then
+    echo "Ralph loop: No assistant messages with text content found in transcript" >&2
     echo "   Transcript: $TRANSCRIPT_PATH" >&2
-    echo "   This is unusual and may indicate a transcript format issue" >&2
+    echo "   This may happen if the last response was only tool calls" >&2
     echo "   Ralph loop is stopping." >&2
     rm -f "$RALPH_STATE_FILE"
     exit 0
 fi
 
-# Get last assistant message
-LAST_LINE=$(echo "$ASSISTANT_LINES" | tail -n 1)
+# Get last assistant message with text
+LAST_LINE=$(echo "$ASSISTANT_WITH_TEXT" | tail -n 1)
 
 if [[ -z "$LAST_LINE" ]]; then
     echo "Ralph loop: Failed to extract last assistant message" >&2
@@ -124,12 +124,20 @@ if [[ -z "$LAST_LINE" ]]; then
 fi
 
 # Parse JSON and extract text content
-# Extract all text blocks from content array where type == "text"
-LAST_OUTPUT=$(echo "$LAST_LINE" | jq -r '
+# The transcript may contain unescaped control characters in tool_use blocks
+# Use tr to remove problematic chars, or fall back to regex extraction
+LAST_OUTPUT=$(echo "$LAST_LINE" | tr -d '\000-\011\013-\037' | jq -r '
     .message.content[]? |
     select(.type == "text") |
     .text
 ' 2>/dev/null | tr '\n' ' ')
+
+# Fallback: If jq fails, try regex extraction for text blocks
+if [[ -z "${LAST_OUTPUT// }" ]]; then
+    # Extract text from {"type":"text","text":"..."} patterns
+    LAST_OUTPUT=$(echo "$LAST_LINE" | grep -oE '"type"[[:space:]]*:[[:space:]]*"text"[^}]*"text"[[:space:]]*:[[:space:]]*"[^"]*"' | \
+        sed 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr '\n' ' ' || true)
+fi
 
 if [[ -z "${LAST_OUTPUT// }" ]]; then
     echo "Ralph loop: Assistant message contained no text content" >&2
@@ -159,9 +167,8 @@ fi
 # Not complete - continue loop with SAME PROMPT
 NEXT_ITERATION=$((ITERATION + 1))
 
-# Extract prompt (everything after the closing ---)
-# Match content after the second ---
-PROMPT_TEXT=$(echo "$STATE_CONTENT" | sed -n '/^---$/,/^---$/!p' | sed '1{/^$/d}')
+# Extract prompt (everything after the closing ---) - BSD sed compatible
+PROMPT_TEXT=$(echo "$STATE_CONTENT" | awk '/^---$/{n++; next} n>=2{print}')
 
 if [[ -z "${PROMPT_TEXT// }" ]]; then
     echo "Ralph loop: State file corrupted or incomplete" >&2
