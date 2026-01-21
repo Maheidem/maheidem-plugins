@@ -1,6 +1,15 @@
-# Ralph Loop (Windows) v2.0.0
+# Ralph Loop (Windows) v2.1.0
 
 A Windows-compatible PowerShell implementation of the Ralph Loop plugin for Claude Code.
+
+## What's New in v2.1.0
+
+**Stuck Detection**: The loop now automatically detects when no file changes occur between iterations and warns Claude to try a different approach.
+
+- Detects lack of progress via git diff hash comparison
+- Warns after 2 consecutive iterations with no file changes
+- Hint-only (does not auto-stop the loop)
+- Always enabled - no configuration needed
 
 ## What's New in v2.0.0
 

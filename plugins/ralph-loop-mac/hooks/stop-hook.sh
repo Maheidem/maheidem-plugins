@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 
-# Ralph Wiggum Stop Hook (Mac/Bash version) - v2.0.0
+# Ralph Wiggum Stop Hook (Mac/Bash version) - v2.1.0
 # Session-ownership model: Claims unclaimed loops, handles only owned loops
 # Prevents session exit when an owned ralph-loop is active
 # Feeds Claude's output back as input to continue the loop
+# NEW: Stuck detection - warns when no file changes between iterations
 
 set -e
 
@@ -237,6 +238,32 @@ if [[ "$COMPLETION_PROMISE" != "null" && -n "$COMPLETION_PROMISE" ]]; then
     fi
 fi
 
+# === STUCK DETECTION ===
+# Compute current state hash (what files changed since last commit)
+CURRENT_HASH=$(git diff --stat 2>/dev/null | md5 || echo "no-git")
+
+# Read previous hash and stuck count from state file
+LAST_HASH=$(echo "$FRONTMATTER" | grep '^last_file_hash:' | sed 's/last_file_hash:[[:space:]]*//' | tr -d '"')
+STUCK_COUNT=$(echo "$FRONTMATTER" | grep '^stuck_count:' | awk '{print $2}')
+STUCK_COUNT=${STUCK_COUNT:-0}
+
+# Compare hashes to detect stuck state
+if [[ -n "$LAST_HASH" && "$CURRENT_HASH" == "$LAST_HASH" ]]; then
+    STUCK_COUNT=$((STUCK_COUNT + 1))
+else
+    STUCK_COUNT=0  # Progress made, reset counter
+fi
+
+# Update state file with new stuck detection values
+STATE_CONTENT=$(echo "$STATE_CONTENT" | sed "s/stuck_count:[[:space:]]*[0-9]*/stuck_count: $STUCK_COUNT/")
+STATE_CONTENT=$(echo "$STATE_CONTENT" | sed "s/last_file_hash:[[:space:]]*\"[^\"]*\"/last_file_hash: \"$CURRENT_HASH\"/")
+
+# Build stuck warning if threshold reached (2+ iterations with no changes)
+STUCK_WARNING=""
+if [[ $STUCK_COUNT -ge 2 ]]; then
+    STUCK_WARNING=" | STUCK: No file changes for $STUCK_COUNT iterations - try a DIFFERENT approach!"
+fi
+
 # Not complete - continue loop with SAME PROMPT
 NEXT_ITERATION=$((ITERATION + 1))
 
@@ -266,9 +293,9 @@ if [[ -z "$PROMPT_TEXT" ]]; then
     exit 0
 fi
 
-# Update iteration in state file
-UPDATED_CONTENT=$(echo "$STATE_CONTENT" | sed "s/iteration:[[:space:]]*[0-9]*/iteration: $NEXT_ITERATION/")
-echo -n "$UPDATED_CONTENT" > "$MY_LOOP_FILE"
+# Update iteration in state file (STATE_CONTENT already has stuck_count and last_file_hash updated)
+STATE_CONTENT=$(echo "$STATE_CONTENT" | sed "s/iteration:[[:space:]]*[0-9]*/iteration: $NEXT_ITERATION/")
+echo -n "$STATE_CONTENT" > "$MY_LOOP_FILE"
 
 # Append to journal file
 JOURNAL_FILE=".claude/ralph-journal-${MY_LOOP_ID}.md"
@@ -286,13 +313,13 @@ if [[ -f "$JOURNAL_FILE" ]]; then
 EOF
 fi
 
-# Build system message with iteration count, journal reference, and completion promise info
+# Build system message with iteration count, journal reference, completion promise info, and stuck warning
 JOURNAL_INSTRUCTION="JOURNAL: Read .claude/ralph-journal-${MY_LOOP_ID}.md at start. At end of iteration, append what you tried and the result."
 
 if [[ "$COMPLETION_PROMISE" != "null" && -n "$COMPLETION_PROMISE" ]]; then
-    SYSTEM_MSG="Ralph iteration $NEXT_ITERATION (loop $MY_LOOP_ID) | To stop: output <promise>$COMPLETION_PROMISE</promise> (ONLY when statement is TRUE - do not lie to exit!) | $JOURNAL_INSTRUCTION"
+    SYSTEM_MSG="Ralph iteration $NEXT_ITERATION (loop $MY_LOOP_ID) | To stop: output <promise>$COMPLETION_PROMISE</promise> (ONLY when statement is TRUE - do not lie to exit!) | $JOURNAL_INSTRUCTION$STUCK_WARNING"
 else
-    SYSTEM_MSG="Ralph iteration $NEXT_ITERATION (loop $MY_LOOP_ID) | No completion promise set - loop runs infinitely | $JOURNAL_INSTRUCTION"
+    SYSTEM_MSG="Ralph iteration $NEXT_ITERATION (loop $MY_LOOP_ID) | No completion promise set - loop runs infinitely | $JOURNAL_INSTRUCTION$STUCK_WARNING"
 fi
 
 # Output JSON to block the stop and feed prompt back
