@@ -8,6 +8,17 @@
   },
   "plugins": [
     {
+      "name": "ralph-loop-mac",
+      "description": "Mac-compatible Ralph Loop - Bash implementation for iterative AI development loops (Ralph Wiggum technique)",
+      "version": "1.0.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/ralph-loop-mac",
+      "category": "development"
+    },
+    {
       "name": "ralph-loop-windows",
       "description": "Windows-compatible Ralph Loop - PowerShell implementation for iterative AI development loops (Ralph Wiggum technique)",
       "version": "1.1.0",
