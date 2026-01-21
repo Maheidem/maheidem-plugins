@@ -1,6 +1,6 @@
 # maheidem-plugins
 
-Personal Claude Code plugins by maheidem - Windows-compatible versions and custom tools.
+Personal Claude Code plugins by maheidem - cross-platform versions and custom tools.
 
 ## Installation
 
@@ -13,18 +13,23 @@ Add this marketplace to Claude Code:
 Then install individual plugins:
 
 ```
+# For Mac/Linux:
+/plugin install ralph-loop-mac@maheidem-plugins
+
+# For Windows:
 /plugin install ralph-loop-windows@maheidem-plugins
 ```
 
 ## Available Plugins
 
-| Plugin | Description |
-|--------|-------------|
-| [ralph-loop-windows](./plugins/ralph-loop-windows/) | Windows-compatible Ralph Loop - PowerShell implementation for iterative AI development loops |
+| Plugin | Platform | Description |
+|--------|----------|-------------|
+| [ralph-loop-mac](./plugins/ralph-loop-mac/) | Mac/Linux | Mac-compatible Ralph Loop - Bash implementation for iterative AI development loops |
+| [ralph-loop-windows](./plugins/ralph-loop-windows/) | Windows | Windows-compatible Ralph Loop - PowerShell implementation for iterative AI development loops |
 
 ## About
 
-This marketplace contains personal plugins that are primarily Windows-focused alternatives or custom tools for Claude Code. The main purpose is to provide Windows-compatible versions of popular plugins that only work on Mac/Linux.
+This marketplace contains personal plugins for Claude Code, including cross-platform implementations of the Ralph Loop technique for iterative AI-driven development.
 
 ## Contributing
 
