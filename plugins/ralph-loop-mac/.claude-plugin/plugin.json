@@ -1,9 +1,9 @@
 {
   "name": "ralph-loop-mac",
-  "description": "Mac-compatible Ralph Loop - continuous self-referential AI loops for iterative development. Bash implementation of the Ralph Wiggum technique pioneered by Geoffrey Huntley.",
+  "description": "Mac-compatible Ralph Loop - continuous self-referential AI loops for iterative development. Bash implementation of the Ralph Wiggum technique pioneered by Geoffrey Huntley. v2.0.0: Session ownership model for multi-instance support.",
   "author": {
     "name": "maheidem",
     "email": "maheidem@users.noreply.github.com"
   },
-  "version": "1.0.1"
+  "version": "2.0.0"
 }

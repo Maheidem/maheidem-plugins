@@ -2,7 +2,7 @@
 description: "Explain Ralph Loop plugin and available commands"
 ---
 
-# Ralph Loop Plugin Help
+# Ralph Loop Plugin Help (v2.0.0)
 
 Please explain the following to the user:
 
@@ -29,6 +29,22 @@ The same prompt is fed to Claude repeatedly. The "self-referential" aspect comes
 
 The technique is described as "deterministically bad in an undeterministic world" - failures are predictable, enabling systematic improvement through prompt tuning.
 
+## What's New in v2.0.0
+
+**Session-Ownership Model:**
+- Multiple loops can coexist in the same project
+- Each loop gets a unique 8-character ID
+- Sessions claim unclaimed loops automatically
+- Other sessions can exit freely (won't be blocked by your loop)
+
+**Journal Files:**
+- Each loop has a journal tracking iteration history
+- Preserved when loop completes for reference
+
+**New Commands:**
+- `/list` - Show all loops in project
+- `/cancel-ralph <loop_id>` - Cancel specific loop
+
 ## Available Commands
 
 ### /ralph-loop <PROMPT> [OPTIONS]
@@ -46,28 +62,63 @@ Start a Ralph loop in your current session.
 - `--completion-promise <text>` - Promise phrase to signal completion
 
 **How it works:**
-1. Creates `.claude/.ralph-loop.local.md` state file
-2. You work on the task
-3. When you try to exit, stop hook intercepts
-4. Same prompt fed back
-5. You see your previous work
-6. Continues until promise detected or max iterations
+1. Creates `.claude/ralph-loop-{loop_id}.local.md` state file
+2. Creates `.claude/ralph-journal-{loop_id}.md` journal file
+3. You work on the task
+4. When you try to exit, stop hook intercepts
+5. Same prompt fed back
+6. You see your previous work
+7. Continues until promise detected or max iterations
 
 ---
 
-### /cancel-ralph
+### /start-loop <TASK>
 
-Cancel an active Ralph loop (removes the loop state file).
+Interactive wizard for beginners that guides you through:
+- Defining clear success criteria
+- Setting appropriate iteration limits
+- Building a structured prompt
 
 **Usage:**
 ```
-/cancel-ralph
+/start-loop "Build a REST API"
+```
+
+---
+
+### /list
+
+Show all Ralph loops in the current project with their status.
+
+**Usage:**
+```
+/list
+```
+
+**Output includes:**
+- Loop ID
+- Status (ORPHANED / OWNED)
+- Current iteration and max
+- Completion promise
+- Start time
+- Prompt preview
+
+---
+
+### /cancel-ralph [loop_id]
+
+Cancel an active Ralph loop.
+
+**Usage:**
+```
+/cancel-ralph           # Cancel single loop or show list
+/cancel-ralph abc12345  # Cancel specific loop by ID
 ```
 
 **How it works:**
-- Checks for active loop state file
-- Removes `.claude/.ralph-loop.local.md`
-- Reports cancellation with iteration count
+- Without argument: cancels the only loop, or shows list if multiple
+- With loop_id: cancels that specific loop
+- Journal file is preserved for reference
 
 ---
 
@@ -82,6 +133,25 @@ To signal completion, Claude must output a `<promise>` tag:
 ```
 
 The stop hook looks for this specific tag. Without it (or `--max-iterations`), Ralph runs infinitely.
+
+### Session Ownership (v2.0.0)
+
+Each loop can be owned by at most one session:
+
+1. **Creation**: Loop starts with empty `session_id`
+2. **Claiming**: First session to try to exit claims the loop
+3. **Ownership**: Only the owning session's hook blocks exit
+4. **Other sessions**: Can exit freely, won't be blocked
+
+This allows multiple developers or terminals to work in the same project.
+
+### Journal Files
+
+Each loop has an associated journal file:
+- Location: `.claude/ralph-journal-{loop_id}.md`
+- Records iteration timestamps
+- Preserved when loop completes
+- Useful for tracking progress across iterations
 
 ### Self-Reference Mechanism
 
@@ -119,6 +189,13 @@ You'll see Ralph:
 - One-shot operations
 - Tasks with unclear success criteria
 - Debugging production issues (use targeted debugging instead)
+
+## File Locations
+
+- **State files**: `.claude/ralph-loop-{loop_id}.local.md`
+- **Journal files**: `.claude/ralph-journal-{loop_id}.md`
+- **Stop hook**: `hooks/stop-hook.ps1`
+- **Setup script**: `scripts/setup-ralph-loop.ps1`
 
 ## Learn More
 

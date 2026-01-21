@@ -1,34 +1,122 @@
 #!/usr/bin/env pwsh
 
-# Ralph Wiggum Stop Hook (Windows PowerShell version)
-# Prevents session exit when a ralph-loop is active
-# Feeds Claude's output back as input to continue the loop
+# Ralph Wiggum Stop Hook (Windows PowerShell version) v2.0.0
+# Session-ownership model: scans for loops, claims unclaimed ones, handles owned loops
+# Prevents session exit when a ralph-loop owned by THIS session is active
 
 $ErrorActionPreference = 'Stop'
 
 # Read hook input from stdin (advanced stop hook API)
 $HookInput = $input | Out-String
 
-# Check if ralph-loop is active
-$RalphStateFile = '.claude/ralph-loop.local.md'
-
-if (-not (Test-Path $RalphStateFile)) {
-    # No active loop - allow exit
+# Parse hook input JSON to get session_id
+try {
+    $HookData = $HookInput | ConvertFrom-Json
+    $MySession = $HookData.session_id
+    $TranscriptPath = $HookData.transcript_path
+} catch {
+    # If we can't parse hook input, allow exit
     exit 0
 }
 
-# Read and parse state file
-$StateContent = Get-Content $RalphStateFile -Raw
+# Validate we have a session ID
+if ([string]::IsNullOrEmpty($MySession)) {
+    # No session ID - allow exit
+    exit 0
+}
 
-# Parse markdown frontmatter (YAML between ---)
-# Extract content between first and second ---
-if ($StateContent -match '(?s)^---\r?\n(.+?)\r?\n---') {
+# Scan for all Ralph loop state files
+$StateFiles = Get-ChildItem -Path '.claude/ralph-loop-*.local.md' -ErrorAction SilentlyContinue
+
+if (-not $StateFiles -or $StateFiles.Count -eq 0) {
+    # No active loops - allow exit
+    exit 0
+}
+
+# Track which loop (if any) belongs to this session
+$MyLoop = $null
+$MyLoopPath = $null
+
+foreach ($StateFile in $StateFiles) {
+    $StateContent = Get-Content $StateFile.FullName -Raw
+
+    # Parse markdown frontmatter (YAML between ---)
+    if ($StateContent -notmatch '(?s)^---\r?\n(.+?)\r?\n---') {
+        # Invalid format - skip this file
+        continue
+    }
+
     $Frontmatter = $Matches[1]
-} else {
-    Write-Error "Ralph loop: State file has invalid format"
-    Remove-Item $RalphStateFile -Force
+
+    # Parse session_id from frontmatter
+    $SessionId = ''
+    $LoopId = ''
+    $Active = $false
+
+    foreach ($line in $Frontmatter -split '\r?\n') {
+        if ($line -match '^session_id:\s*"?([^"]*)"?') {
+            $SessionId = $Matches[1].Trim()
+        }
+        elseif ($line -match '^loop_id:\s*"?([^"]*)"?') {
+            $LoopId = $Matches[1].Trim()
+        }
+        elseif ($line -match '^active:\s*(true|false)') {
+            $Active = $Matches[1] -eq 'true'
+        }
+    }
+
+    # Skip inactive loops
+    if (-not $Active) {
+        continue
+    }
+
+    # Check ownership
+    if ([string]::IsNullOrEmpty($SessionId)) {
+        # UNCLAIMED LOOP - Claim it!
+        $UpdatedContent = $StateContent -replace 'session_id:\s*""', "session_id: `"$MySession`""
+        Set-Content -Path $StateFile.FullName -Value $UpdatedContent -NoNewline
+
+        # This is now my loop
+        $MyLoop = @{
+            Path = $StateFile.FullName
+            Content = $UpdatedContent
+            LoopId = $LoopId
+        }
+        $MyLoopPath = $StateFile.FullName
+        break
+    }
+    elseif ($SessionId -eq $MySession) {
+        # OWNED BY ME
+        $MyLoop = @{
+            Path = $StateFile.FullName
+            Content = $StateContent
+            LoopId = $LoopId
+        }
+        $MyLoopPath = $StateFile.FullName
+        break
+    }
+    # else: Owned by another session - skip
+}
+
+# If no loop belongs to this session, allow exit
+if (-not $MyLoop) {
     exit 0
 }
+
+# We have a loop - handle it
+$StateContent = $MyLoop.Content
+$LoopId = $MyLoop.LoopId
+$JournalPath = ".claude/ralph-journal-$LoopId.md"
+
+# Re-parse full state from our loop
+if ($StateContent -notmatch '(?s)^---\r?\n(.+?)\r?\n---') {
+    Write-Host "Ralph loop: State file has invalid format"
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
+    exit 0
+}
+
+$Frontmatter = $Matches[1]
 
 # Parse YAML values from frontmatter
 $Iteration = 0
@@ -49,39 +137,33 @@ foreach ($line in $Frontmatter -split '\r?\n') {
 
 # Validate numeric fields
 if ($Iteration -eq 0 -and $StateContent -notmatch 'iteration:\s*0') {
-    Write-Host "Ralph loop: State file corrupted" -ForegroundColor Yellow
-    Write-Host "   File: $RalphStateFile"
+    Write-Host "Ralph loop [$LoopId]: State file corrupted" -ForegroundColor Yellow
+    Write-Host "   File: $MyLoopPath"
     Write-Host "   Problem: 'iteration' field is not a valid number"
     Write-Host ""
     Write-Host "   This usually means the state file was manually edited or corrupted."
     Write-Host "   Ralph loop is stopping. Run /ralph-loop again to start fresh."
-    Remove-Item $RalphStateFile -Force
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
     exit 0
 }
 
 # Check if max iterations reached
 if ($MaxIterations -gt 0 -and $Iteration -ge $MaxIterations) {
-    Write-Host "Ralph loop: Max iterations ($MaxIterations) reached."
-    Remove-Item $RalphStateFile -Force
+    Write-Host "Ralph loop [$LoopId]: Max iterations ($MaxIterations) reached."
+    Remove-Item $MyLoopPath -Force
+    # Keep journal for reference
     exit 0
 }
 
-# Get transcript path from hook input
-try {
-    $HookData = $HookInput | ConvertFrom-Json
-    $TranscriptPath = $HookData.transcript_path
-} catch {
-    Write-Host "Ralph loop: Failed to parse hook input JSON" -ForegroundColor Yellow
-    Remove-Item $RalphStateFile -Force
-    exit 0
-}
-
+# Validate transcript path
 if (-not (Test-Path $TranscriptPath)) {
-    Write-Host "Ralph loop: Transcript file not found" -ForegroundColor Yellow
+    Write-Host "Ralph loop [$LoopId]: Transcript file not found" -ForegroundColor Yellow
     Write-Host "   Expected: $TranscriptPath"
     Write-Host "   This is unusual and may indicate a Claude Code internal issue."
     Write-Host "   Ralph loop is stopping."
-    Remove-Item $RalphStateFile -Force
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
     exit 0
 }
 
@@ -92,11 +174,12 @@ $TranscriptLines = Get-Content $TranscriptPath
 $AssistantLines = $TranscriptLines | Where-Object { $_ -match '"role"\s*:\s*"assistant"' }
 
 if (-not $AssistantLines -or $AssistantLines.Count -eq 0) {
-    Write-Host "Ralph loop: No assistant messages found in transcript" -ForegroundColor Yellow
+    Write-Host "Ralph loop [$LoopId]: No assistant messages found in transcript" -ForegroundColor Yellow
     Write-Host "   Transcript: $TranscriptPath"
     Write-Host "   This is unusual and may indicate a transcript format issue"
     Write-Host "   Ralph loop is stopping."
-    Remove-Item $RalphStateFile -Force
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
     exit 0
 }
 
@@ -104,9 +187,10 @@ if (-not $AssistantLines -or $AssistantLines.Count -eq 0) {
 $LastLine = $AssistantLines | Select-Object -Last 1
 
 if ([string]::IsNullOrEmpty($LastLine)) {
-    Write-Host "Ralph loop: Failed to extract last assistant message" -ForegroundColor Yellow
+    Write-Host "Ralph loop [$LoopId]: Failed to extract last assistant message" -ForegroundColor Yellow
     Write-Host "   Ralph loop is stopping."
-    Remove-Item $RalphStateFile -Force
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
     exit 0
 }
 
@@ -116,18 +200,20 @@ try {
     $TextContents = $MessageData.message.content | Where-Object { $_.type -eq 'text' } | ForEach-Object { $_.text }
     $LastOutput = $TextContents -join "`n"
 } catch {
-    Write-Host "Ralph loop: Failed to parse assistant message JSON" -ForegroundColor Yellow
+    Write-Host "Ralph loop [$LoopId]: Failed to parse assistant message JSON" -ForegroundColor Yellow
     Write-Host "   Error: $_"
     Write-Host "   This may indicate a transcript format issue"
     Write-Host "   Ralph loop is stopping."
-    Remove-Item $RalphStateFile -Force
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
     exit 0
 }
 
 if ([string]::IsNullOrWhiteSpace($LastOutput)) {
-    Write-Host "Ralph loop: Assistant message contained no text content" -ForegroundColor Yellow
+    Write-Host "Ralph loop [$LoopId]: Assistant message contained no text content" -ForegroundColor Yellow
     Write-Host "   Ralph loop is stopping."
-    Remove-Item $RalphStateFile -Force
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
     exit 0
 }
 
@@ -140,8 +226,9 @@ if ($CompletionPromise -ne 'null' -and -not [string]::IsNullOrEmpty($CompletionP
 
         # Literal string comparison
         if ($PromiseText -eq $CompletionPromise) {
-            Write-Host "Ralph loop: Detected <promise>$CompletionPromise</promise>"
-            Remove-Item $RalphStateFile -Force
+            Write-Host "Ralph loop [$LoopId]: Detected <promise>$CompletionPromise</promise>"
+            Remove-Item $MyLoopPath -Force
+            # Keep journal for reference
             exit 0
         }
     }
@@ -155,8 +242,8 @@ $NextIteration = $Iteration + 1
 if ($StateContent -match '(?s)^---\r?\n.+?\r?\n---\r?\n(.+)$') {
     $PromptText = $Matches[1].Trim()
 } else {
-    Write-Host "Ralph loop: State file corrupted or incomplete" -ForegroundColor Yellow
-    Write-Host "   File: $RalphStateFile"
+    Write-Host "Ralph loop [$LoopId]: State file corrupted or incomplete" -ForegroundColor Yellow
+    Write-Host "   File: $MyLoopPath"
     Write-Host "   Problem: No prompt text found"
     Write-Host ""
     Write-Host "   This usually means:"
@@ -164,25 +251,41 @@ if ($StateContent -match '(?s)^---\r?\n.+?\r?\n---\r?\n(.+)$') {
     Write-Host "     - File was corrupted during writing"
     Write-Host ""
     Write-Host "   Ralph loop is stopping. Run /ralph-loop again to start fresh."
-    Remove-Item $RalphStateFile -Force
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
     exit 0
 }
 
 if ([string]::IsNullOrWhiteSpace($PromptText)) {
-    Write-Host "Ralph loop: No prompt text found in state file" -ForegroundColor Yellow
-    Remove-Item $RalphStateFile -Force
+    Write-Host "Ralph loop [$LoopId]: No prompt text found in state file" -ForegroundColor Yellow
+    Remove-Item $MyLoopPath -Force
+    if (Test-Path $JournalPath) { Remove-Item $JournalPath -Force }
     exit 0
 }
 
 # Update iteration in state file
 $UpdatedContent = $StateContent -replace 'iteration:\s*\d+', "iteration: $NextIteration"
-Set-Content -Path $RalphStateFile -Value $UpdatedContent -NoNewline
+Set-Content -Path $MyLoopPath -Value $UpdatedContent -NoNewline
 
-# Build system message with iteration count and completion promise info
+# Append to journal file
+$JournalEntry = @"
+
+## Iteration $Iteration - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+
+_Iteration completed. Review files and continue with the task._
+
+---
+"@
+
+if (Test-Path $JournalPath) {
+    Add-Content -Path $JournalPath -Value $JournalEntry
+}
+
+# Build system message with iteration count, loop ID, and completion promise info
 if ($CompletionPromise -ne 'null' -and -not [string]::IsNullOrEmpty($CompletionPromise)) {
-    $SystemMsg = "Ralph iteration $NextIteration | To stop: output <promise>$CompletionPromise</promise> (ONLY when statement is TRUE - do not lie to exit!)"
+    $SystemMsg = "Ralph iteration $NextIteration [Loop: $LoopId] | Journal: $JournalPath | To stop: output <promise>$CompletionPromise</promise> (ONLY when statement is TRUE - do not lie to exit!)"
 } else {
-    $SystemMsg = "Ralph iteration $NextIteration | No completion promise set - loop runs infinitely"
+    $SystemMsg = "Ralph iteration $NextIteration [Loop: $LoopId] | Journal: $JournalPath | No completion promise set - loop runs infinitely"
 }
 
 # Output JSON to block the stop and feed prompt back

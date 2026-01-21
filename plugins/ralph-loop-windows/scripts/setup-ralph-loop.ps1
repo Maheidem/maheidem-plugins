@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 
-# Ralph Loop Setup Script (Windows PowerShell version)
-# Creates state file for in-session Ralph loop
+# Ralph Loop Setup Script (Windows PowerShell version) v2.0.0
+# Creates state file for in-session Ralph loop with session-ownership model
 
 $ErrorActionPreference = 'Stop'
 
@@ -17,7 +17,7 @@ $i = 0
     switch ($arg) {
         { $_ -in '-h', '--help' } {
             @"
-Ralph Loop - Interactive self-referential development loop
+Ralph Loop - Interactive self-referential development loop (v2.0.0)
 
 USAGE:
   /ralph-loop [PROMPT...] [OPTIONS]
@@ -41,6 +41,13 @@ DESCRIPTION:
   - Tasks requiring self-correction and refinement
   - Learning how Ralph works
 
+NEW IN v2.0.0:
+  - Session ownership model - multiple loops can coexist
+  - Each loop gets unique ID: ralph-loop-{loop_id}.local.md
+  - Journal file tracks iteration history
+  - /list command shows all loops
+  - /cancel-ralph supports loop_id argument
+
 EXAMPLES:
   /ralph-loop Build a todo API --completion-promise 'DONE' --max-iterations 20
   /ralph-loop --max-iterations 10 Fix the auth bug
@@ -52,11 +59,14 @@ STOPPING:
   No manual stop - Ralph runs infinitely by default!
 
 MONITORING:
+  # List all Ralph loops:
+  /ralph-loop-windows:list
+
   # View current iteration:
-  Select-String '^iteration:' .claude/ralph-loop.local.md
+  Get-ChildItem .claude/ralph-loop-*.local.md | ForEach-Object { Select-String '^iteration:' $_ }
 
   # View full state:
-  Get-Content .claude/ralph-loop.local.md -Head 10
+  Get-ChildItem .claude/ralph-loop-*.local.md | ForEach-Object { Get-Content $_ -Head 12 }
 "@
             exit 0
         }
@@ -148,6 +158,9 @@ if (-not (Test-Path '.claude')) {
     New-Item -ItemType Directory -Path '.claude' -Force | Out-Null
 }
 
+# Generate unique loop_id (8 characters from GUID)
+$LoopId = [guid]::NewGuid().ToString().Substring(0, 8)
+
 # Quote completion promise for YAML if it contains special chars or is not null
 if (-not [string]::IsNullOrEmpty($CompletionPromise) -and $CompletionPromise -ne 'null') {
     $CompletionPromiseYaml = "`"$CompletionPromise`""
@@ -158,9 +171,15 @@ if (-not [string]::IsNullOrEmpty($CompletionPromise) -and $CompletionPromise -ne
 # Get UTC timestamp
 $StartedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 
-# Create state file with YAML frontmatter
+# State file path with loop_id
+$StateFilePath = ".claude/ralph-loop-$LoopId.local.md"
+$JournalFilePath = ".claude/ralph-journal-$LoopId.md"
+
+# Create state file with YAML frontmatter (session_id left blank for hook to claim)
 $StateContent = @"
 ---
+loop_id: "$LoopId"
+session_id: ""
 active: true
 iteration: 1
 max_iterations: $MaxIterations
@@ -171,7 +190,24 @@ started_at: "$StartedAt"
 $Prompt
 "@
 
-Set-Content -Path '.claude/ralph-loop.local.md' -Value $StateContent -NoNewline
+Set-Content -Path $StateFilePath -Value $StateContent -NoNewline
+
+# Create empty journal file
+$JournalContent = @"
+---
+loop_id: "$LoopId"
+created_at: "$StartedAt"
+---
+
+# Ralph Loop Journal - $LoopId
+
+This file tracks the iteration history for this Ralph loop.
+
+---
+
+"@
+
+Set-Content -Path $JournalFilePath -Value $JournalContent -NoNewline
 
 # Output setup message
 $MaxIterationsDisplay = if ($MaxIterations -gt 0) { $MaxIterations } else { 'unlimited' }
@@ -182,17 +218,22 @@ $CompletionPromiseDisplay = if ($CompletionPromise -ne 'null') {
 }
 
 @"
-Ralph loop activated in this session!
+Ralph loop activated in this session! (v2.0.0)
 
+Loop ID: $LoopId
 Iteration: 1
 Max iterations: $MaxIterationsDisplay
 Completion promise: $CompletionPromiseDisplay
+
+State file: $StateFilePath
+Journal file: $JournalFilePath
 
 The stop hook is now active. When you try to exit, the SAME PROMPT will be
 fed back to you. You'll see your previous work in files, creating a
 self-referential loop where you iteratively improve on the same task.
 
-To monitor: Get-Content .claude/ralph-loop.local.md -Head 10
+To monitor: /ralph-loop-windows:list
+To cancel: /ralph-loop-windows:cancel-ralph $LoopId
 
 WARNING: This loop cannot be stopped manually! It will run infinitely
     unless you set --max-iterations or --completion-promise.
@@ -210,7 +251,7 @@ if ($CompletionPromise -ne 'null') {
     @"
 
 ===============================================================
-CRITICAL - Ralph Loop Completion Promise
+CRITICAL - Ralph Loop Completion Promise (Loop: $LoopId)
 ===============================================================
 
 To complete this loop, output this EXACT text:
@@ -230,6 +271,11 @@ IMPORTANT - Do not circumvent the loop:
 
   If the loop should stop, the promise statement will become
   true naturally. Do not force it by lying.
+
+JOURNAL INTEGRATION:
+  - Read $JournalFilePath at start of each iteration
+  - Append what you tried and the result at the end
+  - This helps track progress across iterations
 ===============================================================
 "@
 }

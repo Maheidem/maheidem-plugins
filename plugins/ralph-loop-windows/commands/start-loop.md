@@ -4,7 +4,7 @@ argument-hint: <task description>
 allowed-tools: ["Bash(pwsh*)"]
 ---
 
-# Start Loop - Interactive Ralph Loop Setup
+# Start Loop - Interactive Ralph Loop Setup (v2.0.0)
 
 This command helps you start a forced work loop with **properly structured prompts** based on best practices.
 
@@ -31,6 +31,15 @@ When executing the loop, the task gets passed to a shell script. These character
 3. Replace newlines with spaces
 4. Escape or remove quotes
 5. Keep it to a simple, single-line description
+
+---
+
+## What's New in v2.0.0
+
+- **Multi-Instance Support**: Each loop gets a unique ID
+- **Session Ownership**: Sessions claim loops automatically
+- **Journal Files**: Track iteration history
+- **List Command**: `/ralph-loop-windows:list` shows all loops
 
 ---
 
@@ -162,6 +171,17 @@ Setup will be cancelled with no action taken.
 - Each iteration builds on the last
 - The loop continues until `<promise>DONE</promise>` is output
 - `<promise>BLOCKED</promise>` provides a safe exit when stuck
+
+**Session Ownership (v2.0.0):**
+- Each loop gets a unique 8-character ID
+- The session that first tries to exit claims the loop
+- Other sessions won't be blocked by your loop
+- Use `/ralph-loop-windows:list` to see all loops
+
+**Journal Files:**
+- Each loop has a journal at `.claude/ralph-journal-{loop_id}.md`
+- Tracks iteration timestamps
+- Preserved when loop completes
 
 **Cost Awareness:**
 - Start conservative (15-20 iterations)
