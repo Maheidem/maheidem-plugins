@@ -1,9 +1,9 @@
 {
   "name": "ralph-loop-windows",
-  "description": "Windows-compatible Ralph Loop - continuous self-referential AI loops for iterative development. PowerShell implementation of the Ralph Wiggum technique pioneered by Geoffrey Huntley. v2.0.0 adds session-ownership model for multi-instance support.",
+  "description": "Windows-compatible Ralph Loop - continuous self-referential AI loops for iterative development. PowerShell implementation of the Ralph Wiggum technique pioneered by Geoffrey Huntley. v2.1.0 adds stuck detection to warn when no file changes between iterations.",
   "author": {
     "name": "maheidem",
     "email": "maheidem@users.noreply.github.com"
   },
-  "version": "2.0.0"
+  "version": "2.1.0"
 }

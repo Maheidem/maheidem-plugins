@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 
-# Ralph Loop Setup Script (Windows PowerShell version) v2.0.0
+# Ralph Loop Setup Script (Windows PowerShell version) v2.1.0
 # Creates state file for in-session Ralph loop with session-ownership model
 
 $ErrorActionPreference = 'Stop'
@@ -17,7 +17,7 @@ $i = 0
     switch ($arg) {
         { $_ -in '-h', '--help' } {
             @"
-Ralph Loop - Interactive self-referential development loop (v2.0.0)
+Ralph Loop - Interactive self-referential development loop (v2.1.0)
 
 USAGE:
   /ralph-loop [PROMPT...] [OPTIONS]
@@ -185,6 +185,8 @@ iteration: 1
 max_iterations: $MaxIterations
 completion_promise: $CompletionPromiseYaml
 started_at: "$StartedAt"
+stuck_count: 0
+last_file_hash: ""
 ---
 
 $Prompt
@@ -218,7 +220,7 @@ $CompletionPromiseDisplay = if ($CompletionPromise -ne 'null') {
 }
 
 @"
-Ralph loop activated in this session! (v2.0.0)
+Ralph loop activated in this session! (v2.1.0)
 
 Loop ID: $LoopId
 Iteration: 1

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
-# Ralph Loop Setup Script (Mac/Bash version) - v2.0.0
+# Ralph Loop Setup Script (Mac/Bash version) - v2.1.0
 # Creates state file for in-session Ralph loop with session-ownership model
 # Supports multiple concurrent loops via unique loop_id
+# NEW: Stuck detection fields for tracking no-progress iterations
 
 set -e
 
@@ -173,6 +174,8 @@ iteration: 1
 max_iterations: $MAX_ITERATIONS
 completion_promise: $COMPLETION_PROMISE_YAML
 started_at: "$STARTED_AT"
+stuck_count: 0
+last_file_hash: ""
 ---
 
 $PROMPT
