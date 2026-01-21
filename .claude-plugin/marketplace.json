@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "ralph-loop-mac",
-      "description": "Mac-compatible Ralph Loop - Bash implementation for iterative AI development loops (Ralph Wiggum technique)",
-      "version": "1.0.1",
+      "description": "Mac-compatible Ralph Loop - Bash implementation for iterative AI development loops (Ralph Wiggum technique). v2.0.0: Session ownership for multi-instance support.",
+      "version": "2.0.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
