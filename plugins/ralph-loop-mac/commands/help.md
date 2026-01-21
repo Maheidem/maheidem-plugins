@@ -2,7 +2,7 @@
 description: "Explain Ralph Loop plugin and available commands"
 ---
 
-# Ralph Loop Plugin Help
+# Ralph Loop Plugin Help (v2.0.0)
 
 Please explain the following to the user:
 
@@ -29,6 +29,16 @@ The same prompt is fed to Claude repeatedly. The "self-referential" aspect comes
 
 The technique is described as "deterministically bad in an undeterministic world" - failures are predictable, enabling systematic improvement through prompt tuning.
 
+## What's New in v2.0.0
+
+**Session Ownership Model** - Multiple Claude sessions can now run different Ralph loops simultaneously:
+
+- Each loop gets a unique 8-character `loop_id`
+- State files: `.claude/ralph-loop-{loop_id}.local.md`
+- Journal files: `.claude/ralph-journal-{loop_id}.md` track progress
+- Sessions "claim" unclaimed loops on first iteration
+- Sessions ignore loops owned by other sessions
+
 ## Available Commands
 
 ### /ralph-loop-mac:ralph-loop <PROMPT> [OPTIONS]
@@ -46,12 +56,14 @@ Start a Ralph loop in your current session.
 - `--completion-promise <text>` - Promise phrase to signal completion
 
 **How it works:**
-1. Creates `.claude/ralph-loop.local.md` state file
-2. You work on the task
-3. When you try to exit, stop hook intercepts
-4. Same prompt fed back
-5. You see your previous work
-6. Continues until promise detected or max iterations
+1. Creates `.claude/ralph-loop-{loop_id}.local.md` state file
+2. Creates `.claude/ralph-journal-{loop_id}.md` journal file
+3. You work on the task
+4. When you try to exit, stop hook intercepts
+5. Hook claims the loop (fills in session_id)
+6. Same prompt fed back
+7. You see your previous work
+8. Continues until promise detected or max iterations
 
 ---
 
@@ -73,23 +85,53 @@ This guides you through:
 
 ---
 
-### /ralph-loop-mac:cancel-ralph
+### /ralph-loop-mac:list
 
-Cancel an active Ralph loop (removes the loop state file).
+List all Ralph loops in the current project.
 
 **Usage:**
 ```
-/ralph-loop-mac:cancel-ralph
+/ralph-loop-mac:list
+```
+
+Shows:
+- Loop ID
+- Status (ACTIVE or ORPHANED)
+- Current iteration
+- Max iterations
+- Session owner
+- Start time
+
+---
+
+### /ralph-loop-mac:cancel-ralph [loop_id]
+
+Cancel Ralph loop(s).
+
+**Usage:**
+```
+/ralph-loop-mac:cancel-ralph           # Cancel ALL loops
+/ralph-loop-mac:cancel-ralph abc12345  # Cancel specific loop
 ```
 
 **How it works:**
-- Checks for active loop state file
-- Removes `.claude/ralph-loop.local.md`
+- Removes state file(s) `.claude/ralph-loop-*.local.md`
+- Journal files are preserved for reference
 - Reports cancellation with iteration count
 
 ---
 
 ## Key Concepts
+
+### Session Ownership
+
+In v2.0.0, each loop is "owned" by a session:
+- When a loop is created, `session_id` is empty (unclaimed)
+- When a session's stop hook encounters an unclaimed loop, it claims it
+- Once claimed, only that session can continue the loop
+- Other sessions ignore loops they don't own
+
+This allows multiple terminals to run different Ralph loops without interference.
 
 ### Completion Promises
 
@@ -100,6 +142,13 @@ To signal completion, Claude must output a `<promise>` tag:
 ```
 
 The stop hook looks for this specific tag. Without it (or `--max-iterations`), Ralph runs infinitely.
+
+### Journal Files
+
+Each loop has a journal file for tracking progress:
+- Location: `.claude/ralph-journal-{loop_id}.md`
+- Contains task description, start time, iteration log
+- Claude is instructed to read journal at start and append findings
 
 ### Self-Reference Mechanism
 

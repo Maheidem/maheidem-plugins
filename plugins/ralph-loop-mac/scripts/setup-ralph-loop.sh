@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Ralph Loop Setup Script (Mac/Bash version)
-# Creates state file for in-session Ralph loop
+# Ralph Loop Setup Script (Mac/Bash version) - v2.0.0
+# Creates state file for in-session Ralph loop with session-ownership model
+# Supports multiple concurrent loops via unique loop_id
 
 set -e
 
@@ -12,7 +13,7 @@ COMPLETION_PROMISE="null"
 
 show_help() {
     cat << 'EOF'
-Ralph Loop - Interactive self-referential development loop
+Ralph Loop - Interactive self-referential development loop (v2.0.0)
 
 USAGE:
   /ralph-loop [PROMPT...] [OPTIONS]
@@ -31,6 +32,12 @@ DESCRIPTION:
 
   To signal completion, you must output: <promise>YOUR_PHRASE</promise>
 
+  NEW IN v2.0.0: Session Ownership Model
+  - Each loop gets a unique 8-character loop_id
+  - Multiple sessions can run different loops simultaneously
+  - Loops are claimed by the first session that encounters them
+  - Journal files track progress across iterations
+
   Use this for:
   - Interactive iteration where you want to see progress
   - Tasks requiring self-correction and refinement
@@ -47,11 +54,14 @@ STOPPING:
   No manual stop - Ralph runs infinitely by default!
 
 MONITORING:
-  # View current iteration:
-  grep '^iteration:' .claude/ralph-loop.local.md
+  # List all Ralph loops in project:
+  /ralph-loop-mac:list
+
+  # View current iteration for a specific loop:
+  grep '^iteration:' .claude/ralph-loop-*.local.md
 
   # View full state:
-  head -10 .claude/ralph-loop.local.md
+  head -15 .claude/ralph-loop-*.local.md
 EOF
     exit 0
 }
@@ -136,6 +146,9 @@ fi
 # Create state file directory
 mkdir -p .claude
 
+# Generate unique 8-character loop_id using /dev/urandom
+LOOP_ID=$(head -c 4 /dev/urandom | xxd -p)
+
 # Quote completion promise for YAML if it contains special chars or is not null
 if [[ -n "$COMPLETION_PROMISE" && "$COMPLETION_PROMISE" != "null" ]]; then
     COMPLETION_PROMISE_YAML="\"$COMPLETION_PROMISE\""
@@ -146,9 +159,15 @@ fi
 # Get UTC timestamp
 STARTED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 
-# Create state file with YAML frontmatter
-cat > .claude/ralph-loop.local.md << EOF
+# State file with loop_id in filename
+STATE_FILE=".claude/ralph-loop-${LOOP_ID}.local.md"
+JOURNAL_FILE=".claude/ralph-journal-${LOOP_ID}.md"
+
+# Create state file with YAML frontmatter (session_id left blank for hook to claim)
+cat > "$STATE_FILE" << EOF
 ---
+loop_id: "$LOOP_ID"
+session_id: ""
 active: true
 iteration: 1
 max_iterations: $MAX_ITERATIONS
@@ -157,6 +176,19 @@ started_at: "$STARTED_AT"
 ---
 
 $PROMPT
+EOF
+
+# Create empty journal file with header
+cat > "$JOURNAL_FILE" << EOF
+# Ralph Loop Journal - $LOOP_ID
+
+Started: $STARTED_AT
+Task: $PROMPT
+
+---
+
+## Iteration Log
+
 EOF
 
 # Output setup message
@@ -175,15 +207,23 @@ fi
 cat << EOF
 Ralph loop activated in this session!
 
+Loop ID: $LOOP_ID
 Iteration: 1
 Max iterations: $MAX_ITERATIONS_DISPLAY
 Completion promise: $COMPLETION_PROMISE_DISPLAY
+
+State file: $STATE_FILE
+Journal file: $JOURNAL_FILE
 
 The stop hook is now active. When you try to exit, the SAME PROMPT will be
 fed back to you. You'll see your previous work in files, creating a
 self-referential loop where you iteratively improve on the same task.
 
-To monitor: head -10 .claude/ralph-loop.local.md
+NEW IN v2.0.0: This loop will be claimed by your session on first iteration.
+Other sessions will ignore this loop and vice versa.
+
+To monitor: /ralph-loop-mac:list
+To cancel: /ralph-loop-mac:cancel-ralph $LOOP_ID
 
 WARNING: This loop cannot be stopped manually! It will run infinitely
     unless you set --max-iterations or --completion-promise.
@@ -221,6 +261,9 @@ IMPORTANT - Do not circumvent the loop:
 
   If the loop should stop, the promise statement will become
   true naturally. Do not force it by lying.
+
+JOURNAL: At the end of each iteration, document what you tried
+and the result in: $JOURNAL_FILE
 ===============================================================
 EOF
 fi
