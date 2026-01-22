@@ -28,6 +28,17 @@
       },
       "source": "./plugins/ralph-loop-windows",
       "category": "development"
+    },
+    {
+      "name": "meeting",
+      "description": "Self-contained meeting transcription and summarization using Whisper AI. Interactive guided mode, multiple output formats, speaker diarization, and AI-powered summaries.",
+      "version": "1.0.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/meeting",
+      "category": "productivity"
     }
   ]
 }
