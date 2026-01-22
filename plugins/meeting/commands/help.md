@@ -14,18 +14,20 @@ Meeting Transcription Plugin
 ============================
 
 Transcribe and summarize meeting recordings using Whisper AI.
+Auto-detects best backend: MLX (Apple Silicon) or insanely-fast-whisper.
 
 COMMANDS
 --------
 
 /meeting:transcribe [FILE] [OPTIONS]
   Transcribe audio/video files to text.
+  Video files (mp4, mkv, etc.) are automatically converted.
 
   Options:
     --model MODEL    Whisper model (tiny, base, small, medium, large-v3, turbo)
     --format FORMAT  Output format (txt, srt, vtt, json)
     --output PATH    Custom output path
-    --language LANG  Language code (en, es, fr, etc.) or "auto"
+    --language LANG  Language code (en, es, fr, pt, etc.) or "auto"
     --all            Use all defaults, skip interactive prompts
 
   Examples:
@@ -78,19 +80,34 @@ COMMANDS
 PREREQUISITES
 -------------
 
-Required:
-  pipx - For running insanely-fast-whisper
-    brew install pipx && pipx ensurepath
+For Apple Silicon Mac (recommended):
+  pip install mlx-whisper
+  brew install ffmpeg        # For video file support
+
+For other platforms:
+  brew install pipx && pipx ensurepath
+  brew install ffmpeg
 
 For speaker diarization (optional):
-  whisperx - pip install whisperx
-  HuggingFace token - export HF_TOKEN="your_token"
+  pip install whisperx
+  export HF_TOKEN="your_huggingface_token"
 
 SUPPORTED FORMATS
 -----------------
 
-Input:  mp4, mp3, wav, m4a, webm, ogg, flac, aac
+Input:  mp4, mkv, webm, mov, avi, mp3, wav, m4a, ogg, flac, aac
 Output: txt, srt, vtt, json
+
+BACKEND AUTO-DETECTION
+----------------------
+
+The plugin automatically selects the best backend:
+
+| Platform        | Backend             | Speed | Stability |
+|-----------------|---------------------|-------|-----------|
+| Apple Silicon   | mlx_whisper         | ⚡⚡⚡  | Excellent |
+| NVIDIA GPU      | insanely-fast-whisper| ⚡⚡   | Good      |
+| CPU             | insanely-fast-whisper| ⚡    | Good      |
 
 MODEL COMPARISON
 ----------------
@@ -109,23 +126,32 @@ TIPS
 
 • First transcription downloads the model (~500MB-3GB)
 • Use --all flag when you know exactly what you want
-• Apple Silicon Macs use Metal acceleration automatically
-• For long meetings, use 'turbo' model for speed
+• Apple Silicon Macs use MLX for native Metal acceleration
+• Video files are auto-converted (requires ffmpeg)
+• For long meetings (>1hr), use 'turbo' or 'small' model
 • Action items summary is great for follow-up emails
 
 TROUBLESHOOTING
 ---------------
 
-"pipx not found"
-  → brew install pipx && pipx ensurepath
-  → Restart your terminal
+"No backend found"
+  → Mac: pip install mlx-whisper
+  → Other: brew install pipx && pipx ensurepath
+
+"Video file not supported"
+  → Install ffmpeg: brew install ffmpeg
+  → Audio will be extracted automatically
 
 "Out of memory"
-  → Use smaller model: --model tiny or --model base
+  → Use smaller model: --model small or --model tiny
 
 "Slow transcription"
-  → Check GPU is being used (look for "mps" or "cuda" in output)
+  → Check you're using MLX (Mac) or CUDA (NVIDIA)
   → Try --model turbo for faster processing
+
+"MPS/GPU crash on long files"
+  → This is a known issue with HuggingFace transformers
+  → Use mlx_whisper instead (pip install mlx-whisper)
 
 "Speaker diarization not working"
   → Ensure HF_TOKEN is set
@@ -137,6 +163,7 @@ MORE INFO
 
 Plugin location: ~/.claude/plugins/meeting/
 Settings file:   ~/.claude/meeting.local.md
+Repository:      https://github.com/Maheidem/maheidem-plugins
 ```
 
 ## Additional Help
