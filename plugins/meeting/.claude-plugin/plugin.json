@@ -1,0 +1,14 @@
+{
+  "name": "meeting",
+  "version": "1.0.0",
+  "description": "Self-contained meeting transcription and summarization using Whisper AI",
+  "author": {
+    "name": "maheidem",
+    "email": "maheidem@users.noreply.github.com"
+  },
+  "keywords": ["transcription", "meetings", "whisper", "audio", "summarization"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maheidem/claude-code-plugins"
+  }
+}
