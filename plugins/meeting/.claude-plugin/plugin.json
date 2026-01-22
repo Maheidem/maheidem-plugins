@@ -7,8 +7,5 @@
     "email": "maheidem@users.noreply.github.com"
   },
   "keywords": ["transcription", "meetings", "whisper", "audio", "summarization"],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/maheidem/claude-code-plugins"
-  }
+  "repository": "https://github.com/Maheidem/maheidem-plugins"
 }
