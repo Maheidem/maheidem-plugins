@@ -4,12 +4,13 @@ A self-contained Claude Code plugin for transcribing and summarizing meeting rec
 
 ## Features
 
-- **Zero-install transcription** via `pipx run insanely-fast-whisper`
+- **Zero-install transcription** via `uvx mlx-whisper` (Apple Silicon) or `uvx insanely-fast-whisper`
 - **Interactive guided mode** - just type the command, no need to remember flags
+- **Smart subtitle detection** - automatically extracts embedded subtitles from videos
 - **Multiple output formats** - txt, srt, vtt, json
 - **Speaker diarization** - identify who said what (optional)
 - **AI-powered summaries** - action items, meeting minutes, brief overviews
-- **Apple Silicon optimized** - automatic MPS acceleration
+- **Apple Silicon optimized** - automatic MLX acceleration for fastest transcription
 
 ## Quick Start
 
@@ -34,10 +35,9 @@ A self-contained Claude Code plugin for transcribing and summarizing meeting rec
 
 ### Required
 
-**pipx** - Python package runner (no global installs needed)
+**uv** - Fast Python package runner
 ```bash
-brew install pipx
-pipx ensurepath
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Then restart your terminal.
@@ -50,6 +50,23 @@ export HF_TOKEN="your_huggingface_token"
 ```
 
 Get a HuggingFace token at https://huggingface.co/settings/tokens
+
+## Smart Subtitle Detection
+
+When transcribing video files, the plugin automatically:
+1. **Checks for embedded subtitle tracks** using ffprobe
+2. **Offers to extract existing subtitles** (fast!)
+3. **Falls back to AI transcription** if no subtitles found
+
+This saves significant time when videos already have subtitles baked in - no need to wait for AI transcription!
+
+Example prompt when subtitles are detected:
+```
+This video has embedded subtitles. What would you like to do?
+- Use existing subtitles (Recommended) - Fast, already synced
+- Transcribe anyway - Get a fresh AI transcription
+- Extract all subtitle tracks - Get all available languages
+```
 
 ## Commands
 
@@ -80,6 +97,14 @@ Skip prompts by providing arguments:
 /meeting:transcribe video.mp4 --model turbo  # Only asks for format
 ```
 
+## Backend Priority (Apple Silicon)
+
+The plugin automatically selects the fastest available backend:
+
+1. **uvx mlx-whisper** ⚡⚡⚡⚡ - Native Metal acceleration (FASTEST)
+2. **mlx_whisper (pip)** ⚡⚡⚡⚡ - If pip-installed
+3. **uvx insanely-fast-whisper** ⚡⚡⚡ - MPS fallback
+
 ## Models
 
 | Model | Speed | Quality | VRAM | Best For |
@@ -93,7 +118,7 @@ Skip prompts by providing arguments:
 
 ## Supported Formats
 
-**Input:** mp4, mp3, wav, m4a, webm, ogg, flac, aac
+**Input:** mp4, mp3, wav, m4a, webm, ogg, flac, aac, mkv, mov, avi
 
 **Output:**
 - `txt` - Plain text
@@ -130,10 +155,9 @@ Change defaults with:
 
 ## Troubleshooting
 
-### "pipx not found"
+### "uv not found"
 ```bash
-brew install pipx
-pipx ensurepath
+curl -LsSf https://astral.sh/uv/install.sh | sh
 # Restart terminal
 ```
 
@@ -143,11 +167,18 @@ Use a smaller model:
 /meeting:transcribe file.mp4 --model tiny
 ```
 
-### Slow transcription
-Check GPU acceleration:
+### Slow transcription on Apple Silicon
+Ensure you're using MLX backend:
 ```bash
-# Should show "mps" (Apple Silicon) or "cuda" (NVIDIA)
-python3 -c "import torch; print(torch.backends.mps.is_available())"
+# Check if mlx-whisper is being used
+# The plugin auto-detects, but you can verify with:
+uvx mlx-whisper --help
+```
+
+### File paths with special characters
+The plugin properly handles paths with spaces, parentheses, and special characters:
+```bash
+/meeting:transcribe "/Users/name/Downloads/meeting (2026-01-20 21_27).mp4"
 ```
 
 ### Speaker diarization not working
