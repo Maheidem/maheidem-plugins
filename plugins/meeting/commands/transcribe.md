@@ -10,8 +10,8 @@ You are executing the `/meeting:transcribe` command to transcribe audio or video
 ## Your Mission
 
 Help the user transcribe a meeting recording using the best available Whisper backend for their platform:
-- **Apple Silicon Mac**: Use `mlx_whisper` (native MLX acceleration)
-- **Other platforms**: Use `pipx run insanely-fast-whisper` or local `faster-whisper`
+- **Apple Silicon Mac**: Use `uvx mlx-whisper` (native MLX acceleration) - FASTEST
+- **Other platforms**: Use `uvx insanely-fast-whisper`
 
 Use **interactive guided mode** to collect missing parameters.
 
@@ -82,31 +82,96 @@ PLATFORM=$(uname -s)
 ARCH=$(uname -m)
 echo "Platform: $PLATFORM $ARCH"
 
+USE_BACKEND="none"
+
 # Check for Apple Silicon Mac
 if [[ "$PLATFORM" == "Darwin" && "$ARCH" == "arm64" ]]; then
     echo "Device: Apple Silicon Mac"
 
-    # Check for MLX Whisper (best for Apple Silicon)
-    if python3 -c "import mlx_whisper" 2>/dev/null; then
-        echo "Backend: mlx_whisper (RECOMMENDED)"
-        echo "USE_BACKEND=mlx"
-    elif command -v pipx &>/dev/null; then
-        echo "Backend: pipx + insanely-fast-whisper (fallback)"
-        echo "USE_BACKEND=pipx"
-    else
-        echo "Backend: None found"
-        echo "USE_BACKEND=none"
+    # Priority 1: uvx mlx-whisper
+    if command -v uvx &>/dev/null && uvx mlx-whisper --help &>/dev/null 2>&1; then
+        echo "Backend: uvx mlx-whisper (RECOMMENDED)"
+        USE_BACKEND="mlx-uvx"
+    # Priority 2: pip-installed mlx-whisper
+    elif python3 -c "import mlx_whisper" 2>/dev/null; then
+        echo "Backend: mlx_whisper (pip installed)"
+        USE_BACKEND="mlx-pip"
+    # Priority 3: uvx insanely-fast-whisper with MPS
+    elif command -v uvx &>/dev/null; then
+        echo "Backend: uvx insanely-fast-whisper (MPS)"
+        USE_BACKEND="ifwhisper"
     fi
 else
-    # Non-Mac: use pipx or faster-whisper
-    if command -v pipx &>/dev/null; then
-        echo "Backend: pipx + insanely-fast-whisper"
-        echo "USE_BACKEND=pipx"
-    else
-        echo "Backend: None found"
-        echo "USE_BACKEND=none"
+    # Non-Mac: uvx insanely-fast-whisper
+    if command -v uvx &>/dev/null; then
+        echo "Backend: uvx insanely-fast-whisper"
+        USE_BACKEND="ifwhisper"
     fi
 fi
+
+echo "USE_BACKEND=$USE_BACKEND"
+```
+
+### Step 3.5: Check for Embedded Subtitles (Video Files Only)
+
+If the input file is a video, check for existing subtitle tracks before transcribing:
+
+```bash
+FILE="USER_FILE"
+EXT="${FILE##*.}"
+
+# Check if video file
+if [[ "$EXT" =~ ^(mp4|mkv|webm|mov|avi|m4v)$ ]]; then
+    echo "Checking for embedded subtitles..."
+
+    SUBTITLE_TRACKS=$(ffprobe -v error -select_streams s -show_entries stream=index:stream_tags=language -of csv=p=0 "$FILE" 2>/dev/null)
+
+    if [ -n "$SUBTITLE_TRACKS" ]; then
+        echo "Found subtitle tracks:"
+        echo "$SUBTITLE_TRACKS"
+
+        # Count tracks
+        TRACK_COUNT=$(echo "$SUBTITLE_TRACKS" | wc -l | tr -d ' ')
+        echo "Total tracks: $TRACK_COUNT"
+
+        # Flag for later
+        HAS_SUBTITLES=true
+    else
+        echo "No embedded subtitles found"
+        HAS_SUBTITLES=false
+    fi
+fi
+```
+
+**If subtitles found, use `AskUserQuestion`:**
+```
+Question: "This video has embedded subtitles. What would you like to do?"
+Options:
+- Use existing subtitles (Recommended) - Fast, already synced
+- Transcribe anyway - Get a fresh AI transcription
+- Extract all subtitle tracks - Get all available languages
+```
+
+**If user chooses to extract:**
+```bash
+# Extract first subtitle track
+OUTPUT_SUB="${FILE%.*}.srt"
+ffmpeg -i "$FILE" -map 0:s:0 "$OUTPUT_SUB" -y 2>/dev/null
+
+if [ -f "$OUTPUT_SUB" ]; then
+    echo "✅ Extracted subtitles: $OUTPUT_SUB"
+fi
+```
+
+**If user chooses to extract ALL tracks:**
+```bash
+# Extract all subtitle tracks with language suffix
+ffprobe -v error -select_streams s -show_entries stream=index:stream_tags=language -of csv=p=0 "$FILE" 2>/dev/null | while IFS=',' read -r idx lang; do
+    lang=${lang:-"track$idx"}
+    OUTPUT_SUB="${FILE%.*}.${lang}.srt"
+    ffmpeg -i "$FILE" -map "0:s:$idx" "$OUTPUT_SUB" -y 2>/dev/null
+    echo "Extracted: $OUTPUT_SUB"
+done
 ```
 
 ### Step 4: Extract Audio (if video file)
@@ -141,15 +206,14 @@ fi
 
 ### Step 5: Execute Transcription
 
-#### For Apple Silicon Mac (MLX Whisper):
+#### For Apple Silicon Mac (uvx mlx-whisper - RECOMMENDED):
 
 ```bash
-mlx_whisper \
+uvx mlx-whisper "$TRANSCRIBE_FILE" \
     --model "mlx-community/whisper-MODEL-mlx" \
     --language LANG \
     --output-format FORMAT \
-    --output-dir "$(dirname "$FILE")" \
-    "$TRANSCRIBE_FILE"
+    --output-dir "$(dirname "$FILE")"
 ```
 
 **MLX Model mapping:**
@@ -160,10 +224,21 @@ mlx_whisper \
 - large-v3 → `mlx-community/whisper-large-v3-mlx`
 - turbo → `mlx-community/whisper-large-v3-turbo` (if available, else large-v3)
 
-#### For Other Platforms (pipx + insanely-fast-whisper):
+#### For Apple Silicon Mac (pip-installed mlx_whisper):
 
 ```bash
-pipx run insanely-fast-whisper \
+mlx_whisper \
+    --model "mlx-community/whisper-MODEL-mlx" \
+    --language LANG \
+    --output-format FORMAT \
+    --output-dir "$(dirname "$FILE")" \
+    "$TRANSCRIBE_FILE"
+```
+
+#### For Other Platforms (uvx + insanely-fast-whisper):
+
+```bash
+uvx insanely-fast-whisper \
     --file-name "$TRANSCRIBE_FILE" \
     --model-name "openai/whisper-MODEL" \
     --device-id DEVICE \
@@ -220,7 +295,7 @@ When `--all` flag is used or for any missing values after prompts:
 
 | Error | Solution |
 |-------|----------|
-| No backend found | Install mlx-whisper (Mac) or pipx (other) |
+| No backend found | Install uv (curl -LsSf https://astral.sh/uv/install.sh \| sh) |
 | Video file, no ffmpeg | Ask user to install ffmpeg |
 | File not found | Ask user to verify path |
 | Out of memory | Suggest smaller model (small or tiny) |
@@ -228,15 +303,21 @@ When `--all` flag is used or for any missing values after prompts:
 
 ## Installation Requirements
 
-**For Apple Silicon Mac (recommended):**
+**For Apple Silicon Mac (recommended - uvx):**
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Then restart terminal
+```
+
+**Alternative: pip install mlx-whisper:**
 ```bash
 pip install mlx-whisper
 ```
 
 **For other platforms:**
 ```bash
-brew install pipx  # or: apt install pipx
-pipx ensurepath
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Then restart terminal
 ```
 
 **For video file support (all platforms):**
@@ -256,6 +337,7 @@ Place output in same directory as input file.
 
 | Backend | Platform | Speed | Stability | Notes |
 |---------|----------|-------|-----------|-------|
-| `mlx_whisper` | Mac (Apple Silicon) | ⚡⚡⚡ | ✅ Excellent | Native Metal acceleration |
-| `insanely-fast-whisper` | Any (with GPU) | ⚡⚡ | ⚠️ May crash on long files | Uses HuggingFace transformers |
+| `uvx mlx-whisper` | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ✅ Excellent | Native Metal, fastest option |
+| `mlx_whisper` (pip) | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ✅ Excellent | Native Metal acceleration |
+| `uvx insanely-fast-whisper` | Any (with GPU) | ⚡⚡⚡ | ⚠️ May crash on long files | Uses HuggingFace transformers |
 | `faster-whisper` | Any | ⚡⚡ | ✅ Good | CTranslate2 backend |
