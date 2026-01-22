@@ -109,6 +109,10 @@ Run whisperx with diarization:
 ```python
 import whisperx
 import torch
+import os
+
+# Get file path from environment or argument
+FILE = os.environ.get("TRANSCRIBE_FILE", "FILE_PATH_HERE")
 
 # Load model
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -116,8 +120,8 @@ compute_type = "float16" if device != "cpu" else "int8"
 
 model = whisperx.load_model("MODEL", device, compute_type=compute_type)
 
-# Transcribe
-audio = whisperx.load_audio("FILE")
+# Transcribe - FILE path is properly escaped via Python string
+audio = whisperx.load_audio(FILE)
 result = model.transcribe(audio, batch_size=16)
 
 # Align
