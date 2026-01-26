@@ -147,6 +147,22 @@ This enables:
 - Multiple Claude sessions in different terminals
 - Isolated loops that don't interfere with each other
 
+### Stuck Detection (v2.1.0)
+
+The stop hook automatically detects when no progress is being made:
+
+1. Each iteration, it computes an MD5 hash of `git diff --stat`
+2. If the hash matches the previous iteration, `stuck_count` increments
+3. After 2+ consecutive stuck iterations, a warning is added to the system message
+4. The warning prompts Claude to try a different approach
+
+**System Message Example (when stuck):**
+```
+Ralph iteration 5 [Loop: abc12345] | Journal: .claude/ralph-journal-abc12345.md | To stop: output <promise>DONE</promise> | STUCK: No file changes for 3 iterations - try a DIFFERENT approach!
+```
+
+This feature is always enabled and requires no configuration. It provides hints but does not auto-stop the loop.
+
 ### Completion Promises
 
 To signal genuine completion, Claude outputs:
@@ -183,7 +199,7 @@ Each loop has an associated journal file that tracks iteration history:
 
 ## Technical Details
 
-### State File Format (v2.0.0)
+### State File Format (v2.1.0)
 
 `.claude/ralph-loop-{loop_id}.local.md`:
 ```yaml
@@ -195,10 +211,16 @@ iteration: 1
 max_iterations: 20
 completion_promise: "DONE"
 started_at: "2025-01-09T12:00:00Z"
+stuck_count: 0
+last_file_hash: ""
 ---
 
 Your prompt text here
 ```
+
+**Stuck Detection Fields:**
+- `stuck_count`: Number of consecutive iterations with no file changes (resets on progress)
+- `last_file_hash`: MD5 hash of `git diff --stat` from previous iteration
 
 ### Journal File Format
 
