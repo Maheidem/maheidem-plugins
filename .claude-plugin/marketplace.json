@@ -8,6 +8,17 @@
   },
   "plugins": [
     {
+      "name": "maheidem-agent-suite",
+      "description": "6 specialized agents for Claude Code infrastructure management with handoff protocol enforcement",
+      "version": "1.0.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/maheidem-agent-suite",
+      "category": "development"
+    },
+    {
       "name": "ralph-loop-mac",
       "description": "Mac-compatible Ralph Loop - Bash implementation for iterative AI development loops (Ralph Wiggum technique). v2.1.0: Stuck detection warns when no file changes.",
       "version": "2.1.0",
