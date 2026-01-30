@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# Ralph Wiggum Stop Hook (Mac/Bash version) - v2.1.0
+# Ralph Wiggum Stop Hook (Mac/Bash version) - v2.2.0
 # Session-ownership model: Claims unclaimed loops, handles only owned loops
 # Prevents session exit when an owned ralph-loop is active
 # Feeds Claude's output back as input to continue the loop
-# NEW: Stuck detection - warns when no file changes between iterations
+# Stuck detection - warns when no file changes between iterations
 
-set -e
+set -euo pipefail
 
 # Read hook input from stdin (advanced stop hook API)
 HOOK_INPUT=$(cat)
@@ -242,9 +242,9 @@ fi
 # Compute current state hash (what files changed since last commit)
 CURRENT_HASH=$(git diff --stat 2>/dev/null | md5 || echo "no-git")
 
-# Read previous hash and stuck count from state file
-LAST_HASH=$(echo "$FRONTMATTER" | grep '^last_file_hash:' | sed 's/last_file_hash:[[:space:]]*//' | tr -d '"')
-STUCK_COUNT=$(echo "$FRONTMATTER" | grep '^stuck_count:' | awk '{print $2}')
+# Read previous hash and stuck count from state file (use || true to handle missing fields)
+LAST_HASH=$(echo "$FRONTMATTER" | grep '^last_file_hash:' | sed 's/last_file_hash:[[:space:]]*//' | tr -d '"' || true)
+STUCK_COUNT=$(echo "$FRONTMATTER" | grep '^stuck_count:' | awk '{print $2}' || true)
 STUCK_COUNT=${STUCK_COUNT:-0}
 
 # Compare hashes to detect stuck state
