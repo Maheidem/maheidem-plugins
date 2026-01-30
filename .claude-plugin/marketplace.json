@@ -43,7 +43,7 @@
     {
       "name": "plugin-forge",
       "description": "Forge new plugins from session reflections or from scratch. 6-phase workflow: intent clarification, marketplace setup, conflict detection, plugin planning, generation, and optional git commit/push.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
