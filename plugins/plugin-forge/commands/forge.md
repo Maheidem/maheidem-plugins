@@ -103,33 +103,67 @@ Follow-up questions based on choice:
 
 4. Report completion with created files summary
 
-### Phase 6: Git Commit & Push (Optional)
+### Phase 6: Version Bump, Git Commit & Push (Optional)
 
 Use AskQuestion: "Would you like to commit and push the new plugin?"
 - **Options**: "Yes, commit and push" | "Just commit locally" | "No, skip git operations"
 
 If user chooses to commit:
-1. Stage all new plugin files:
-   ```bash
-   git add "${MARKETPLACE_PATH}/plugins/{plugin-name}/"
-   git add "${MARKETPLACE_PATH}/.claude-plugin/marketplace.json"
-   ```
 
-2. Create commit with descriptive message:
-   ```bash
-   git commit -m "feat(plugin-forge): add {plugin-name} plugin
+#### Step 6.1: Bump Version (CRITICAL)
+**Always bump the plugin version before committing** - this ensures every commit has a visible version change.
 
-   - Created by plugin-forge from {session/scratch}
-   - Commands: {list}
-   - Skills: {list}
+```bash
+# Bump the plugin version (patch by default: 1.0.0 -> 1.0.1)
+python ${CLAUDE_PLUGIN_ROOT}/scripts/version_bumper.py bump "${MARKETPLACE_PATH}/plugins/{plugin-name}"
+```
 
-   Co-Authored-By: Claude <noreply@anthropic.com>"
-   ```
+**Display the version change clearly to the user:**
+```
+Version bumped (patch): 1.0.0 -> 1.0.1
+Also updated marketplace.json with version 1.0.1
+```
 
-3. If push requested:
-   ```bash
-   git push origin HEAD
-   ```
+#### Step 6.2: Stage Files
+```bash
+git add "${MARKETPLACE_PATH}/plugins/{plugin-name}/"
+git add "${MARKETPLACE_PATH}/.claude-plugin/marketplace.json"
+```
+
+#### Step 6.3: Create Commit
+Include the new version in the commit message:
+```bash
+git commit -m "feat({plugin-name}): update to v{new_version}
+
+- Updated by plugin-forge
+- Version: {old_version} -> {new_version}
+- Changes: {brief description of changes}
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+#### Step 6.4: Push (if requested)
+```bash
+git push origin HEAD
+```
+
+#### Version Bumper Commands Reference
+```bash
+# Get current version
+python ${CLAUDE_PLUGIN_ROOT}/scripts/version_bumper.py get "<plugin_path>"
+
+# Bump patch (default): 1.0.0 -> 1.0.1
+python ${CLAUDE_PLUGIN_ROOT}/scripts/version_bumper.py bump "<plugin_path>"
+
+# Bump minor: 1.0.0 -> 1.1.0
+python ${CLAUDE_PLUGIN_ROOT}/scripts/version_bumper.py bump "<plugin_path>" --type minor
+
+# Bump major: 1.0.0 -> 2.0.0
+python ${CLAUDE_PLUGIN_ROOT}/scripts/version_bumper.py bump "<plugin_path>" --type major
+
+# Set specific version
+python ${CLAUDE_PLUGIN_ROOT}/scripts/version_bumper.py set "<plugin_path>" "2.0.0"
+```
 
 ## Important Rules
 

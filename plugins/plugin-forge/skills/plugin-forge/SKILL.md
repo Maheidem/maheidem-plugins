@@ -28,7 +28,7 @@ Execute the 6-phase workflow:
 3. **Conflict Detection** - Scan for existing similar plugins
 4. **Plugin Planning** - Design structure using skill-creator and plugin-dev skills
 5. **Generation** - Create all files and register in marketplace
-6. **Git Commit & Push** - Optional version control operations
+6. **Version Bump + Git Commit & Push** - Automatic semantic versioning + optional version control
 
 ## Key Operations
 
