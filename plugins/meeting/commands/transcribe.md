@@ -10,7 +10,7 @@ You are executing the `/meeting:transcribe` command to transcribe audio or video
 ## Your Mission
 
 Help the user transcribe a meeting recording using the best available Whisper backend for their platform:
-- **Apple Silicon Mac**: Use `uvx mlx-whisper` (native MLX acceleration) - FASTEST
+- **Apple Silicon Mac**: Use `uvx --from mlx-whisper mlx_whisper` (native MLX acceleration) - FASTEST
 - **Other platforms**: Use `uvx insanely-fast-whisper`
 
 Use **interactive guided mode** to collect missing parameters.
@@ -88,9 +88,9 @@ USE_BACKEND="none"
 if [[ "$PLATFORM" == "Darwin" && "$ARCH" == "arm64" ]]; then
     echo "Device: Apple Silicon Mac"
 
-    # Priority 1: uvx mlx-whisper
-    if command -v uvx &>/dev/null && uvx mlx-whisper --help &>/dev/null 2>&1; then
-        echo "Backend: uvx mlx-whisper (RECOMMENDED)"
+    # Priority 1: uvx --from mlx-whisper mlx_whisper
+    if command -v uvx &>/dev/null && uvx --from mlx-whisper mlx_whisper --help &>/dev/null 2>&1; then
+        echo "Backend: uvx --from mlx-whisper mlx_whisper (RECOMMENDED)"
         USE_BACKEND="mlx-uvx"
     # Priority 2: pip-installed mlx-whisper
     elif python3 -c "import mlx_whisper" 2>/dev/null; then
@@ -206,10 +206,10 @@ fi
 
 ### Step 5: Execute Transcription
 
-#### For Apple Silicon Mac (uvx mlx-whisper - RECOMMENDED):
+#### For Apple Silicon Mac (uvx --from mlx-whisper mlx_whisper - RECOMMENDED):
 
 ```bash
-uvx mlx-whisper "$TRANSCRIBE_FILE" \
+uvx --from mlx-whisper mlx_whisper "$TRANSCRIBE_FILE" \
     --model "mlx-community/whisper-MODEL-mlx" \
     --language LANG \
     --output-format FORMAT \
@@ -469,7 +469,7 @@ Place output in same directory as input file.
 
 | Backend | Platform | Speed | Stability | Notes |
 |---------|----------|-------|-----------|-------|
-| `uvx mlx-whisper` | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ✅ Excellent | Native Metal, fastest option |
+| `uvx --from mlx-whisper mlx_whisper` | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ✅ Excellent | Native Metal, fastest option |
 | `mlx_whisper` (pip) | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ✅ Excellent | Native Metal acceleration |
 | `uvx insanely-fast-whisper` | Any (with GPU) | ⚡⚡⚡ | ⚠️ May crash on long files | Uses HuggingFace transformers |
 | `faster-whisper` | Any | ⚡⚡ | ✅ Good | CTranslate2 backend |
@@ -477,6 +477,6 @@ Place output in same directory as input file.
 
 ### Recommended Approach
 
-1. **First try**: `uvx mlx-whisper` (fastest on Apple Silicon)
+1. **First try**: `uvx --from mlx-whisper mlx_whisper` (fastest on Apple Silicon)
 2. **If hallucinating**: `faster-whisper` with `vad_filter=True`
 3. **For speaker diarization**: Use `/meeting:diarize` instead
