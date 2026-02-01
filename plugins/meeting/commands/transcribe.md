@@ -9,9 +9,11 @@ You are executing the `/meeting:transcribe` command to transcribe audio or video
 
 ## Your Mission
 
-Help the user transcribe a meeting recording using the best available Whisper backend for their platform:
-- **Apple Silicon Mac**: Use `uvx --from mlx-whisper mlx_whisper` (native MLX acceleration) - FASTEST
-- **Other platforms**: Use `uvx insanely-fast-whisper`
+Help the user transcribe a meeting recording using the most reliable Whisper backend:
+- **Default (All platforms)**: Use `faster-whisper` with **VAD enabled** - MOST RELIABLE, prevents hallucinations
+- **Fast mode (Apple Silicon)**: Use `uvx --from mlx-whisper mlx_whisper` - faster but may hallucinate on long files
+
+**IMPORTANT**: Always use VAD (Voice Activity Detection) by default to prevent hallucinations on long recordings.
 
 Use **interactive guided mode** to collect missing parameters.
 
@@ -71,41 +73,31 @@ Options:
 - French
 ```
 
-### Step 3: Detect Platform & Backend
+### Step 3: Detect Platform & Check faster-whisper
 
-Run this check to determine the best transcription backend:
+**faster-whisper with VAD is the default** because it prevents hallucinations on long recordings.
 
 ```bash
-# Check platform and available backends
-echo "=== Platform Detection ==="
+# Check if faster-whisper is available
+echo "=== Backend Detection ==="
 PLATFORM=$(uname -s)
 ARCH=$(uname -m)
 echo "Platform: $PLATFORM $ARCH"
 
-USE_BACKEND="none"
-
-# Check for Apple Silicon Mac
-if [[ "$PLATFORM" == "Darwin" && "$ARCH" == "arm64" ]]; then
-    echo "Device: Apple Silicon Mac"
-
-    # Priority 1: uvx --from mlx-whisper mlx_whisper
-    if command -v uvx &>/dev/null && uvx --from mlx-whisper mlx_whisper --help &>/dev/null 2>&1; then
-        echo "Backend: uvx --from mlx-whisper mlx_whisper (RECOMMENDED)"
-        USE_BACKEND="mlx-uvx"
-    # Priority 2: pip-installed mlx-whisper
-    elif python3 -c "import mlx_whisper" 2>/dev/null; then
-        echo "Backend: mlx_whisper (pip installed)"
-        USE_BACKEND="mlx-pip"
-    # Priority 3: uvx insanely-fast-whisper with MPS
-    elif command -v uvx &>/dev/null; then
-        echo "Backend: uvx insanely-fast-whisper (MPS)"
-        USE_BACKEND="ifwhisper"
-    fi
+# Check for faster-whisper (default, most reliable)
+if python3 -c "from faster_whisper import WhisperModel" 2>/dev/null; then
+    echo "Backend: faster-whisper + VAD (RECOMMENDED) ✅"
+    USE_BACKEND="faster-whisper"
 else
-    # Non-Mac: uvx insanely-fast-whisper
-    if command -v uvx &>/dev/null; then
-        echo "Backend: uvx insanely-fast-whisper"
-        USE_BACKEND="ifwhisper"
+    echo "⚠️ faster-whisper not installed"
+    echo "Install with: pip install faster-whisper"
+
+    # Fallback to mlx-whisper on Apple Silicon
+    if [[ "$PLATFORM" == "Darwin" && "$ARCH" == "arm64" ]]; then
+        if command -v uvx &>/dev/null; then
+            echo "Fallback: mlx-whisper (may hallucinate on long files)"
+            USE_BACKEND="mlx-uvx"
+        fi
     fi
 fi
 
@@ -206,91 +198,35 @@ fi
 
 ### Step 5: Execute Transcription
 
-#### For Apple Silicon Mac (uvx --from mlx-whisper mlx_whisper - RECOMMENDED):
-
-```bash
-uvx --from mlx-whisper mlx_whisper "$TRANSCRIBE_FILE" \
-    --model "mlx-community/whisper-MODEL-mlx" \
-    --language LANG \
-    --output-format FORMAT \
-    --output-dir "$(dirname "$FILE")"
-```
-
-**MLX Model mapping:**
-- tiny → `mlx-community/whisper-tiny-mlx`
-- base → `mlx-community/whisper-base-mlx`
-- small → `mlx-community/whisper-small-mlx`
-- medium → `mlx-community/whisper-medium-mlx`
-- large-v3 → `mlx-community/whisper-large-v3-mlx`
-- turbo → `mlx-community/whisper-large-v3-turbo` (if available, else large-v3)
-
-#### For Apple Silicon Mac (pip-installed mlx_whisper):
-
-```bash
-mlx_whisper \
-    --model "mlx-community/whisper-MODEL-mlx" \
-    --language LANG \
-    --output-format FORMAT \
-    --output-dir "$(dirname "$FILE")" \
-    "$TRANSCRIBE_FILE"
-```
-
-#### For Other Platforms (uvx + insanely-fast-whisper):
-
-```bash
-uvx insanely-fast-whisper \
-    --file-name "$TRANSCRIBE_FILE" \
-    --model-name "openai/whisper-MODEL" \
-    --device-id DEVICE \
-    --transcript-path "OUTPUT_PATH" \
-    --batch-size 24
-```
-
-**Device mapping:**
-- Apple Silicon: `--device-id mps` (but prefer MLX instead!)
-- NVIDIA GPU: `--device-id 0` (CUDA)
-- CPU: `--device-id -1`
-
-### Step 5.5: Hallucination Detection & VAD Fallback
-
-After running the primary transcription, **check the output for hallucinations**:
-
-```python
-# Quick hallucination check
-def detect_hallucination(output_file):
-    """Detect if Whisper produced hallucinated output."""
-    with open(output_file, 'r') as f:
-        content = f.read()
-
-    # Known hallucination patterns
-    hallucination_markers = [
-        'E aí', 'Tchau', 'Thank you', 'Thanks for watching',
-        'Obrigado', 'Legendas', 'Subtítulos'
-    ]
-
-    # Count occurrences
-    for marker in hallucination_markers:
-        count = content.lower().count(marker.lower())
-        if count > 10:  # Repeated more than 10 times = likely hallucination
-            return True, marker
-
-    return False, None
-```
-
-**If hallucination detected, automatically fall back to faster-whisper with VAD:**
+#### DEFAULT: faster-whisper with VAD (RECOMMENDED - prevents hallucinations)
 
 ```python
 from faster_whisper import WhisperModel
 import json
+import time
 
-print("⚠️ Hallucination detected! Retrying with VAD filter...")
+FILE = "USER_FILE"  # Replace with actual file path
+LANGUAGE = "LANG"   # Replace with language code or None for auto-detect
+MODEL = "MODEL"     # Replace with model name (large-v3, turbo, small, etc.)
+OUTPUT_DIR = "OUTPUT_DIR"  # Replace with output directory
 
-model = WhisperModel("large-v3", device="cpu", compute_type="int8")
+print(f"🎙️ Transcribing with VAD filter (prevents hallucinations)...")
+print(f"   Model: {MODEL}")
+print(f"   Language: {LANGUAGE or 'auto-detect'}")
+print(f"   VAD: enabled ✅")
+print()
+
+start_time = time.time()
+
+# Load model (CPU with int8 for stability, or cuda:0 for NVIDIA GPU)
+model = WhisperModel(MODEL, device="cpu", compute_type="int8")
+
+# Transcribe with VAD enabled - CRITICAL for preventing hallucinations
 segments, info = model.transcribe(
-    transcribe_file,
-    language=language,  # Use detected or specified language
+    FILE,
+    language=LANGUAGE if LANGUAGE != "auto" else None,
     beam_size=5,
-    vad_filter=True,
+    vad_filter=True,  # ← ALWAYS ENABLED BY DEFAULT
     vad_parameters=dict(
         min_silence_duration_ms=500,
         speech_pad_ms=400,
@@ -304,19 +240,53 @@ for segment in segments:
     all_segments.append({
         "start": segment.start,
         "end": segment.end,
-        "text": segment.text
+        "text": segment.text.strip()
     })
-    full_text.append(segment.text)
+    full_text.append(segment.text.strip())
+    if len(all_segments) % 50 == 0:
+        print(f"   Processed {len(all_segments)} segments...")
+
+# Generate output file paths
+import os
+base_name = os.path.splitext(os.path.basename(FILE))[0]
+output_txt = os.path.join(OUTPUT_DIR, f"{base_name}.txt")
+output_json = os.path.join(OUTPUT_DIR, f"{base_name}.json")
 
 # Save outputs
 with open(output_json, "w", encoding="utf-8") as f:
     json.dump({"language": info.language, "segments": all_segments}, f, ensure_ascii=False, indent=2)
 
 with open(output_txt, "w", encoding="utf-8") as f:
-    f.write(" ".join(full_text))
+    f.write("\n".join(full_text))
 
-print(f"✅ VAD transcription complete: {len(all_segments)} segments")
+elapsed = time.time() - start_time
+print()
+print(f"✅ Transcription complete!")
+print(f"   Segments: {len(all_segments)}")
+print(f"   Time: {elapsed/60:.1f} minutes")
+print(f"   Output: {output_txt}")
 ```
+
+**Model options:**
+- `large-v3` - Highest quality (recommended for important meetings)
+- `turbo` - Good balance of speed and quality
+- `medium` - Faster, still good quality
+- `small` - Quick processing
+- `tiny` - Fastest, lower quality
+
+#### FALLBACK: mlx-whisper (Apple Silicon only, faster but may hallucinate)
+
+Only use this if faster-whisper is not available or user explicitly requests fast mode:
+
+```bash
+uvx --from mlx-whisper mlx_whisper "$TRANSCRIBE_FILE" \
+    --model "mlx-community/whisper-large-v3-mlx" \
+    --language LANG \
+    --output-format txt \
+    --output-dir "$(dirname "$FILE")"
+```
+
+⚠️ **Warning**: mlx-whisper does NOT have VAD and may hallucinate on long recordings (producing repetitive "E aí", "Tchau", "Thank you" etc.)
 
 ### Step 6: Cleanup & Report
 
@@ -362,94 +332,44 @@ When `--all` flag is used or for any missing values after prompts:
 
 | Error | Solution |
 |-------|----------|
-| No backend found | Install uv (curl -LsSf https://astral.sh/uv/install.sh \| sh) |
-| Video file, no ffmpeg | Ask user to install ffmpeg |
+| `faster-whisper` not installed | `pip install faster-whisper` |
+| Video file, no ffmpeg | `brew install ffmpeg` or `apt install ffmpeg` |
 | File not found | Ask user to verify path |
 | Out of memory | Suggest smaller model (small or tiny) |
-| MLX error | Try with smaller batch or different model |
-| **Hallucination (repeating "E aí", "Tchau", etc.)** | Use faster-whisper with VAD filter (see Troubleshooting section) |
+| Slow on CPU | Normal for large-v3; use `turbo` or `small` for speed |
 
-## Troubleshooting: Whisper Hallucinations
+## Why VAD is the Default
 
-### The Problem
-Whisper models (including mlx-whisper) can hallucinate on long audio files, producing repetitive filler text like:
-- "E aí" (Portuguese)
-- "Tchau" (Portuguese)
-- "Thank you" (English)
-- "..." or silence markers
-
-This happens when the model can't properly detect speech boundaries.
-
-### The Solution: VAD Filter with faster-whisper
-
-When mlx-whisper produces hallucinations, **fall back to faster-whisper with VAD enabled**:
-
-```bash
-# Install faster-whisper if needed
-pip install faster-whisper
-```
-
-```python
-from faster_whisper import WhisperModel
-
-print("Loading model with VAD filter...")
-model = WhisperModel("large-v3", device="cpu", compute_type="int8")
-
-print("Transcribing with VAD enabled...")
-segments, info = model.transcribe(
-    "audio.mp4",
-    language="pt",  # or your language
-    beam_size=5,
-    vad_filter=True,  # ← CRITICAL: Enables Voice Activity Detection
-    vad_parameters=dict(
-        min_silence_duration_ms=500,
-        speech_pad_ms=400,
-    )
-)
-
-# Collect results
-for segment in segments:
-    print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
-```
-
-### Why VAD Fixes Hallucinations
-
-**VAD (Voice Activity Detection)** helps Whisper by:
+**VAD (Voice Activity Detection)** prevents hallucinations by:
 1. Pre-filtering audio to identify actual speech regions
 2. Skipping silence and noise that confuses the model
 3. Providing clear speech boundaries for transcription
 
-### Detection: How to Know If You Have Hallucinations
+### Signs of Hallucination (if you use mlx-whisper without VAD)
 
-Signs of hallucination:
-- Same phrase repeating every 30 seconds
-- Output is mostly filler words ("E aí", "Tchau", "Thank you")
+- Same phrase repeating every 30 seconds ("E aí", "Tchau", "Thank you")
+- Output is mostly filler words
 - Transcript length is suspiciously short for a long recording
 - Timestamps are evenly spaced (30s, 60s, 90s...) instead of natural speech patterns
 
-### Fallback Order for Troubleshooting
+### If Transcription Fails
 
-1. **Try mlx-whisper first** (fastest on Apple Silicon)
-2. **If hallucinating → faster-whisper + VAD** (most reliable)
-3. **If still failing → check audio file** with `ffprobe -v error -show_format audio.mp4`
+1. **Check audio file**: `ffprobe -v error -show_format audio.mp4`
+2. **Try smaller model**: Use `small` or `medium` instead of `large-v3`
+3. **Check disk space**: Large models need ~3GB of space
 
 ## Installation Requirements
 
-**For Apple Silicon Mac (recommended - uvx):**
+**Required: faster-whisper (all platforms):**
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# Then restart terminal
+pip install faster-whisper
 ```
 
-**Alternative: pip install mlx-whisper:**
+**Optional: mlx-whisper (Apple Silicon only, for fast mode):**
 ```bash
 pip install mlx-whisper
-```
-
-**For other platforms:**
-```bash
+# Or use uvx:
 curl -LsSf https://astral.sh/uv/install.sh | sh
-# Then restart terminal
 ```
 
 **For video file support (all platforms):**
@@ -467,16 +387,14 @@ Place output in same directory as input file.
 
 ## Backend Comparison
 
-| Backend | Platform | Speed | Stability | Notes |
-|---------|----------|-------|-----------|-------|
-| `uvx --from mlx-whisper mlx_whisper` | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ✅ Excellent | Native Metal, fastest option |
-| `mlx_whisper` (pip) | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ✅ Excellent | Native Metal acceleration |
-| `uvx insanely-fast-whisper` | Any (with GPU) | ⚡⚡⚡ | ⚠️ May crash on long files | Uses HuggingFace transformers |
-| `faster-whisper` | Any | ⚡⚡ | ✅ Good | CTranslate2 backend |
-| **`faster-whisper` + VAD** | Any | ⚡⚡ | ⭐ Best for problematic audio | **Use when other backends hallucinate** |
+| Backend | Platform | Speed | Reliability | Notes |
+|---------|----------|-------|-------------|-------|
+| **`faster-whisper` + VAD** | Any | ⚡⚡ | ⭐⭐⭐ BEST | **DEFAULT - Prevents hallucinations** |
+| `mlx-whisper` | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ⚠️ May hallucinate | Fast but no VAD support |
+| `insanely-fast-whisper` | Any (with GPU) | ⚡⚡⚡ | ⚠️ May crash | Uses HuggingFace transformers |
 
 ### Recommended Approach
 
-1. **First try**: `uvx --from mlx-whisper mlx_whisper` (fastest on Apple Silicon)
-2. **If hallucinating**: `faster-whisper` with `vad_filter=True`
+1. **Default**: `faster-whisper` with `vad_filter=True` (most reliable, prevents hallucinations)
+2. **Fast mode**: `mlx-whisper` (only if you're sure the audio won't cause hallucinations)
 3. **For speaker diarization**: Use `/meeting:diarize` instead
