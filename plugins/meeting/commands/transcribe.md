@@ -251,6 +251,73 @@ uvx insanely-fast-whisper \
 - NVIDIA GPU: `--device-id 0` (CUDA)
 - CPU: `--device-id -1`
 
+### Step 5.5: Hallucination Detection & VAD Fallback
+
+After running the primary transcription, **check the output for hallucinations**:
+
+```python
+# Quick hallucination check
+def detect_hallucination(output_file):
+    """Detect if Whisper produced hallucinated output."""
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    # Known hallucination patterns
+    hallucination_markers = [
+        'E aí', 'Tchau', 'Thank you', 'Thanks for watching',
+        'Obrigado', 'Legendas', 'Subtítulos'
+    ]
+
+    # Count occurrences
+    for marker in hallucination_markers:
+        count = content.lower().count(marker.lower())
+        if count > 10:  # Repeated more than 10 times = likely hallucination
+            return True, marker
+
+    return False, None
+```
+
+**If hallucination detected, automatically fall back to faster-whisper with VAD:**
+
+```python
+from faster_whisper import WhisperModel
+import json
+
+print("⚠️ Hallucination detected! Retrying with VAD filter...")
+
+model = WhisperModel("large-v3", device="cpu", compute_type="int8")
+segments, info = model.transcribe(
+    transcribe_file,
+    language=language,  # Use detected or specified language
+    beam_size=5,
+    vad_filter=True,
+    vad_parameters=dict(
+        min_silence_duration_ms=500,
+        speech_pad_ms=400,
+    )
+)
+
+# Collect all segments
+all_segments = []
+full_text = []
+for segment in segments:
+    all_segments.append({
+        "start": segment.start,
+        "end": segment.end,
+        "text": segment.text
+    })
+    full_text.append(segment.text)
+
+# Save outputs
+with open(output_json, "w", encoding="utf-8") as f:
+    json.dump({"language": info.language, "segments": all_segments}, f, ensure_ascii=False, indent=2)
+
+with open(output_txt, "w", encoding="utf-8") as f:
+    f.write(" ".join(full_text))
+
+print(f"✅ VAD transcription complete: {len(all_segments)} segments")
+```
+
 ### Step 6: Cleanup & Report
 
 ```bash
@@ -300,6 +367,71 @@ When `--all` flag is used or for any missing values after prompts:
 | File not found | Ask user to verify path |
 | Out of memory | Suggest smaller model (small or tiny) |
 | MLX error | Try with smaller batch or different model |
+| **Hallucination (repeating "E aí", "Tchau", etc.)** | Use faster-whisper with VAD filter (see Troubleshooting section) |
+
+## Troubleshooting: Whisper Hallucinations
+
+### The Problem
+Whisper models (including mlx-whisper) can hallucinate on long audio files, producing repetitive filler text like:
+- "E aí" (Portuguese)
+- "Tchau" (Portuguese)
+- "Thank you" (English)
+- "..." or silence markers
+
+This happens when the model can't properly detect speech boundaries.
+
+### The Solution: VAD Filter with faster-whisper
+
+When mlx-whisper produces hallucinations, **fall back to faster-whisper with VAD enabled**:
+
+```bash
+# Install faster-whisper if needed
+pip install faster-whisper
+```
+
+```python
+from faster_whisper import WhisperModel
+
+print("Loading model with VAD filter...")
+model = WhisperModel("large-v3", device="cpu", compute_type="int8")
+
+print("Transcribing with VAD enabled...")
+segments, info = model.transcribe(
+    "audio.mp4",
+    language="pt",  # or your language
+    beam_size=5,
+    vad_filter=True,  # ← CRITICAL: Enables Voice Activity Detection
+    vad_parameters=dict(
+        min_silence_duration_ms=500,
+        speech_pad_ms=400,
+    )
+)
+
+# Collect results
+for segment in segments:
+    print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
+```
+
+### Why VAD Fixes Hallucinations
+
+**VAD (Voice Activity Detection)** helps Whisper by:
+1. Pre-filtering audio to identify actual speech regions
+2. Skipping silence and noise that confuses the model
+3. Providing clear speech boundaries for transcription
+
+### Detection: How to Know If You Have Hallucinations
+
+Signs of hallucination:
+- Same phrase repeating every 30 seconds
+- Output is mostly filler words ("E aí", "Tchau", "Thank you")
+- Transcript length is suspiciously short for a long recording
+- Timestamps are evenly spaced (30s, 60s, 90s...) instead of natural speech patterns
+
+### Fallback Order for Troubleshooting
+
+1. **Try mlx-whisper first** (fastest on Apple Silicon)
+2. **If hallucinating → faster-whisper + VAD** (most reliable)
+3. **If still failing → check audio file** with `ffprobe -v error -show_format audio.mp4`
 
 ## Installation Requirements
 
@@ -341,3 +473,10 @@ Place output in same directory as input file.
 | `mlx_whisper` (pip) | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ✅ Excellent | Native Metal acceleration |
 | `uvx insanely-fast-whisper` | Any (with GPU) | ⚡⚡⚡ | ⚠️ May crash on long files | Uses HuggingFace transformers |
 | `faster-whisper` | Any | ⚡⚡ | ✅ Good | CTranslate2 backend |
+| **`faster-whisper` + VAD** | Any | ⚡⚡ | ⭐ Best for problematic audio | **Use when other backends hallucinate** |
+
+### Recommended Approach
+
+1. **First try**: `uvx mlx-whisper` (fastest on Apple Silicon)
+2. **If hallucinating**: `faster-whisper` with `vad_filter=True`
+3. **For speaker diarization**: Use `/meeting:diarize` instead
