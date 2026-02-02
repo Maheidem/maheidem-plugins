@@ -32,7 +32,7 @@
     {
       "name": "meeting",
       "description": "Self-contained meeting transcription and summarization using Whisper AI. Interactive guided mode, multiple output formats, speaker diarization, and AI-powered summaries.",
-      "version": "1.2.0",
+      "version": "1.3.1",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
