@@ -9,13 +9,11 @@ You are executing the `/meeting:transcribe` command to transcribe audio or video
 
 ## Your Mission
 
-Help the user transcribe a meeting recording using the most reliable Whisper backend:
-- **Default (All platforms)**: Use `faster-whisper` with **VAD enabled** - MOST RELIABLE, prevents hallucinations
-- **Fast mode (Apple Silicon)**: Use `uvx --from mlx-whisper mlx_whisper` - faster but may hallucinate on long files
+Help the user transcribe a meeting recording using the best backend for their platform:
+- **Apple Silicon Mac**: Use **Silero VAD + mlx-whisper** - FAST (GPU) + RELIABLE (VAD prevents hallucinations)
+- **Other platforms**: Use `faster-whisper` with VAD enabled
 
-**IMPORTANT**: Always use VAD (Voice Activity Detection) by default to prevent hallucinations on long recordings.
-
-Use **interactive guided mode** to collect missing parameters.
+**IMPORTANT**: Always use VAD (Voice Activity Detection) to prevent hallucinations on long recordings.
 
 ## Execution Flow
 
@@ -33,33 +31,14 @@ Check what the user provided:
 
 If `--all` flag is NOT set, use `AskUserQuestion` for each missing parameter:
 
-**File Selection** (if FILE not provided):
-```
-Question: "Which file do you want to transcribe?"
-Options:
-- Search current directory for audio/video files
-- Let me paste a path
-- Browse recent files
-```
-
 **Model Selection** (if --model not provided):
 ```
 Question: "Which model quality do you want?"
 Options:
-- large-v3 (Recommended) - Highest fidelity, slowest
-- turbo - Fast + quality balance
+- large-v3-turbo (Recommended) - Best speed/quality balance for MLX
+- large-v3 - Highest quality, slower
 - small - Quick processing
 - tiny - Fastest, lower quality
-```
-
-**Format Selection** (if --format not provided):
-```
-Question: "What output format?"
-Options:
-- txt (Recommended) - Plain text transcript
-- srt - SubRip subtitles with timestamps
-- vtt - WebVTT subtitles
-- json - Full data with segments
 ```
 
 **Language Selection** (if --language not provided):
@@ -68,196 +47,210 @@ Question: "What language is the audio?"
 Options:
 - Auto-detect (Recommended)
 - English
-- Spanish
 - Portuguese
+- Spanish
 - French
 ```
 
-### Step 3: Detect Platform & Check faster-whisper
-
-**faster-whisper with VAD is the default** because it prevents hallucinations on long recordings.
+### Step 3: Detect Platform & Backend
 
 ```bash
-# Check if faster-whisper is available
-echo "=== Backend Detection ==="
+echo "=== Platform Detection ==="
 PLATFORM=$(uname -s)
 ARCH=$(uname -m)
 echo "Platform: $PLATFORM $ARCH"
 
-# Check for faster-whisper (default, most reliable)
-if python3 -c "from faster_whisper import WhisperModel" 2>/dev/null; then
-    echo "Backend: faster-whisper + VAD (RECOMMENDED) ✅"
+if [[ "$PLATFORM" == "Darwin" && "$ARCH" == "arm64" ]]; then
+    echo "Apple Silicon detected - using Silero VAD + MLX (fastest + reliable)"
+    USE_BACKEND="mlx-vad"
+else
+    echo "Using faster-whisper + VAD"
     USE_BACKEND="faster-whisper"
-else
-    echo "⚠️ faster-whisper not installed"
-    echo "Install with: pip install faster-whisper"
-
-    # Fallback to mlx-whisper on Apple Silicon
-    if [[ "$PLATFORM" == "Darwin" && "$ARCH" == "arm64" ]]; then
-        if command -v uvx &>/dev/null; then
-            echo "Fallback: mlx-whisper (may hallucinate on long files)"
-            USE_BACKEND="mlx-uvx"
-        fi
-    fi
 fi
-
-echo "USE_BACKEND=$USE_BACKEND"
 ```
 
-### Step 3.5: Check for Embedded Subtitles (Video Files Only)
+### Step 4: Convert to WAV (if needed)
 
-If the input file is a video, check for existing subtitle tracks before transcribing:
+Always convert to 16kHz mono WAV for optimal VAD and Whisper performance:
 
 ```bash
 FILE="USER_FILE"
 EXT="${FILE##*.}"
+WAV_FILE="${FILE%.*}.wav"
 
-# Check if video file
-if [[ "$EXT" =~ ^(mp4|mkv|webm|mov|avi|m4v)$ ]]; then
-    echo "Checking for embedded subtitles..."
-
-    SUBTITLE_TRACKS=$(ffprobe -v error -select_streams s -show_entries stream=index:stream_tags=language -of csv=p=0 "$FILE" 2>/dev/null)
-
-    if [ -n "$SUBTITLE_TRACKS" ]; then
-        echo "Found subtitle tracks:"
-        echo "$SUBTITLE_TRACKS"
-
-        # Count tracks
-        TRACK_COUNT=$(echo "$SUBTITLE_TRACKS" | wc -l | tr -d ' ')
-        echo "Total tracks: $TRACK_COUNT"
-
-        # Flag for later
-        HAS_SUBTITLES=true
-    else
-        echo "No embedded subtitles found"
-        HAS_SUBTITLES=false
-    fi
-fi
-```
-
-**If subtitles found, use `AskUserQuestion`:**
-```
-Question: "This video has embedded subtitles. What would you like to do?"
-Options:
-- Use existing subtitles (Recommended) - Fast, already synced
-- Transcribe anyway - Get a fresh AI transcription
-- Extract all subtitle tracks - Get all available languages
-```
-
-**If user chooses to extract:**
-```bash
-# Extract first subtitle track
-OUTPUT_SUB="${FILE%.*}.srt"
-ffmpeg -i "$FILE" -map 0:s:0 "$OUTPUT_SUB" -y 2>/dev/null
-
-if [ -f "$OUTPUT_SUB" ]; then
-    echo "✅ Extracted subtitles: $OUTPUT_SUB"
-fi
-```
-
-**If user chooses to extract ALL tracks:**
-```bash
-# Extract all subtitle tracks with language suffix
-ffprobe -v error -select_streams s -show_entries stream=index:stream_tags=language -of csv=p=0 "$FILE" 2>/dev/null | while IFS=',' read -r idx lang; do
-    lang=${lang:-"track$idx"}
-    OUTPUT_SUB="${FILE%.*}.${lang}.srt"
-    ffmpeg -i "$FILE" -map "0:s:$idx" "$OUTPUT_SUB" -y 2>/dev/null
-    echo "Extracted: $OUTPUT_SUB"
-done
-```
-
-### Step 4: Extract Audio (if video file)
-
-If the input file is a video (mp4, mkv, webm, mov, avi), extract audio first:
-
-```bash
-FILE="USER_FILE"
-EXT="${FILE##*.}"
-
-# Check if video file (needs audio extraction)
-if [[ "$EXT" =~ ^(mp4|mkv|webm|mov|avi|m4v)$ ]]; then
-    echo "Video file detected - extracting audio..."
-    AUDIO_FILE="${FILE%.*}.wav"
-
-    # Extract audio with ffmpeg (16kHz mono WAV for Whisper)
-    ffmpeg -i "$FILE" -vn -acodec pcm_s16le -ar 16000 -ac 1 "$AUDIO_FILE" -y
-
-    if [ $? -eq 0 ]; then
-        echo "Audio extracted: $AUDIO_FILE"
-        TRANSCRIBE_FILE="$AUDIO_FILE"
-        CLEANUP_AUDIO=true
-    else
-        echo "ERROR: Failed to extract audio. Is ffmpeg installed?"
-        exit 1
-    fi
-else
-    TRANSCRIBE_FILE="$FILE"
-    CLEANUP_AUDIO=false
+# Convert to 16kHz mono WAV
+if [[ ! -f "$WAV_FILE" ]] || [[ "$FILE" -nt "$WAV_FILE" ]]; then
+    echo "Converting to 16kHz mono WAV..."
+    ffmpeg -i "$FILE" -ar 16000 -ac 1 -y "$WAV_FILE" 2>/dev/null
 fi
 ```
 
 ### Step 5: Execute Transcription
 
-#### DEFAULT: faster-whisper with VAD (RECOMMENDED - prevents hallucinations)
+#### DEFAULT (Apple Silicon): Silero VAD + mlx-whisper
+
+This is the **recommended approach** - combines MLX's GPU speed with VAD's hallucination prevention.
 
 ```python
-from faster_whisper import WhisperModel
+"""
+Silero VAD + MLX-Whisper Transcription
+Tested on Apple Silicon (M1/M2/M3/M4)
+"""
+
+import numpy as np
+import torch
+import mlx_whisper
+import soundfile as sf
 import json
 import time
+import os
+from typing import List, Dict, Optional
 
-FILE = "USER_FILE"  # Replace with actual file path
-LANGUAGE = "LANG"   # Replace with language code or None for auto-detect
-MODEL = "MODEL"     # Replace with model name (large-v3, turbo, small, etc.)
-OUTPUT_DIR = "OUTPUT_DIR"  # Replace with output directory
+# ============================================================================
+# Configuration - Replace these values
+# ============================================================================
 
-print(f"🎙️ Transcribing with VAD filter (prevents hallucinations)...")
+FILE = "USER_FILE"           # Audio file path (WAV 16kHz recommended)
+LANGUAGE = "LANG"            # Language code (e.g., "pt", "en") or None
+MODEL = "mlx-community/whisper-large-v3-turbo"  # MLX model
+OUTPUT_DIR = "OUTPUT_DIR"    # Output directory
+
+# ============================================================================
+# Silero VAD Setup
+# ============================================================================
+
+def load_silero_vad():
+    """Load Silero VAD model (CPU-optimized, ~1.8MB)"""
+    torch.set_num_threads(1)
+    model, utils = torch.hub.load(
+        repo_or_dir='snakers4/silero-vad',
+        model='silero_vad',
+        force_reload=False
+    )
+    return model, utils
+
+def get_speech_segments(wav, vad_model, get_speech_timestamps, sampling_rate=16000):
+    """Detect speech segments using Silero VAD"""
+    speech_timestamps = get_speech_timestamps(
+        wav, vad_model,
+        threshold=0.5,
+        min_speech_duration_ms=500,  # Increased to reduce noise
+        min_silence_duration_ms=2000,
+        speech_pad_ms=400,
+        sampling_rate=sampling_rate,
+        return_seconds=False
+    )
+    return speech_timestamps
+
+MIN_SEGMENT_SECONDS = 15  # Filter segments shorter than this to avoid hallucinations
+
+def merge_segments(segments, max_gap_samples, max_segment_samples):
+    """Merge close segments, respecting 30s Whisper optimal window"""
+    if not segments:
+        return []
+
+    merged = []
+    current = segments[0].copy()
+
+    for seg in segments[1:]:
+        gap = seg['start'] - current['end']
+        combined = seg['end'] - current['start']
+
+        if gap <= max_gap_samples and combined <= max_segment_samples:
+            current['end'] = seg['end']
+        else:
+            merged.append(current)
+            current = seg.copy()
+
+    merged.append(current)
+    return merged
+
+# ============================================================================
+# Main Pipeline
+# ============================================================================
+
+print(f"🎙️ Transcribing with Silero VAD + MLX-Whisper")
 print(f"   Model: {MODEL}")
 print(f"   Language: {LANGUAGE or 'auto-detect'}")
 print(f"   VAD: enabled ✅")
 print()
 
 start_time = time.time()
+sampling_rate = 16000
 
-# Load model (CPU with int8 for stability, or cuda:0 for NVIDIA GPU)
-model = WhisperModel(MODEL, device="cpu", compute_type="int8")
+# Step 1: Load VAD
+print("Loading Silero VAD...")
+vad_model, utils = load_silero_vad()
+get_speech_timestamps, _, read_audio, _, _ = utils
 
-# Transcribe with VAD enabled - CRITICAL for preventing hallucinations
-segments, info = model.transcribe(
-    FILE,
-    language=LANGUAGE if LANGUAGE != "auto" else None,
-    beam_size=5,
-    vad_filter=True,  # ← ALWAYS ENABLED BY DEFAULT
-    vad_parameters=dict(
-        min_silence_duration_ms=500,
-        speech_pad_ms=400,
-    )
-)
+# Step 2: Read audio and detect speech
+print(f"Detecting speech in: {FILE}")
+wav = read_audio(FILE, sampling_rate=sampling_rate)
+segments = get_speech_segments(wav, vad_model, get_speech_timestamps, sampling_rate)
 
-# Collect all segments
+if not segments:
+    print("No speech detected!")
+    exit(1)
+
+total_duration = len(wav) / sampling_rate
+speech_duration = sum((s['end'] - s['start']) / sampling_rate for s in segments)
+print(f"Found {len(segments)} speech segments ({speech_duration:.1f}s speech / {total_duration:.1f}s total)")
+
+# Step 3: Merge close segments
+max_segment_samples = int(30 * sampling_rate)  # 30 seconds
+merge_gap_samples = int(3 * sampling_rate)      # 3 seconds
+merged = merge_segments(segments, merge_gap_samples, max_segment_samples)
+
+# Step 3.5: Filter short segments (prevents hallucinations on noise)
+min_samples = int(MIN_SEGMENT_SECONDS * sampling_rate)
+filtered = [s for s in merged if (s['end'] - s['start']) >= min_samples]
+print(f"Segments: {len(segments)} detected → {len(merged)} merged → {len(filtered)} kept (min {MIN_SEGMENT_SECONDS}s)")
+
+# Step 4: Transcribe each segment with MLX
+wav_np = wav.numpy() if hasattr(wav, 'numpy') else np.array(wav)
+all_text = []
 all_segments = []
-full_text = []
-for segment in segments:
-    all_segments.append({
-        "start": segment.start,
-        "end": segment.end,
-        "text": segment.text.strip()
-    })
-    full_text.append(segment.text.strip())
-    if len(all_segments) % 50 == 0:
-        print(f"   Processed {len(all_segments)} segments...")
 
-# Generate output file paths
-import os
+for i, seg in enumerate(filtered):
+    start_sample = seg['start']
+    end_sample = seg['end']
+    start_time_seg = start_sample / sampling_rate
+    end_time_seg = end_sample / sampling_rate
+
+    print(f"  [{i+1}/{len(filtered)}] {start_time_seg:.1f}s - {end_time_seg:.1f}s")
+
+    chunk = wav_np[start_sample:end_sample].astype(np.float32)
+
+    result = mlx_whisper.transcribe(
+        chunk,
+        path_or_hf_repo=MODEL,
+        language=LANGUAGE if LANGUAGE and LANGUAGE != "auto" else None,
+        condition_on_previous_text=False,  # CRITICAL: Prevents repetition loops
+        word_timestamps=True,
+        hallucination_silence_threshold=0.5,
+    )
+
+    text = result.get('text', '').strip()
+    if text:
+        all_text.append(text)
+        for s in result.get('segments', []):
+            s['start'] += start_time_seg
+            s['end'] += start_time_seg
+            all_segments.append(s)
+
+# Step 5: Save outputs
 base_name = os.path.splitext(os.path.basename(FILE))[0]
 output_txt = os.path.join(OUTPUT_DIR, f"{base_name}.txt")
 output_json = os.path.join(OUTPUT_DIR, f"{base_name}.json")
 
-# Save outputs
-with open(output_json, "w", encoding="utf-8") as f:
-    json.dump({"language": info.language, "segments": all_segments}, f, ensure_ascii=False, indent=2)
-
 with open(output_txt, "w", encoding="utf-8") as f:
-    f.write("\n".join(full_text))
+    f.write("\n".join(all_text))
+
+with open(output_json, "w", encoding="utf-8") as f:
+    json.dump({
+        "language": result.get('language', LANGUAGE),
+        "segments": all_segments
+    }, f, ensure_ascii=False, indent=2)
 
 elapsed = time.time() - start_time
 print()
@@ -267,51 +260,58 @@ print(f"   Time: {elapsed/60:.1f} minutes")
 print(f"   Output: {output_txt}")
 ```
 
-**Model options:**
-- `large-v3` - Highest quality (recommended for important meetings)
-- `turbo` - Good balance of speed and quality
-- `medium` - Faster, still good quality
-- `small` - Quick processing
-- `tiny` - Fastest, lower quality
+**MLX Model options:**
+- `mlx-community/whisper-large-v3-turbo` - Best speed/quality (recommended)
+- `mlx-community/whisper-large-v3-mlx` - Highest quality
+- `mlx-community/whisper-small-mlx` - Quick processing
+- `mlx-community/whisper-tiny-mlx` - Fastest
 
-#### FALLBACK: mlx-whisper (Apple Silicon only, faster but may hallucinate)
+#### FALLBACK (Non-Apple Silicon): faster-whisper + VAD
 
-Only use this if faster-whisper is not available or user explicitly requests fast mode:
+```python
+from faster_whisper import WhisperModel
+import json, time, os
 
-```bash
-uvx --from mlx-whisper mlx_whisper "$TRANSCRIBE_FILE" \
-    --model "mlx-community/whisper-large-v3-mlx" \
-    --language LANG \
-    --output-format txt \
-    --output-dir "$(dirname "$FILE")"
+FILE = "USER_FILE"
+LANGUAGE = "LANG"
+MODEL = "large-v3"
+OUTPUT_DIR = "OUTPUT_DIR"
+
+print(f"🎙️ Transcribing with faster-whisper + VAD")
+start_time = time.time()
+
+model = WhisperModel(MODEL, device="cpu", compute_type="int8")
+segments, info = model.transcribe(
+    FILE,
+    language=LANGUAGE if LANGUAGE != "auto" else None,
+    beam_size=5,
+    vad_filter=True,
+    vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=400)
+)
+
+all_segments = []
+full_text = []
+for seg in segments:
+    all_segments.append({"start": seg.start, "end": seg.end, "text": seg.text.strip()})
+    full_text.append(seg.text.strip())
+
+base_name = os.path.splitext(os.path.basename(FILE))[0]
+output_txt = os.path.join(OUTPUT_DIR, f"{base_name}.txt")
+
+with open(output_txt, "w", encoding="utf-8") as f:
+    f.write("\n".join(full_text))
+
+print(f"✅ Done in {(time.time()-start_time)/60:.1f} min: {output_txt}")
 ```
-
-⚠️ **Warning**: mlx-whisper does NOT have VAD and may hallucinate on long recordings (producing repetitive "E aí", "Tchau", "Thank you" etc.)
 
 ### Step 6: Cleanup & Report
-
-```bash
-# Remove temporary WAV if we extracted it
-if [ "$CLEANUP_AUDIO" = true ]; then
-    rm "$AUDIO_FILE"
-    echo "Cleaned up temporary audio file"
-fi
-
-# Report success
-echo ""
-echo "✅ Transcription complete!"
-echo "   Input: $FILE"
-echo "   Output: OUTPUT_FILE"
-echo "   Model: MODEL"
-echo "   Language: LANG"
-```
 
 After successful transcription, offer:
 ```
 Transcription complete!
 
 📁 File: meeting-recording.mp4
-🎯 Model: large-v3
+🎯 Model: whisper-large-v3-turbo
 ⏱️ Duration: 45:32
 📄 Output: meeting-recording.txt
 
@@ -322,79 +322,40 @@ Would you like me to:
 
 ## Default Values
 
-When `--all` flag is used or for any missing values after prompts:
-- Model: `large-v3`
+- Model: `large-v3-turbo` (MLX) or `large-v3` (faster-whisper)
 - Format: `txt`
-- Language: `auto` (omit --language flag for auto-detect)
-- Output: Same directory as input, same name with new extension
-
-## Error Handling
-
-| Error | Solution |
-|-------|----------|
-| `faster-whisper` not installed | `pip install faster-whisper` |
-| Video file, no ffmpeg | `brew install ffmpeg` or `apt install ffmpeg` |
-| File not found | Ask user to verify path |
-| Out of memory | Suggest smaller model (small or tiny) |
-| Slow on CPU | Normal for large-v3; use `turbo` or `small` for speed |
-
-## Why VAD is the Default
-
-**VAD (Voice Activity Detection)** prevents hallucinations by:
-1. Pre-filtering audio to identify actual speech regions
-2. Skipping silence and noise that confuses the model
-3. Providing clear speech boundaries for transcription
-
-### Signs of Hallucination (if you use mlx-whisper without VAD)
-
-- Same phrase repeating every 30 seconds ("E aí", "Tchau", "Thank you")
-- Output is mostly filler words
-- Transcript length is suspiciously short for a long recording
-- Timestamps are evenly spaced (30s, 60s, 90s...) instead of natural speech patterns
-
-### If Transcription Fails
-
-1. **Check audio file**: `ffprobe -v error -show_format audio.mp4`
-2. **Try smaller model**: Use `small` or `medium` instead of `large-v3`
-3. **Check disk space**: Large models need ~3GB of space
+- Language: `auto`
+- Output: Same directory as input
 
 ## Installation Requirements
 
-**Required: faster-whisper (all platforms):**
+**Apple Silicon Mac:**
+```bash
+pip install mlx-whisper torch soundfile numpy
+# Silero VAD auto-downloads via torch.hub
+```
+
+**Other platforms:**
 ```bash
 pip install faster-whisper
 ```
 
-**Optional: mlx-whisper (Apple Silicon only, for fast mode):**
-```bash
-pip install mlx-whisper
-# Or use uvx:
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-**For video file support (all platforms):**
+**All platforms:**
 ```bash
 brew install ffmpeg  # or: apt install ffmpeg
 ```
-
-## Output Naming Convention
-
-If no `--output` specified:
-- Input: `meeting-2024-01-15.mp4`
-- Output: `meeting-2024-01-15.txt` (or .srt, .vtt, .json)
-
-Place output in same directory as input file.
 
 ## Backend Comparison
 
 | Backend | Platform | Speed | Reliability | Notes |
 |---------|----------|-------|-------------|-------|
-| **`faster-whisper` + VAD** | Any | ⚡⚡ | ⭐⭐⭐ BEST | **DEFAULT - Prevents hallucinations** |
-| `mlx-whisper` | Mac (Apple Silicon) | ⚡⚡⚡⚡ | ⚠️ May hallucinate | Fast but no VAD support |
-| `insanely-fast-whisper` | Any (with GPU) | ⚡⚡⚡ | ⚠️ May crash | Uses HuggingFace transformers |
+| **Silero VAD + mlx-whisper** | Apple Silicon | ⚡⚡⚡⚡ | ⭐⭐⭐ BEST | **DEFAULT** - GPU speed + VAD reliability |
+| `faster-whisper` + VAD | Any | ⚡⚡ | ⭐⭐⭐ | CPU-only but reliable |
+| `mlx-whisper` alone | Apple Silicon | ⚡⚡⚡⚡ | ⚠️ May hallucinate | Fast but risky |
 
-### Recommended Approach
+## Why Silero VAD + MLX?
 
-1. **Default**: `faster-whisper` with `vad_filter=True` (most reliable, prevents hallucinations)
-2. **Fast mode**: `mlx-whisper` (only if you're sure the audio won't cause hallucinations)
-3. **For speaker diarization**: Use `/meeting:diarize` instead
+1. **GPU Speed**: MLX uses Metal GPU - 3-5x faster than CPU
+2. **VAD Prevents Hallucinations**: Silero detects speech regions, skips silence
+3. **Best of Both Worlds**: Fast AND reliable
+4. **Lightweight**: Silero VAD is only ~1.8MB, runs on CPU in <1ms per chunk
