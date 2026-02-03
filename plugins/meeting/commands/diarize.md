@@ -13,7 +13,31 @@ Help the user transcribe a meeting with speaker labels. This requires whisperx a
 
 ## Execution Flow
 
-### Step 1: Parse Arguments
+### Step 1: Initialize Settings
+
+Ensure settings file exists:
+
+```bash
+SETTINGS_FILE="$HOME/.claude/meeting.local.md"
+if [ ! -f "$SETTINGS_FILE" ]; then
+  mkdir -p "$HOME/.claude"
+  cat > "$SETTINGS_FILE" << 'EOF'
+---
+default_model: large-v3
+default_format: txt
+default_language: auto
+hf_token_set: false
+---
+
+# Meeting Plugin Settings
+
+Personal configuration for the meeting transcription plugin.
+EOF
+  echo "Created settings file: $SETTINGS_FILE"
+fi
+```
+
+### Step 2: Parse Arguments
 
 Check what the user provided:
 - `FILE` - Path to audio/video file
@@ -21,7 +45,7 @@ Check what the user provided:
 - `--model MODEL` - Whisper model to use
 - `--output PATH` - Custom output path
 
-### Step 2: Check Prerequisites
+### Step 3: Check Prerequisites
 
 **Check whisperx:**
 ```bash
@@ -38,7 +62,7 @@ Also check settings file:
 grep "hf_token_set: true" ~/.claude/meeting.local.md 2>/dev/null && echo "Token in settings: YES" || echo "Token in settings: NO"
 ```
 
-### Step 3: Handle Missing Prerequisites
+### Step 4: Handle Missing Prerequisites
 
 **If whisperx missing:**
 ```
@@ -82,7 +106,7 @@ Then set the token:
 Or I can save it to your settings file.
 ```
 
-### Step 4: Interactive Mode (for missing parameters)
+### Step 5: Interactive Mode (for missing parameters)
 
 **File Selection** (if FILE not provided):
 ```
@@ -102,7 +126,7 @@ Options:
 - Auto-detect (may be less accurate)
 ```
 
-### Step 5: Execute Diarization
+### Step 6: Execute Diarization
 
 Run whisperx with diarization:
 
@@ -144,7 +168,7 @@ curl -s http://localhost:8000/health 2>/dev/null && echo "Local transcriber: AVA
 
 If local transcriber is running, use its `/transcribe` endpoint with diarization enabled.
 
-### Step 6: Format Output
+### Step 7: Format Output
 
 Format transcription with speaker labels:
 
@@ -167,7 +191,7 @@ For SRT format with speakers:
 [SPEAKER_01] Thanks for having us. Should we start with the agenda?
 ```
 
-### Step 7: Report Results
+### Step 8: Report Results
 
 ```
 Diarization complete!

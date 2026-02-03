@@ -5,36 +5,47 @@ argument-hint: "[--set MODEL] [--download MODEL] [--info]"
 
 # Models Command
 
-You are executing the `/meeting:models` command to manage Whisper models.
-
-## Your Mission
-
 Help the user view, compare, or configure Whisper models for transcription.
 
-## Execution Flow
+## Step 1: Initialize Settings
 
-### Step 1: Parse Arguments
+Ensure settings file exists before any operation:
 
-Check what the user provided:
+```bash
+SETTINGS_FILE="$HOME/.claude/meeting.local.md"
+if [ ! -f "$SETTINGS_FILE" ]; then
+  mkdir -p "$HOME/.claude"
+  cat > "$SETTINGS_FILE" << 'EOF'
+---
+default_model: large-v3
+default_format: txt
+default_language: auto
+hf_token_set: false
+---
+
+# Meeting Plugin Settings
+
+Personal configuration for the meeting transcription plugin.
+EOF
+  echo "Created settings file: $SETTINGS_FILE"
+fi
+```
+
+## Step 2: Parse Arguments
+
 - `--set MODEL` - Set default model
 - `--download MODEL` - Pre-download a model
 - `--info` - Show detailed model info
 - (no args) - Interactive mode
 
-### Step 2: Interactive Mode (no arguments)
+## Step 3: Interactive Mode
 
 Use `AskUserQuestion`:
-```
-Question: "What would you like to do with models?"
-Options:
 - View models (Recommended) - See comparison table
 - Change default - Set your preferred model
 - Download model - Pre-download for faster first use
-```
 
-### Step 3: Display Model Comparison
-
-Show this table:
+## Step 4: Display Model Comparison
 
 ```
 Available Whisper Models
@@ -52,44 +63,34 @@ Available Whisper Models
 Current default: {default_model}
 ```
 
-### Step 4: Handle --set MODEL
+## Step 5: Handle --set MODEL
 
-If user wants to change default:
+1. Validate model name
+2. Update `~/.claude/meeting.local.md` YAML frontmatter
+3. Confirm the change
 
-1. Validate model name is valid
-2. Read current settings from `.claude/meeting.local.md`
-3. Update the `default_model` field
-4. Confirm the change
+## Step 6: Handle --download MODEL
 
-**Settings file location:** `~/.claude/meeting.local.md`
-
-**Settings format:**
-```yaml
----
-default_model: large-v3
-default_format: txt
-default_language: auto
-hf_token_set: false
----
-
-# Meeting Plugin Settings
-
-Personal settings for the meeting transcription plugin.
-```
-
-### Step 5: Handle --download MODEL
-
-Pre-download a model for faster first use:
+Pre-download models using the correct backend for the platform:
 
 ```bash
-# This command downloads the model without transcribing
-pipx run insanely-fast-whisper \
-  --model-name "openai/whisper-MODEL" \
-  --file-name /dev/null \
-  2>&1 | head -20
-```
+PLATFORM=$(uname -s)
+ARCH=$(uname -m)
 
-Note: First-time download may take several minutes depending on model size.
+if [[ "$PLATFORM" == "Darwin" && "$ARCH" == "arm64" ]]; then
+    # Apple Silicon: Use mlx-whisper
+    echo "Downloading MLX model for Apple Silicon..."
+    python3 -c "import mlx_whisper; mlx_whisper.transcribe('/dev/null', path_or_hf_repo='mlx-community/whisper-MODEL-mlx')" 2>&1 | head -20
+elif nvidia-smi &>/dev/null; then
+    # NVIDIA GPU: Use faster-whisper
+    echo "Downloading faster-whisper model for NVIDIA GPU..."
+    python3 -c "from faster_whisper import WhisperModel; WhisperModel('MODEL', device='cuda')"
+else
+    # CPU/Other: Use insanely-fast-whisper
+    echo "Downloading model via insanely-fast-whisper..."
+    pipx run insanely-fast-whisper --model-name "openai/whisper-MODEL" --file-name /dev/null 2>&1 | head -20
+fi
+```
 
 **Download sizes:**
 - tiny: ~75MB
@@ -99,19 +100,7 @@ Note: First-time download may take several minutes depending on model size.
 - large-v3: ~3GB
 - turbo: ~1.5GB
 
-### Step 6: Read/Write Settings
-
-**Read settings:**
-```bash
-cat ~/.claude/meeting.local.md 2>/dev/null || echo "No settings file found"
-```
-
-**Write settings:**
-Create or update `~/.claude/meeting.local.md` with YAML frontmatter.
-
 ## Model Recommendations
-
-Based on use case:
 
 | Use Case | Recommended Model |
 |----------|-------------------|
@@ -120,7 +109,7 @@ Based on use case:
 | Important recordings | large-v3 |
 | Non-English audio | large-v3 (best multilingual) |
 | Limited RAM (<8GB) | tiny or base |
-| Apple Silicon Mac | turbo (good MPS support) |
+| Apple Silicon Mac | turbo (good MLX support) |
 
 ## Error Handling
 
