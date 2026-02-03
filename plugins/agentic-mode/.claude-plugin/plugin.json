@@ -2,7 +2,16 @@
   "name": "agentic-mode",
   "version": "0.2.0",
   "description": "Force delegation to subagents by blocking direct tool use. Use when: (1) user wants 'agentic mode', (2) user wants to enforce agent workflow, (3) user asks to 'block direct writes', (4) user wants mandatory delegation",
-  "author": "maheidem",
-  "hooks": "hooks/hooks.json",
-  "skills": "skills/"
+  "author": {
+    "name": "maheidem",
+    "email": "maheidem@users.noreply.github.com"
+  },
+  "keywords": [
+    "agentic",
+    "delegation",
+    "workflow",
+    "subagents",
+    "hooks"
+  ],
+  "repository": "https://github.com/Maheidem/maheidem-plugins"
 }
