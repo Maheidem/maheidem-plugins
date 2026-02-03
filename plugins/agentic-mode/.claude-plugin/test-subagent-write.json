@@ -1,0 +1,11 @@
+{
+  "session_id": "test_session_001",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "/Users/maheidem/Documents/dev/test-project/README.md",
+    "content": "# Updated README"
+  },
+  "cwd": "/Users/maheidem/Documents/dev/test-project",
+  "transcript_path": "/Users/maheidem/.claude/sessions/session-123/subagents/agent-general-programmer.jsonl",
+  "tool_use_id": "toolu_01SUBAGENT123"
+}
