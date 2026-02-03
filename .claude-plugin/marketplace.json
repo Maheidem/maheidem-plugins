@@ -50,6 +50,17 @@
       },
       "source": "./plugins/plugin-forge",
       "category": "development"
+    },
+    {
+      "name": "agentic-mode",
+      "description": "Force delegation to specialized agents by blocking direct tool use (Edit, Write, Bash, NotebookEdit) in main session. Subagents have full access. Per-project config via .claude/agentic-mode.local.md.",
+      "version": "0.2.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/agentic-mode",
+      "category": "development"
     }
   ]
 }
