@@ -97,13 +97,16 @@ Skip prompts by providing arguments:
 /meeting:transcribe video.mp4 --model turbo  # Only asks for format
 ```
 
-## Backend Priority (Apple Silicon)
+## Backend Priority
 
-The plugin automatically selects the fastest available backend:
+The plugin automatically selects the best backend for your platform:
 
-1. **uvx mlx-whisper** ⚡⚡⚡⚡ - Native Metal acceleration (FASTEST)
-2. **mlx_whisper (pip)** ⚡⚡⚡⚡ - If pip-installed
-3. **uvx insanely-fast-whisper** ⚡⚡⚡ - MPS fallback
+| Priority | Platform | Backend | Speed | Notes |
+|----------|----------|---------|-------|-------|
+| 1 | Apple Silicon | mlx-whisper + Silero VAD | ⚡⚡⚡⚡ | MLX optimized, best reliability |
+| 2 | NVIDIA GPU | faster-whisper (CUDA) | ⚡⚡⚡ | GPU accelerated |
+| 3 | Other GPU | insanely-fast-whisper | ⚡⚡ | Generic GPU support |
+| 4 | CPU only | faster-whisper (CPU) | ⚡ | Universal fallback |
 
 ## Models
 
@@ -185,6 +188,25 @@ The plugin properly handles paths with spaces, parentheses, and special characte
 1. Ensure whisperx is installed: `pip install whisperx`
 2. Set HuggingFace token: `export HF_TOKEN="..."`
 3. Accept pyannote terms on HuggingFace
+
+### Long meeting transcription issues
+
+**Seeing repetitive phrases like "thank you for watching"?**
+This is a Whisper hallucination. The plugin has built-in anti-hallucination measures, but if you still see issues:
+1. Use `--model large-v3` or `--model turbo` (they hallucinate less)
+2. Check if audio has long silent sections (consider editing them out)
+3. Try re-running with the same settings (model variance)
+
+**Output seems to skip content?**
+The VAD (Voice Activity Detection) may have filtered legitimate speech:
+1. Speak closer to the microphone in future recordings
+2. Avoid long pauses between words
+3. Background noise can confuse VAD
+
+**Transcription of 2+ hour meetings?**
+- Works fine! The plugin processes in chunks
+- Use `turbo` model for best speed/quality balance
+- Expect ~10-15 min processing time on Apple Silicon
 
 ## Check Dependencies
 

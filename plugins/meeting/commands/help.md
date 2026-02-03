@@ -103,11 +103,12 @@ BACKEND AUTO-DETECTION
 
 The plugin automatically selects the best backend:
 
-| Platform        | Backend             | Speed | Stability |
-|-----------------|---------------------|-------|-----------|
-| Apple Silicon   | mlx_whisper         | ⚡⚡⚡  | Excellent |
-| NVIDIA GPU      | insanely-fast-whisper| ⚡⚡   | Good      |
-| CPU             | insanely-fast-whisper| ⚡    | Good      |
+| Priority | Platform      | Backend                  | Speed | Stability |
+|----------|---------------|--------------------------|-------|-----------|
+| 1        | Apple Silicon | mlx-whisper + Silero VAD | ⚡⚡⚡⚡ | Excellent |
+| 2        | NVIDIA GPU    | faster-whisper (CUDA)    | ⚡⚡⚡  | Good      |
+| 3        | Other GPU     | insanely-fast-whisper    | ⚡⚡   | Good      |
+| 4        | CPU only      | faster-whisper (CPU)     | ⚡    | Good      |
 
 MODEL COMPARISON
 ----------------
@@ -128,8 +129,17 @@ TIPS
 • Use --all flag when you know exactly what you want
 • Apple Silicon Macs use MLX for native Metal acceleration
 • Video files are auto-converted (requires ffmpeg)
-• For long meetings (>1hr), use 'turbo' or 'small' model
 • Action items summary is great for follow-up emails
+
+LONG MEETING TIPS (1+ hours)
+----------------------------
+
+• Use 'turbo' or 'large-v3' models - they hallucinate less
+• Anti-hallucination filters are built-in (no extra config needed)
+• The plugin uses optimized VAD parameters for conversational speech
+• Signs of hallucination: "thank you for watching", same phrase repeating
+• If you see repetitive output, try --model large-v3 for best results
+• Spot-check: listen to flagged sections if output seems wrong
 
 TROUBLESHOOTING
 ---------------
