@@ -41,6 +41,19 @@ KNOWN_HALLUCINATIONS = [
     "sous-titrage",
     "amara.org",
 ]
+
+# Portuguese-specific hallucinations (added 2026-02)
+# These appear commonly in PT-BR transcriptions with bad audio
+PORTUGUESE_HALLUCINATIONS_REGEX = [
+    r'Legenda\s+\w+\s+\w+',      # Subtitle watermark pattern: "Legenda Adriana Zanotto"
+    r'(E aí\s*){3,}',            # Repeated "E aí" filler
+    r'(rem\s*){5,}',             # Gibberish "rem rem rem" loops
+    r'(vai ser uma \w+\s*){2,}', # Repeated phrase loops
+    r'Obrigado\.\s*$',           # Isolated "Obrigado." at end
+    r'Um beijinho\.',            # Random closing phrase
+    r'(Tá\.\s*){3,}',            # Repeated "Tá." filler
+    r'(Entendeu\?\s*){3,}',      # Repeated "Entendeu?" filler
+]
 ```
 
 ## N-gram Repetition Detection
@@ -109,16 +122,18 @@ def remove_repeated_sentences(text: str) -> str:
 ## Full Post-Processing Pipeline
 
 ```python
-def clean_transcription(segments: list) -> list:
+def clean_transcription(segments: list, language: str = "en") -> list:
     """
     Apply all hallucination filters to transcription segments.
 
     Args:
         segments: List of dicts with 'text', 'start', 'end' keys
+        language: Language code (e.g., "pt", "en") for language-specific filters
 
     Returns:
         Cleaned segment list
     """
+    import re
     cleaned = []
 
     for seg in segments:
@@ -135,12 +150,24 @@ def clean_transcription(segments: list) -> list:
             if len(text) < 50:
                 continue
 
+        # Apply Portuguese-specific regex filters (2026-02 update)
+        if language == "pt":
+            for pattern in PORTUGUESE_HALLUCINATIONS_REGEX:
+                text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+            text = text.strip()
+            if not text:
+                continue
+
         # Skip repetitive content
         if detect_repetition(text):
             continue
 
         # Clean duplicate sentences within segment
         text = remove_repeated_sentences(text)
+
+        # Clean up multiple spaces and newlines
+        text = re.sub(r'\s+', ' ', text).strip()
+        text = re.sub(r'\n{3,}', '\n\n', text)
 
         if text:
             cleaned.append({
