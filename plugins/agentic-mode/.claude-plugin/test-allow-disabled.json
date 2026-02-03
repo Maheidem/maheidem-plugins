@@ -1,0 +1,11 @@
+{
+  "session_id": "test_session_002",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls -la",
+    "description": "List files"
+  },
+  "cwd": "/Users/maheidem/Documents/dev/test-project-no-config",
+  "transcript_path": "/Users/maheidem/.claude/sessions/session-456.jsonl",
+  "tool_use_id": "toolu_01DEF456"
+}

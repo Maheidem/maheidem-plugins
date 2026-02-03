@@ -1,0 +1,17 @@
+{
+  "description": "Agentic mode hook - enforces delegation to subagents for write operations",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Bash|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/enforce-delegation.sh\"",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
