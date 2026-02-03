@@ -15,6 +15,21 @@ Replace these before running:
 - `LANGUAGE` - Language code (e.g., "pt", "en") or None for auto-detect
 - `MODEL` - MLX model path (see model options below)
 - `OUTPUT_DIR` - Directory for output files
+- `VAD_THRESHOLD` - Voice activity detection threshold (see below)
+- `NO_VAD` - Set to True to skip VAD entirely (for problematic audio)
+
+## VAD Threshold Selection (2026-02 Update)
+
+**Analyze audio volume first, then set threshold:**
+
+| Audio Quality | Mean Volume | VAD_THRESHOLD | MIN_SEGMENT_SECONDS |
+|---------------|-------------|---------------|---------------------|
+| Good (loud) | > -20 dB | 0.5 | 5 |
+| Moderate | -20 to -30 dB | 0.35 | 3 |
+| Poor (quiet) | < -30 dB | 0.25 | 2 |
+| Skip VAD | Any | N/A | N/A |
+
+**Lesson learned (2026-02):** Even with threshold 0.25, VAD may miss speech in very quiet recordings. If user says "talking most of the time" but VAD captures <60%, offer `--no-vad` option.
 
 ## MLX Model Options
 
@@ -65,25 +80,29 @@ def load_silero_vad():
     )
     return model, utils
 
-def get_speech_segments(wav, vad_model, get_speech_timestamps, sampling_rate=16000):
+def get_speech_segments(wav, vad_model, get_speech_timestamps, sampling_rate=16000, vad_threshold=0.5):
     """Detect speech segments using Silero VAD
 
-    Parameters optimized for long meetings (based on 2026 research):
-    - min_silence_duration_ms=500: Better for conversational speech (was 2000)
-    - speech_pad_ms=200: Tighter segments reduce noise (was 400)
+    Parameters optimized for long meetings (based on 2026-02 research):
+    - threshold: Adapt based on audio quality (0.25-0.5)
+    - min_silence_duration_ms=500: Better for conversational speech
+    - speech_pad_ms=300: Balance between tight and capturing full words
+
+    2026-02 Update: Added vad_threshold parameter for adaptive detection
     """
     speech_timestamps = get_speech_timestamps(
         wav, vad_model,
-        threshold=0.5,
-        min_speech_duration_ms=500,  # Increased to reduce noise
-        min_silence_duration_ms=500,  # Reduced from 2000 - better for conversation
-        speech_pad_ms=200,            # Reduced from 400 - tighter segments
+        threshold=vad_threshold,       # ADAPTIVE: Set based on audio analysis
+        min_speech_duration_ms=300,    # Lowered to catch short responses
+        min_silence_duration_ms=500,   # Keep short for conversation
+        speech_pad_ms=300,             # Balanced padding
         sampling_rate=sampling_rate,
         return_seconds=False
     )
     return speech_timestamps
 
-MIN_SEGMENT_SECONDS = 5  # Reduced from 15 - was too aggressive for real speech
+# 2026-02 Update: Made configurable based on audio quality
+MIN_SEGMENT_SECONDS = 3  # Default; can be lowered for quiet audio
 
 def merge_segments(segments, max_gap_samples, max_segment_samples):
     """Merge close segments, respecting 30s Whisper optimal window"""
