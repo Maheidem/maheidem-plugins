@@ -37,6 +37,117 @@ check_injection() {
     done
 }
 
+# ============================================================================
+# PERSONA LOADING (Configurable Personas with Precedence)
+# ============================================================================
+# Precedence: project > user > default > fallback
+#   1. ${CWD}/.claude/council-personas/${tool}.persona.md  (project-local)
+#   2. ${HOME}/.claude/council-personas/${tool}.persona.md (user-wide)
+#   3. ${CLAUDE_PLUGIN_ROOT}/personas/${tool}.persona.md   (default)
+#   4. Generic fallback (hardcoded safety net)
+# ============================================================================
+
+# Validate persona file for safety
+validate_persona_file() {
+    local file="$1"
+
+    # Check file exists and is readable
+    if [[ ! -f "$file" ]] || [[ ! -r "$file" ]]; then
+        return 1
+    fi
+
+    # Check for forbidden flags in persona content
+    for flag in "${FORBIDDEN_FLAGS[@]}"; do
+        if grep -qF "$flag" "$file" 2>/dev/null; then
+            echo "ERROR: Forbidden flag in persona file: $flag" >&2
+            return 1
+        fi
+    done
+
+    # Check file size (max 10KB to prevent abuse)
+    local size
+    size=$(wc -c < "$file" 2>/dev/null || echo "0")
+    if [[ "$size" -gt 10240 ]]; then
+        echo "ERROR: Persona file too large (max 10KB): $file" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# Parse YAML frontmatter from persona file
+parse_persona_frontmatter() {
+    local file="$1"
+    local key="$2"
+
+    # Extract value between --- markers
+    sed -n '/^---$/,/^---$/p' "$file" | grep "^${key}:" | sed "s/^${key}:[[:space:]]*//" | sed 's/^"//' | sed 's/"$//'
+}
+
+# Parse response_guidelines array from persona file
+parse_response_guidelines() {
+    local file="$1"
+
+    # Extract lines between response_guidelines: and next top-level key (or ---)
+    sed -n '/^---$/,/^---$/p' "$file" | \
+        sed -n '/^response_guidelines:/,/^[a-z_]*:/p' | \
+        grep '^[[:space:]]*-' | \
+        sed 's/^[[:space:]]*-[[:space:]]*/- /' | \
+        sed 's/^"//' | sed 's/"$//'
+}
+
+# Load persona from file with precedence
+# Sets: PERSONA_ROLE, PERSONA_CONTEXT, PERSONA_GUIDELINES, PERSONA_SCOPE
+load_persona() {
+    local tool="$1"
+    local cwd="$2"
+    local plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
+
+    # Determine paths with precedence
+    local project_persona="${cwd}/.claude/council-personas/${tool}.persona.md"
+    local user_persona="${HOME}/.claude/council-personas/${tool}.persona.md"
+    local default_persona="${plugin_root}/personas/${tool}.persona.md"
+
+    local persona_file=""
+    PERSONA_SCOPE="fallback"
+
+    # Check precedence: project > user > default
+    if [[ -f "$project_persona" ]] && validate_persona_file "$project_persona"; then
+        persona_file="$project_persona"
+        PERSONA_SCOPE="project"
+    elif [[ -f "$user_persona" ]] && validate_persona_file "$user_persona"; then
+        persona_file="$user_persona"
+        PERSONA_SCOPE="user"
+    elif [[ -n "$plugin_root" ]] && [[ -f "$default_persona" ]] && validate_persona_file "$default_persona"; then
+        persona_file="$default_persona"
+        PERSONA_SCOPE="default"
+    fi
+
+    if [[ -n "$persona_file" ]]; then
+        # Parse persona from file
+        local name role context
+        name=$(parse_persona_frontmatter "$persona_file" "name")
+        role=$(parse_persona_frontmatter "$persona_file" "role")
+        context=$(parse_persona_frontmatter "$persona_file" "context")
+
+        PERSONA_NAME="${name:-$tool}"
+        PERSONA_ROLE="${role:-AI Assistant}"
+        PERSONA_CONTEXT="${context:-You are an AI assistant participating in a multi-AI council consultation.}"
+        PERSONA_GUIDELINES=$(parse_response_guidelines "$persona_file")
+
+        return 0
+    else
+        # Fallback: generic persona (safety net)
+        PERSONA_NAME="$tool"
+        PERSONA_ROLE="AI Assistant"
+        PERSONA_CONTEXT="You are an AI assistant participating in a multi-AI council consultation."
+        PERSONA_GUIDELINES="- Provide thoughtful, well-reasoned responses
+- Consider multiple perspectives
+- Be specific and actionable"
+        return 1
+    fi
+}
+
 # Generate structured prompt based on tool and mode
 generate_structured_prompt() {
     local tool="$1"
@@ -44,66 +155,16 @@ generate_structured_prompt() {
     local mode="$3"
     local round="$4"
     local context="$5"
+    local cwd="$6"
 
-    # Base role definitions
-    case "$tool" in
-        codex)
-            ROLE_DEF="You are Codex, a PRACTICAL IMPLEMENTATION EXPERT, participating in a multi-AI council consultation.
+    # Load persona from file (with precedence logic)
+    load_persona "$tool" "$cwd"
 
-CONTEXT: Multiple AI tools are being queried in parallel. Your response will be synthesized with others. Your strength is turning ideas into working solutions."
-            RESPONSE_GUIDELINES="- Focus on practical, actionable implementation steps
-- Include code examples or patterns where relevant
-- Consider scalability, maintainability, and best practices
-- Bring your implementation expertise to the discussion"
-            ;;
+    # Build role definition from loaded persona
+    ROLE_DEF="You are ${PERSONA_NAME}, a ${PERSONA_ROLE}, participating in a multi-AI council consultation.
 
-        gemini)
-            ROLE_DEF="You are Gemini, a RESEARCH & DOCUMENTATION SPECIALIST, participating in a multi-AI council consultation.
-
-CONTEXT: Multiple AI tools are being queried in parallel. Your response will be synthesized with others. Your strength is deep research and thorough documentation."
-            RESPONSE_GUIDELINES="- Provide well-researched, evidence-based recommendations
-- Reference documentation, best practices, and standards
-- Consider both current state and emerging trends
-- Bring your research expertise to the discussion"
-            ;;
-
-        opencode)
-            ROLE_DEF="You are OpenCode, an ARCHITECTURE & PATTERNS ANALYST, participating in a multi-AI council consultation.
-
-CONTEXT: Multiple AI tools are being queried in parallel. Your response will be synthesized with others. Your strength is system design and architectural patterns."
-            RESPONSE_GUIDELINES="- Analyze from an architectural perspective
-- Consider design patterns and system structure
-- Evaluate trade-offs between different approaches
-- Bring your patterns expertise to the discussion"
-            ;;
-
-        aider)
-            ROLE_DEF="You are Aider, a practical AI focused on implementation details, participating in a multi-AI council consultation.
-
-CONTEXT: This is part of a collaborative analysis where multiple AI tools provide diverse perspectives. Your implementation expertise ensures realistic recommendations."
-            RESPONSE_GUIDELINES="- Focus on practical implementation steps
-- Consider resource requirements and constraints
-- Address deployment and operational concerns
-- Provide specific, executable guidance"
-            ;;
-
-        agent)
-            ROLE_DEF="You are Agent, a USER EXPERIENCE & WORKFLOW ADVOCATE, participating in a multi-AI council consultation.
-
-CONTEXT: Multiple AI tools are being queried in parallel. Your response will be synthesized with others. Your strength is user-centric thinking and workflow optimization."
-            RESPONSE_GUIDELINES="- Consider the end-user experience and workflow
-- Focus on usability and developer experience
-- Address practical day-to-day usage concerns
-- Bring your UX expertise to the discussion"
-            ;;
-
-        *)
-            ROLE_DEF="You are an AI assistant participating in a multi-AI council consultation."
-            RESPONSE_GUIDELINES="- Provide thoughtful, well-reasoned responses
-- Consider multiple perspectives
-- Be specific and actionable"
-            ;;
-    esac
+CONTEXT: ${PERSONA_CONTEXT}"
+    RESPONSE_GUIDELINES="${PERSONA_GUIDELINES}"
 
     # Mode-specific additions
     case "$mode" in
@@ -176,8 +237,8 @@ fi
 # Safety check on raw prompt
 check_injection "$RAW_PROMPT"
 
-# Generate structured prompt
-PROMPT=$(generate_structured_prompt "$TOOL" "$RAW_PROMPT" "$MODE" "$ROUND" "$CONTEXT")
+# Generate structured prompt (includes persona loading with CWD for precedence)
+PROMPT=$(generate_structured_prompt "$TOOL" "$RAW_PROMPT" "$MODE" "$ROUND" "$CONTEXT" "$CWD")
 
 # ============================================================================
 # TOOL INVOCATION (READ-ONLY ONLY)
