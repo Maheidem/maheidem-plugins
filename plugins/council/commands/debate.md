@@ -1,6 +1,6 @@
 ---
 description: "Query multiple AI CLI tools in parallel and synthesize their responses"
-argument-hint: "[--thorough] [--tools=tool1,tool2] <question>"
+argument-hint: "[--thorough] [--tools=tool1,tool2] [--bash-tools=gh,git] [--no-bash-tools] <question>"
 ---
 
 # Council Debate Command
@@ -24,13 +24,23 @@ fi
 
 Parse the command arguments:
 - `--thorough`: Enable multi-round debate mode
-- `--tools=codex,gemini`: Override which tools to query
+- `--tools=codex,gemini`: Override which AI tools to query
+- `--bash-tools=gh,git`: Enable specific bash tools for CLI agents (from allowlist)
+- `--no-bash-tools`: Explicitly disable all bash tool access for CLI agents
 - Everything else: The question to ask
+
+**Bash Tools Notes:**
+- Only tools listed in `bash_tools.allowlist` config can be enabled
+- Without `--bash-tools` or `--no-bash-tools`, no bash tools are enabled (safe default)
+- CLI agents can use enabled tools to gather real data for their analysis
 
 **Examples:**
 - `/council What's the best testing framework for Node.js?`
 - `/council --thorough Should I use TypeScript or JavaScript?`
 - `/council --tools=codex,gemini How do I optimize this query?`
+- `/council --bash-tools=gh "List the open PRs in this repo and suggest priorities"`
+- `/council --bash-tools=gh,git "Analyze our git history and suggest workflow improvements"`
+- `/council --no-bash-tools "What's the best architecture for this?"` (explicit no tools)
 
 ## Step 2: Load Configuration
 
@@ -38,8 +48,26 @@ Read `~/.claude/council.local.md` and extract:
 - `enabled_tools` with status and command templates
 - `default_mode` (unless `--thorough` overrides)
 - `display` preferences
+- `bash_tools.allowlist` for validating --bash-tools argument
+- `bash_tools.blocked_commands` for safety enforcement
+- `bash_tools.default_timeout` for bash operations
 
-If `--tools` specified, filter to only those tools.
+If `--tools` specified, filter to only those AI tools.
+
+### Validate Bash Tools
+
+If `--bash-tools` specified:
+1. Parse comma-separated list of requested bash tools
+2. Check each against `bash_tools.allowlist` in config
+3. Reject any tool not in the allowlist with error message
+4. Reject any tool in `bash_tools.blocked_commands` (safety net)
+5. Set `ENABLED_BASH_TOOLS` to validated comma-separated list
+
+If `--no-bash-tools` specified:
+- Set `ENABLED_BASH_TOOLS` to empty string
+
+If neither specified:
+- Set `ENABLED_BASH_TOOLS` to empty string (safe default)
 
 ## Step 3: Validate Tools
 
@@ -62,7 +90,9 @@ Task(
   prompt: "Execute council debate:
     QUESTION: {parsed question}
     MODE: {quick|thorough based on args or config default}
-    ENABLED_TOOLS: {comma-separated list of validated tools}
+    ENABLED_TOOLS: {comma-separated list of validated AI tools}
+    ENABLED_BASH_TOOLS: {comma-separated list of validated bash tools, or empty}
+    BASH_TIMEOUT: {bash_tools.default_timeout from config, default 30}
     PLUGIN_ROOT: ${CLAUDE_PLUGIN_ROOT}
     CONFIG_PATH: ~/.claude/council.local.md"
 )
@@ -70,9 +100,10 @@ Task(
 
 The orchestrator will:
 1. Launch parallel Task agents for each CLI tool
-2. Maintain context across all debate rounds
-3. Check for convergence (thorough mode)
-4. Return the synthesized result with consensus analysis
+2. Pass enabled bash tools to invoke-cli.sh for each agent
+3. Maintain context across all debate rounds
+4. Check for convergence (thorough mode)
+5. Return the synthesized result with consensus analysis
 
 ## Step 5: Display Results
 
@@ -124,6 +155,29 @@ Potential injection detected in prompt.
 The query contained forbidden flags that could bypass safety.
 
 Council query aborted for security.
+```
+
+### Bash Tool Not in Allowlist
+```
+⚠️ Bash Tool Not Allowed
+
+The requested tool "{tool}" is not in the allowlist.
+
+Allowed bash tools: gh, git, az, npm, docker, kubectl, yarn, pnpm, cargo, pip
+
+Run `/council:status` to see the current allowlist.
+Edit ~/.claude/council.local.md to modify the allowlist.
+```
+
+### Blocked Command Attempted
+```
+🚨 Blocked Command
+
+The command "{command}" is blocked for security.
+
+Blocked commands include: rm, sudo, chmod, chown, mkfs, dd, etc.
+
+These commands cannot be enabled for CLI agents.
 ```
 
 ## Configuration Reference
