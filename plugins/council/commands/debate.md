@@ -3,9 +3,9 @@ description: "Query multiple AI CLI tools in parallel and synthesize their respo
 argument-hint: "[--thorough] [--tools=tool1,tool2] <question>"
 ---
 
-# Council Command
+# Council Debate Command
 
-Consult your AI council - query multiple AI CLI tools using parallel Task agents, then synthesize the best answer.
+Consult your AI council - query multiple AI CLI tools using the council-orchestrator agent, then synthesize the best answer.
 
 ## Step 0: Check Initialization
 
@@ -51,164 +51,34 @@ If a tool is missing, warn the user and continue with remaining tools.
 
 **Minimum requirement**: At least 2 tools must be available for a council.
 
-## Step 4: Parallel Execution via Task Agents
+## Step 4: Execute via Council Orchestrator
 
-**CRITICAL**: Use Claude's Task tool to spawn parallel agents - one per CLI tool.
-
-Launch all enabled tools **in a single message with multiple Task calls**:
+**DELEGATE TO ORCHESTRATOR AGENT**: Use the Task tool to spawn the council-orchestrator:
 
 ```
-For each enabled tool (codex, gemini, opencode, agent), spawn a Task agent:
-
 Task(
-  subagent_type: "general-purpose",
-  description: "Query {tool} CLI",
-  prompt: "Execute this command and return ONLY the output:
-
-    bash ${CLAUDE_PLUGIN_ROOT}/scripts/invoke-cli.sh {tool} \"{QUESTION}\" \".\" 300 \"{MODE}\" \"{ROUND}\" \"{CONTEXT}\"
-
-    Return the complete output. Do not summarize or interpret."
+  subagent_type: "council-orchestrator",
+  description: "Execute council debate",
+  prompt: "Execute council debate:
+    QUESTION: {parsed question}
+    MODE: {quick|thorough based on args or config default}
+    ENABLED_TOOLS: {comma-separated list of validated tools}
+    PLUGIN_ROOT: ${CLAUDE_PLUGIN_ROOT}
+    CONFIG_PATH: ~/.claude/council.local.md"
 )
 ```
 
-**Important execution notes:**
-- Launch ALL Task agents in a SINGLE message (parallel execution)
-- Default timeout: **300 seconds** (5 minutes) per tool
-- Each agent runs independently and returns its result
-- Collect all responses before proceeding to synthesis
+The orchestrator will:
+1. Launch parallel Task agents for each CLI tool
+2. Maintain context across all debate rounds
+3. Check for convergence (thorough mode)
+4. Return the synthesized result with consensus analysis
 
-## Step 5: Synthesize Responses with Consensus Scoring
+## Step 5: Display Results
 
-Once all Task agents return, perform **structured consensus analysis**:
+The orchestrator returns the formatted synthesis. Display it to the user.
 
-### Step 5.1: Extract Key Claims
-From each response, identify the **main recommendations/claims** (typically 3-7 per response).
-
-### Step 5.2: Score Consensus
-Compare claims across all tools and categorize:
-
-| Category | Criteria | Display |
-|----------|----------|---------|
-| **🟢 Strong Consensus** | 3-4 out of 4 tools agree | "✅ All/Most agree: ..." |
-| **🟡 Partial Agreement** | 2 out of 4 tools agree | "⚠️ Split opinion: ..." |
-| **🔵 Unique Insight** | Only 1 tool mentions | "💡 {Tool} uniquely suggests: ..." |
-| **🔴 Contradiction** | Tools directly disagree | "❌ Disagreement: {Tool A} says X, {Tool B} says Y" |
-
-### Step 5.3: Generate Structured Synthesis
-
-**REQUIRED OUTPUT FORMAT:**
-
-```
-## 🟢 Strong Consensus (All/Most Agree)
-1. [First point all tools agree on]
-2. [Second point...]
-
-## 🟡 Partial Agreement (2/4 Agree)
-- [Point with split opinion] - Supported by: {tools}
-
-## 💡 Unique Insights
-- **Codex**: [Unique valuable point]
-- **Gemini**: [Unique valuable point]
-- **OpenCode**: [Unique valuable point]
-- **Agent**: [Unique valuable point]
-
-## 🎯 My Assessment
-Based on the council's input, I recommend:
-[Claude's synthesis combining the best insights]
-```
-
-### Step 5.4: Quality Indicators
-Include in the synthesis header:
-- **Consensus strength**: "High" (3+ agree on most points), "Medium" (mixed), "Low" (mostly disagreement)
-- **Response quality**: Note if any tool gave low-quality/off-topic response
-
-## Step 6: Thorough Mode (Multi-Round Debate)
-
-If `--thorough` mode:
-
-### Round 1: Initial Responses
-Same as quick mode - collect initial responses from all tools via Task agents.
-
-### Round 2+: Cross-Examination
-For up to `max_rounds` (default 3):
-
-1. Summarize the disagreements/questions from previous round
-2. Spawn new Task agents asking each tool: "Given that [other tool] said X, what's your response?"
-3. Collect new responses
-4. Check for convergence
-
-**Convergence Detection:**
-- If all tools now agree on key points → stop
-- If responses repeat without new information → stop
-- If max_rounds reached → stop
-
-### Final Synthesis
-Create a more detailed synthesis including:
-- Evolution of the debate
-- Final consensus (if reached)
-- Remaining disagreements
-- Claude's verdict
-
-## Step 7: Display Results
-
-Output format:
-
-```
-┌───────────────────────────────────────────────────────────┐
-│  🤝 COUNCIL SYNTHESIS                                     │
-│  Mode: quick | Tools: codex, gemini, opencode, agent      │
-│  Consensus: High | Time: 12.4s                            │
-└───────────────────────────────────────────────────────────┘
-
-## 🟢 Strong Consensus (All/Most Agree)
-1. [First point all tools agree on]
-2. [Second consensus point]
-
-## 🟡 Partial Agreement (2/4 Agree)
-- [Split opinion point] - Supported by: codex, gemini
-
-## 💡 Unique Insights
-- **Codex**: [Unique point from codex]
-- **Gemini**: [Unique point from gemini]
-
-## 🎯 My Assessment
-Based on the council's input, I recommend:
-[Claude's synthesis]
-
----
-
-<details>
-<summary>📜 Raw Response: Codex (2.4s)</summary>
-
-[Full codex output here]
-
-</details>
-
-<details>
-<summary>📜 Raw Response: Gemini (5.1s)</summary>
-
-[Full gemini output here]
-
-</details>
-
-<details>
-<summary>📜 Raw Response: OpenCode (8.2s)</summary>
-
-[Full opencode output here]
-
-</details>
-
-<details>
-<summary>📜 Raw Response: Agent (4.7s)</summary>
-
-[Full agent output here]
-
-</details>
-```
-
-If `display.show_raw_responses` is false, omit the details sections.
-
-## Step 8: Offer Follow-Up
+## Step 6: Offer Follow-Up
 
 After displaying results:
 
@@ -221,18 +91,29 @@ After displaying results:
 
 ## Error Handling
 
-### Task Agent Failures
-If a Task agent fails or times out:
-- Note the failure in the synthesis
-- Continue with successful responses
-- Suggest running `/council:status --test` to diagnose
+### Not Initialized
+```
+⚠️ Council not configured yet!
 
-### Partial Failure
-Continue with successful tools, note failures:
+Run `/council:setup` to:
+1. Detect available AI CLI tools
+2. Select which tools to enable
+3. Test connectivity
 ```
-⚠️ Note: opencode agent did not respond (timeout after 300s)
-Proceeding with: codex, gemini
+
+### Insufficient Tools
 ```
+⚠️ Need at least 2 tools for a council debate.
+
+Currently available: {tool_count} tool(s)
+Run `/council:setup` to configure more tools.
+```
+
+### Task Agent Failures
+The orchestrator handles individual tool failures gracefully:
+- Notes failures in the synthesis
+- Continues with successful responses
+- Suggests `/council:status --test` to diagnose
 
 ### Injection Detected
 If the `invoke-cli.sh` script detects forbidden flags:
