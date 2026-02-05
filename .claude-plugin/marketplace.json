@@ -65,7 +65,7 @@
     {
       "name": "council",
       "description": "Query multiple AI CLI tools (codex, gemini, opencode, aider) in parallel with READ-ONLY safety enforcement. Claude synthesizes diverse opinions into actionable insights. Supports quick mode and thorough multi-round debate.",
-      "version": "1.4.1",
+      "version": "1.2.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
