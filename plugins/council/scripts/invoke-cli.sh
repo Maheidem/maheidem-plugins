@@ -37,13 +37,132 @@ check_injection() {
     done
 }
 
+# Generate structured prompt based on tool and mode
+generate_structured_prompt() {
+    local tool="$1"
+    local raw_prompt="$2"
+    local mode="$3"
+    local round="$4"
+    local context="$5"
+
+    # Base role definitions
+    case "$tool" in
+        codex)
+            ROLE_DEF="You are Codex, a PRACTICAL IMPLEMENTATION EXPERT, participating in a multi-AI council consultation.
+
+CONTEXT: Multiple AI tools are being queried in parallel. Your response will be synthesized with others. Your strength is turning ideas into working solutions."
+            RESPONSE_GUIDELINES="- Focus on practical, actionable implementation steps
+- Include code examples or patterns where relevant
+- Consider scalability, maintainability, and best practices
+- Bring your implementation expertise to the discussion"
+            ;;
+
+        gemini)
+            ROLE_DEF="You are Gemini, a RESEARCH & DOCUMENTATION SPECIALIST, participating in a multi-AI council consultation.
+
+CONTEXT: Multiple AI tools are being queried in parallel. Your response will be synthesized with others. Your strength is deep research and thorough documentation."
+            RESPONSE_GUIDELINES="- Provide well-researched, evidence-based recommendations
+- Reference documentation, best practices, and standards
+- Consider both current state and emerging trends
+- Bring your research expertise to the discussion"
+            ;;
+
+        opencode)
+            ROLE_DEF="You are OpenCode, an ARCHITECTURE & PATTERNS ANALYST, participating in a multi-AI council consultation.
+
+CONTEXT: Multiple AI tools are being queried in parallel. Your response will be synthesized with others. Your strength is system design and architectural patterns."
+            RESPONSE_GUIDELINES="- Analyze from an architectural perspective
+- Consider design patterns and system structure
+- Evaluate trade-offs between different approaches
+- Bring your patterns expertise to the discussion"
+            ;;
+
+        aider)
+            ROLE_DEF="You are Aider, a practical AI focused on implementation details, participating in a multi-AI council consultation.
+
+CONTEXT: This is part of a collaborative analysis where multiple AI tools provide diverse perspectives. Your implementation expertise ensures realistic recommendations."
+            RESPONSE_GUIDELINES="- Focus on practical implementation steps
+- Consider resource requirements and constraints
+- Address deployment and operational concerns
+- Provide specific, executable guidance"
+            ;;
+
+        agent)
+            ROLE_DEF="You are Agent, a USER EXPERIENCE & WORKFLOW ADVOCATE, participating in a multi-AI council consultation.
+
+CONTEXT: Multiple AI tools are being queried in parallel. Your response will be synthesized with others. Your strength is user-centric thinking and workflow optimization."
+            RESPONSE_GUIDELINES="- Consider the end-user experience and workflow
+- Focus on usability and developer experience
+- Address practical day-to-day usage concerns
+- Bring your UX expertise to the discussion"
+            ;;
+
+        *)
+            ROLE_DEF="You are an AI assistant participating in a multi-AI council consultation."
+            RESPONSE_GUIDELINES="- Provide thoughtful, well-reasoned responses
+- Consider multiple perspectives
+- Be specific and actionable"
+            ;;
+    esac
+
+    # Mode-specific additions
+    case "$mode" in
+        quick)
+            MODE_CONTEXT="IMPORTANT: This is a QUICK consultation - provide your best immediate recommendation with key reasoning. Focus on clarity and actionable insights."
+            ;;
+        thorough)
+            if [ "$round" -eq 1 ]; then
+                MODE_CONTEXT="IMPORTANT: This begins a THOROUGH consultation. Provide your initial analysis comprehensively, anticipating that other tools may challenge or build upon your recommendations."
+            else
+                MODE_CONTEXT="CONTEXT UPDATE: In previous rounds of this consultation:
+${context}
+
+IMPORTANT: This is round ${round} of a thorough consultation. Address the points raised by other council members. Do you maintain your original position, or has your perspective evolved?"
+            fi
+            ;;
+    esac
+
+    # Quality requirements (common to all)
+    QUALITY_REQUIREMENTS="QUALITY REQUIREMENTS:
+- Think step-by-step before answering
+- Be specific and concrete - avoid vague generalizations
+- Support recommendations with reasoning or evidence
+- Mention alternative approaches and their trade-offs
+- Keep your response concise (under 500 words)
+- Consider real-world constraints and limitations
+
+OUTPUT FORMAT:
+Please structure your response as:
+- **Confidence**: [High/Medium/Low] - how confident are you in this recommendation?
+- **Main Recommendation**: [1-2 sentences] - your key advice
+- **Reasoning**: [Key points] - why you recommend this
+- **Unique Insight**: [What others might miss] - your distinctive perspective"
+
+    # Assemble the full structured prompt
+    cat << EOF
+${ROLE_DEF}
+
+QUESTION: ${raw_prompt}
+
+RESPONSE GUIDELINES:
+${RESPONSE_GUIDELINES}
+
+${MODE_CONTEXT}
+
+${QUALITY_REQUIREMENTS}
+EOF
+}
+
 # ============================================================================
 # ARGUMENT PARSING
 # ============================================================================
 TOOL="$1"
-PROMPT="$2"
+RAW_PROMPT="$2"
 CWD="${3:-.}"
 TIMEOUT="${4:-120}"
+MODE="${5:-quick}"  # quick or thorough
+ROUND="${6:-1}"     # Round number for thorough mode
+CONTEXT="${7:-}"    # Additional context for cross-examination
 
 if [ -z "$TOOL" ] || [ -z "$PROMPT" ]; then
     echo "Usage: invoke-cli.sh <tool> <prompt> [cwd] [timeout]" >&2
@@ -54,8 +173,11 @@ if [ -z "$TOOL" ] || [ -z "$PROMPT" ]; then
     exit 1
 fi
 
-# Safety check
-check_injection "$PROMPT"
+# Safety check on raw prompt
+check_injection "$RAW_PROMPT"
+
+# Generate structured prompt
+PROMPT=$(generate_structured_prompt "$TOOL" "$RAW_PROMPT" "$MODE" "$ROUND" "$CONTEXT")
 
 # ============================================================================
 # TOOL INVOCATION (READ-ONLY ONLY)
