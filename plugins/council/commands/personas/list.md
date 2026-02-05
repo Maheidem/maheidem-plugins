@@ -1,5 +1,4 @@
 ---
-name: list
 description: Display active council personas with their scope and configuration
 allowed-tools:
   - Read
