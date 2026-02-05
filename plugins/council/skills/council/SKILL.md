@@ -28,6 +28,8 @@ Query your AI council - multiple AI CLI tools in parallel with automatic synthes
 | `/council --thorough <q>` | Multi-round debate mode |
 | `/council:setup` | Configure which AI tools to use |
 | `/council:status` | View config, test connectivity |
+| `/council:personas <use-case>` | Generate custom personas for a domain |
+| `/council:personas:list` | View active personas and their scope |
 
 ## How It Works
 
@@ -62,6 +64,31 @@ Multi-round debate:
 
 Best for complex decisions, architectural choices, or contentious topics.
 
+## Custom Personas
+
+Each AI tool has a configurable "persona" that defines its role and expertise.
+
+### Persona Precedence
+1. **📂 Project-local**: `.claude/council-personas/<tool>.persona.md`
+2. **👤 User-wide**: `~/.claude/council-personas/<tool>.persona.md`
+3. **🔧 Default**: Plugin bundled personas
+
+### Generating Custom Personas
+```
+/council:personas "Frontend React with accessibility focus"
+/council:personas "ML pipeline optimization"
+/council:personas "DevOps infrastructure"
+```
+
+This generates specialized personas tailored to your domain, making council responses more relevant.
+
+### Viewing Active Personas
+```
+/council:personas:list
+```
+
+Shows which personas are active and their scope (project/user/default).
+
 ## Safety
 
 All council queries are **READ-ONLY**:
@@ -81,3 +108,12 @@ Run `/council:setup` to:
 4. Create configuration
 
 Configuration stored at: `~/.claude/council.local.md`
+
+## Configuration Locations
+
+| Type | Path | Purpose |
+|------|------|---------|
+| Council config | `~/.claude/council.local.md` | Enabled tools, settings |
+| User personas | `~/.claude/council-personas/` | Custom personas (all projects) |
+| Project personas | `.claude/council-personas/` | Custom personas (this project) |
+| Default personas | `<plugin>/personas/` | Bundled default personas |
