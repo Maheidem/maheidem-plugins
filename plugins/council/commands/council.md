@@ -77,20 +77,50 @@ Task(
 - Each agent runs independently and returns its result
 - Collect all responses before proceeding to synthesis
 
-## Step 5: Synthesize Responses (Quick Mode)
+## Step 5: Synthesize Responses with Consensus Scoring
 
-Once all Task agents return, analyze their responses:
+Once all Task agents return, perform **structured consensus analysis**:
 
-1. **Find Agreement**: What do all tools agree on?
-2. **Find Differences**: Where do they diverge?
-3. **Evaluate Quality**: Which response is most helpful/accurate?
-4. **Create Synthesis**: Combine the best insights
+### Step 5.1: Extract Key Claims
+From each response, identify the **main recommendations/claims** (typically 3-7 per response).
 
-**Synthesis Guidelines:**
-- Lead with the consensus answer
-- Note unique valuable points from each tool
-- Call out disagreements with Claude's assessment
-- Keep synthesis concise but comprehensive
+### Step 5.2: Score Consensus
+Compare claims across all tools and categorize:
+
+| Category | Criteria | Display |
+|----------|----------|---------|
+| **🟢 Strong Consensus** | 3-4 out of 4 tools agree | "✅ All/Most agree: ..." |
+| **🟡 Partial Agreement** | 2 out of 4 tools agree | "⚠️ Split opinion: ..." |
+| **🔵 Unique Insight** | Only 1 tool mentions | "💡 {Tool} uniquely suggests: ..." |
+| **🔴 Contradiction** | Tools directly disagree | "❌ Disagreement: {Tool A} says X, {Tool B} says Y" |
+
+### Step 5.3: Generate Structured Synthesis
+
+**REQUIRED OUTPUT FORMAT:**
+
+```
+## 🟢 Strong Consensus (All/Most Agree)
+1. [First point all tools agree on]
+2. [Second point...]
+
+## 🟡 Partial Agreement (2/4 Agree)
+- [Point with split opinion] - Supported by: {tools}
+
+## 💡 Unique Insights
+- **Codex**: [Unique valuable point]
+- **Gemini**: [Unique valuable point]
+- **OpenCode**: [Unique valuable point]
+- **Agent**: [Unique valuable point]
+
+## 🎯 My Assessment
+Based on the council's input, I recommend:
+[Claude's synthesis combining the best insights]
+```
+
+### Step 5.4: Quality Indicators
+Include in the synthesis header:
+- **Consensus strength**: "High" (3+ agree on most points), "Medium" (mixed), "Low" (mostly disagreement)
+- **Response quality**: Note if any tool gave low-quality/off-topic response
 
 ## Step 6: Thorough Mode (Multi-Round Debate)
 
@@ -126,15 +156,26 @@ Output format:
 ```
 ┌───────────────────────────────────────────────────────────┐
 │  🤝 COUNCIL SYNTHESIS                                     │
-│  Mode: quick | Tools: codex, gemini | Time: 8.2s          │
+│  Mode: quick | Tools: codex, gemini, opencode, agent      │
+│  Consensus: High | Time: 12.4s                            │
 └───────────────────────────────────────────────────────────┘
 
-[Claude's synthesized answer]
+## 🟢 Strong Consensus (All/Most Agree)
+1. [First point all tools agree on]
+2. [Second consensus point]
 
-**Agreement**: Both tools recommend X for Y
-**Codex emphasizes**: Z
-**Gemini emphasizes**: W
-**My assessment**: Based on the responses, I recommend...
+## 🟡 Partial Agreement (2/4 Agree)
+- [Split opinion point] - Supported by: codex, gemini
+
+## 💡 Unique Insights
+- **Codex**: [Unique point from codex]
+- **Gemini**: [Unique point from gemini]
+
+## 🎯 My Assessment
+Based on the council's input, I recommend:
+[Claude's synthesis]
+
+---
 
 <details>
 <summary>📜 Raw Response: Codex (2.4s)</summary>
@@ -144,9 +185,23 @@ Output format:
 </details>
 
 <details>
-<summary>📜 Raw Response: Gemini (3.1s)</summary>
+<summary>📜 Raw Response: Gemini (5.1s)</summary>
 
 [Full gemini output here]
+
+</details>
+
+<details>
+<summary>📜 Raw Response: OpenCode (8.2s)</summary>
+
+[Full opencode output here]
+
+</details>
+
+<details>
+<summary>📜 Raw Response: Agent (4.7s)</summary>
+
+[Full agent output here]
 
 </details>
 ```
