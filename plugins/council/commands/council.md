@@ -65,7 +65,7 @@ Task(
   description: "Query {tool} CLI",
   prompt: "Execute this command and return ONLY the output:
 
-    bash ${CLAUDE_PLUGIN_ROOT}/scripts/invoke-cli.sh {tool} \"{QUESTION}\" \".\" 300
+    bash ${CLAUDE_PLUGIN_ROOT}/scripts/invoke-cli.sh {tool} \"{QUESTION}\" \".\" 300 \"{MODE}\" \"{ROUND}\" \"{CONTEXT}\"
 
     Return the complete output. Do not summarize or interpret."
 )
