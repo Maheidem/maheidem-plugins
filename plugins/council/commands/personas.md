@@ -1,5 +1,4 @@
 ---
-name: personas
 description: Generate custom council personas tailored to your use case
 allowed-tools:
   - Read

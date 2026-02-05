@@ -15,17 +15,17 @@ Query your AI council - multiple AI CLI tools in parallel with automatic synthes
 ## Quick Usage
 
 ```
-/council "What's the best way to structure this React component?"
-/council --thorough "Should I use microservices or monolith?"
-/council --tools=codex,gemini "How do I optimize this query?"
+/council:debate "What's the best way to structure this React component?"
+/council:debate --thorough "Should I use microservices or monolith?"
+/council:debate --tools=codex,gemini "How do I optimize this query?"
 ```
 
 ## Available Commands
 
 | Command | Description |
 |---------|-------------|
-| `/council <question>` | Query all enabled tools, get synthesis |
-| `/council --thorough <q>` | Multi-round debate mode |
+| `/council:debate <question>` | Query all enabled tools, get synthesis |
+| `/council:debate --thorough <q>` | Multi-round debate mode |
 | `/council:setup` | Configure which AI tools to use |
 | `/council:status` | View config, test connectivity |
 | `/council:personas <use-case>` | Generate custom personas for a domain |
