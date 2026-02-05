@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo "======================================"
-echo "Agentic Mode Hook Test Suite"
+echo "Agentic Mode Hook Test Suite (v0.4.0)"
 echo "======================================"
 echo ""
 
@@ -25,6 +25,8 @@ run_test() {
   local test_file="$2"
   local expected_exit="$3"
   local expected_decision="$4" # "allow", "deny", or "any"
+  local hook_exit=0
+  local output=""
 
   test_count=$((test_count + 1))
 
@@ -41,7 +43,6 @@ run_test() {
 
   # Run the hook
   output=$(echo "$test_input" | "$HOOK_SCRIPT" 2>&1) || hook_exit=$?
-  hook_exit=${hook_exit:-0}
 
   # Check exit code
   if [[ "$hook_exit" -ne "$expected_exit" ]]; then
@@ -89,6 +90,18 @@ run_test "Edit blocked in main session" \
 # Test 3: Tools allowed when config missing
 run_test "Bash allowed without config" \
   "$SCRIPT_DIR/test-allow-disabled.json" \
+  0 \
+  "allow"
+
+# Test 4: Subagent detection via transcript path
+run_test "Write allowed for subagent (path-based detection)" \
+  "$SCRIPT_DIR/test-subagent-write.json" \
+  0 \
+  "allow"
+
+# Test 5: Read allowed when enabled but not in blocked_tools
+run_test "Read not blocked when not in blocked_tools" \
+  "$SCRIPT_DIR/test-allow-read.json" \
   0 \
   "allow"
 

@@ -10,6 +10,10 @@ agent_suggestions:
   Write: general-programmer-agent
   Bash: general-programmer-agent
   NotebookEdit: jupyter-notebook-agent
+bash_whitelist:
+  - "git status"
+  - "git diff"
+  - "ls"
 ---
 
 # Test Configuration
