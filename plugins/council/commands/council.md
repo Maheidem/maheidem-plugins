@@ -5,7 +5,7 @@ argument-hint: "[--thorough] [--tools=tool1,tool2] <question>"
 
 # Council Command
 
-Consult your AI council - query multiple AI CLI tools in parallel with READ-ONLY safety, then synthesize the best answer.
+Consult your AI council - query multiple AI CLI tools using parallel Task agents, then synthesize the best answer.
 
 ## Step 0: Check Initialization
 
@@ -51,45 +51,35 @@ If a tool is missing, warn the user and continue with remaining tools.
 
 **Minimum requirement**: At least 2 tools must be available for a council.
 
-## Step 4: Parallel Execution (Quick Mode)
+## Step 4: Parallel Execution via Task Agents
 
-For quick mode (default), query all tools in parallel.
+**CRITICAL**: Use Claude's Task tool to spawn parallel agents - one per CLI tool.
 
-**IMPORTANT**: Use background processes to run truly parallel:
+Launch all enabled tools **in a single message with multiple Task calls**:
 
-```bash
-SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/invoke-cli.sh"
-TMPDIR=$(mktemp -d)
-CWD=$(pwd)
+```
+For each enabled tool (codex, gemini, opencode, agent), spawn a Task agent:
 
-# Launch all in parallel
-for tool in codex gemini; do
-    (
-        start=$(date +%s.%N)
-        "$SCRIPT" "$tool" "$PROMPT" "$CWD" "120" > "$TMPDIR/${tool}.out" 2> "$TMPDIR/${tool}.err"
-        echo $? > "$TMPDIR/${tool}.exit"
-        end=$(date +%s.%N)
-        echo "$end - $start" | bc > "$TMPDIR/${tool}.time"
-    ) &
-done
+Task(
+  subagent_type: "general-purpose",
+  description: "Query {tool} CLI",
+  prompt: "Execute this command and return ONLY the output:
 
-# Wait for all
-wait
+    bash ${CLAUDE_PLUGIN_ROOT}/scripts/invoke-cli.sh {tool} \"{QUESTION}\" \".\" 300
 
-# Collect results
-for tool in codex gemini; do
-    cat "$TMPDIR/${tool}.out"
-done
+    Return the complete output. Do not summarize or interpret."
+)
 ```
 
-Capture for each tool:
-- Response content
-- Timing
-- Exit code (success/failure)
+**Important execution notes:**
+- Launch ALL Task agents in a SINGLE message (parallel execution)
+- Default timeout: **300 seconds** (5 minutes) per tool
+- Each agent runs independently and returns its result
+- Collect all responses before proceeding to synthesis
 
 ## Step 5: Synthesize Responses (Quick Mode)
 
-As Claude, analyze all responses and create a synthesis:
+Once all Task agents return, analyze their responses:
 
 1. **Find Agreement**: What do all tools agree on?
 2. **Find Differences**: Where do they diverge?
@@ -107,13 +97,13 @@ As Claude, analyze all responses and create a synthesis:
 If `--thorough` mode:
 
 ### Round 1: Initial Responses
-Same as quick mode - collect initial responses from all tools.
+Same as quick mode - collect initial responses from all tools via Task agents.
 
 ### Round 2+: Cross-Examination
 For up to `max_rounds` (default 3):
 
 1. Summarize the disagreements/questions from previous round
-2. Ask each tool: "Given that [other tool] said X, what's your response?"
+2. Spawn new Task agents asking each tool: "Given that [other tool] said X, what's your response?"
 3. Collect new responses
 4. Check for convergence
 
@@ -176,24 +166,16 @@ After displaying results:
 
 ## Error Handling
 
-### All Tools Failed
-```
-❌ Council Error
-
-All tools failed to respond:
-- codex: Timeout after 120s
-- gemini: API error
-
-Suggestions:
-- Check API keys are configured
-- Run /council:status --test
-- Try again with longer timeout
-```
+### Task Agent Failures
+If a Task agent fails or times out:
+- Note the failure in the synthesis
+- Continue with successful responses
+- Suggest running `/council:status --test` to diagnose
 
 ### Partial Failure
 Continue with successful tools, note failures:
 ```
-⚠️ Note: opencode did not respond (timeout)
+⚠️ Note: opencode agent did not respond (timeout after 300s)
 Proceeding with: codex, gemini
 ```
 
@@ -207,6 +189,12 @@ The query contained forbidden flags that could bypass safety.
 
 Council query aborted for security.
 ```
+
+## Configuration Reference
+
+Default timeouts in `~/.claude/council.local.md`:
+- Per-tool timeout: **300 seconds** (5 minutes)
+- Thorough mode max rounds: 3
 
 ## Safety Reference
 

@@ -11,22 +11,22 @@ enabled_tools:
     enabled: false
     path: null
     command_template: "codex exec --skip-git-repo-check -s read-only -C \"${CWD}\" \"${PROMPT}\""
-    timeout: 120
+    timeout: 300
   gemini:
     enabled: false
     path: null
     command_template: "gemini -p \"${PROMPT}\" 2>&1"
-    timeout: 120
+    timeout: 300
   opencode:
     enabled: false
     path: null
     command_template: "opencode run --format json \"${PROMPT}\" 2>&1"
-    timeout: 120
+    timeout: 300
   agent:
     enabled: false
     path: null
     command_template: "agent --mode ask -p --output-format text \"${PROMPT}\" 2>&1"
-    timeout: 120
+    timeout: 300
 
 # Default execution mode
 # quick: Single round, immediate synthesis
