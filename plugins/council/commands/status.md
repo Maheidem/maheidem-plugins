@@ -27,6 +27,9 @@ Read `~/.claude/council.local.md` and parse the YAML frontmatter to extract:
 - `default_mode`
 - `thorough_settings`
 - `display` preferences
+- `bash_tools.allowlist` - commands that can be enabled via --bash-tools
+- `bash_tools.default_timeout` - timeout for bash operations
+- `bash_tools.blocked_commands` - commands that are always blocked
 
 ## Step 3: Display Status
 
@@ -52,6 +55,19 @@ Present a clear status summary:
    Max rounds (thorough): 3
    Show raw responses: yes
    Show timing: yes
+
+🔧 Bash Tool Access:
+┌────────────────────────────────────────────────────────────────┐
+│ Allowlist (can enable via --bash-tools):                       │
+│   gh, git, az, npm, docker, kubectl, yarn, pnpm, cargo, pip   │
+├────────────────────────────────────────────────────────────────┤
+│ Default Timeout: 30 seconds                                    │
+├────────────────────────────────────────────────────────────────┤
+│ Blocked (always forbidden):                                    │
+│   rm, sudo, chmod, chown, mkfs, dd, format, fdisk, kill, etc. │
+└────────────────────────────────────────────────────────────────┘
+
+Note: Bash tools are DISABLED by default. Use --bash-tools=gh,git to enable.
 
 🔒 Safety: All tools use READ-ONLY mode
 ```
@@ -101,8 +117,10 @@ Or if failures:
 
 ```
 📖 Quick Reference:
-   /council "question"           Query all enabled tools
-   /council --thorough "q"       Multi-round debate mode
-   /council --tools=codex "q"    Query specific tools only
-   /council:setup --force        Reconfigure tools
+   /council "question"                  Query all enabled tools
+   /council --thorough "q"              Multi-round debate mode
+   /council --tools=codex "q"           Query specific AI tools only
+   /council --bash-tools=gh,git "q"     Enable bash tools for analysis
+   /council --no-bash-tools "q"         Explicitly disable bash tools
+   /council:setup --force               Reconfigure tools
 ```

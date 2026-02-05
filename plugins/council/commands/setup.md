@@ -112,6 +112,38 @@ enabled_tools:
     command_template: "aider --no-auto-commits --yes --message \"${PROMPT}\" 2>&1"
     timeout: 120
 
+# Bash tool access for CLI agents (Layer 1: Safety allowlist)
+bash_tools:
+  # Master allowlist - commands that CAN be enabled via --tools flag
+  # Only commands listed here can be granted to CLI agents
+  allowlist:
+    - gh        # GitHub CLI
+    - git       # Git operations
+    - az        # Azure CLI
+    - npm       # Node package manager
+    - docker    # Docker CLI
+    - kubectl   # Kubernetes
+    - yarn      # Yarn package manager
+    - pnpm      # PNPM package manager
+    - cargo     # Rust package manager
+    - pip       # Python package manager
+  # Default timeout for bash operations (seconds)
+  default_timeout: 30
+  # Commands that are ALWAYS blocked (safety net)
+  blocked_commands:
+    - rm
+    - sudo
+    - chmod
+    - chown
+    - mkfs
+    - dd
+    - format
+    - fdisk
+    - kill
+    - pkill
+    - shutdown
+    - reboot
+
 default_mode: quick
 
 thorough_settings:
