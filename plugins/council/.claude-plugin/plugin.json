@@ -1,6 +1,6 @@
 {
   "name": "council",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Query multiple AI CLI tools in parallel with READ-ONLY safety enforcement. Use when: (1) user wants multiple AI opinions, (2) user says 'consult the council', (3) user wants to compare AI responses, (4) user mentions 'codex', 'gemini', 'opencode' together, (5) user wants AI debate or consensus",
   "author": {
     "name": "maheidem",
