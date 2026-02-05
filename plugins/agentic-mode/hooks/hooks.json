@@ -1,9 +1,9 @@
 {
-  "description": "Agentic mode hook - enforces delegation to subagents for write operations",
+  "description": "Agentic mode hook - enforces delegation to subagents for blocked operations",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|Bash|NotebookEdit",
+        "matcher": "Edit|Write|Bash|NotebookEdit|Read",
         "hooks": [
           {
             "type": "command",
