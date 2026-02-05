@@ -225,7 +225,7 @@ MODE="${5:-quick}"  # quick or thorough
 ROUND="${6:-1}"     # Round number for thorough mode
 CONTEXT="${7:-}"    # Additional context for cross-examination
 
-if [ -z "$TOOL" ] || [ -z "$PROMPT" ]; then
+if [ -z "$TOOL" ] || [ -z "$RAW_PROMPT" ]; then
     echo "Usage: invoke-cli.sh <tool> <prompt> [cwd] [timeout]" >&2
     echo "  tool: codex|gemini|opencode|aider" >&2
     echo "  prompt: Question to ask (will be quoted)" >&2
