@@ -7,10 +7,7 @@ allowed-tools:
   - Glob
   - AskUserQuestion
   - mcp__sequentialthinking__sequentialthinking
-arguments:
-  - name: use_case
-    description: "Use case description (e.g., 'Frontend React with accessibility focus')"
-    required: false
+argument-hint: "[use-case]"
 ---
 
 # Council Personas Generator
