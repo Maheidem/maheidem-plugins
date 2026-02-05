@@ -18,6 +18,8 @@ Query your AI council - multiple AI CLI tools in parallel with automatic synthes
 /council:debate "What's the best way to structure this React component?"
 /council:debate --thorough "Should I use microservices or monolith?"
 /council:debate --tools=codex,gemini "How do I optimize this query?"
+/council:debate --bash-tools=gh "List open PRs and suggest priorities"
+/council:debate --bash-tools=gh,git "Analyze repo history and suggest improvements"
 ```
 
 ## Available Commands
@@ -64,6 +66,40 @@ Multi-round debate:
 
 Best for complex decisions, architectural choices, or contentious topics.
 
+### Bash Tool Access (`--bash-tools`)
+
+Enable specific bash commands for CLI agents to use during their analysis.
+
+```
+/council:debate --bash-tools=gh "What PRs should we prioritize?"
+/council:debate --bash-tools=gh,git "Analyze our branching strategy"
+/council:debate --bash-tools=npm "Check for outdated dependencies"
+```
+
+**How it works:**
+1. **Layer 1 (Safety Allowlist)**: Only commands in `~/.claude/council.local.md` allowlist can be enabled
+2. **Layer 2 (Runtime Flag)**: Use `--bash-tools` to explicitly enable specific tools per invocation
+
+**Available tools** (default allowlist):
+- `gh` - GitHub CLI
+- `git` - Git operations
+- `az` - Azure CLI
+- `npm`, `yarn`, `pnpm` - Node package managers
+- `docker` - Docker CLI
+- `kubectl` - Kubernetes
+- `cargo` - Rust package manager
+- `pip` - Python package manager
+
+**Safety:**
+- Without `--bash-tools`, CLI agents have NO bash access (safe default)
+- Use `--no-bash-tools` to explicitly disable even if previously enabled
+- Dangerous commands (rm, sudo, chmod, etc.) are ALWAYS blocked
+- All bash operations have configurable timeout (default: 30s)
+- Tool usage is logged for audit at `~/.claude/council-tool-usage.log`
+
+**Customizing the allowlist:**
+Edit `~/.claude/council.local.md` to modify `bash_tools.allowlist`.
+
 ## Custom Personas
 
 Each AI tool has a configurable "persona" that defines its role and expertise.
@@ -96,6 +132,9 @@ All council queries are **READ-ONLY**:
 - No dangerous flags allowed
 - Timeout protection
 - Injection detection
+- Bash tools require explicit opt-in via `--bash-tools`
+- Dangerous bash commands always blocked (rm, sudo, chmod, etc.)
+- Tool usage logged for audit
 
 See `@references/safety-enforcement.md` for complete safety documentation.
 
@@ -113,7 +152,8 @@ Configuration stored at: `~/.claude/council.local.md`
 
 | Type | Path | Purpose |
 |------|------|---------|
-| Council config | `~/.claude/council.local.md` | Enabled tools, settings |
+| Council config | `~/.claude/council.local.md` | Enabled tools, settings, bash allowlist |
 | User personas | `~/.claude/council-personas/` | Custom personas (all projects) |
 | Project personas | `.claude/council-personas/` | Custom personas (this project) |
 | Default personas | `<plugin>/personas/` | Bundled default personas |
+| Tool usage log | `~/.claude/council-tool-usage.log` | Audit log for bash tool access |

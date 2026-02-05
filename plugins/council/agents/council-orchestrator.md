@@ -29,11 +29,21 @@ Your prompt will contain:
 QUESTION: {the user's question}
 MODE: {quick|thorough}
 ENABLED_TOOLS: {comma-separated list: codex,gemini,opencode,agent}
+ENABLED_BASH_TOOLS: {comma-separated list of bash tools, or empty for none}
+BASH_TIMEOUT: {timeout for bash operations, default 30}
 PLUGIN_ROOT: {path to council plugin}
 CONFIG_PATH: {path to ~/.claude/council.local.md}
 ```
 
 Parse these at the start of execution.
+
+### Bash Tools Context
+
+If `ENABLED_BASH_TOOLS` is provided:
+- CLI agents will have access to the specified bash commands (e.g., gh, git)
+- They can use these to gather real data during their analysis
+- Tools are validated against the allowlist before being passed
+- Log which tools are enabled for audit purposes
 
 ---
 
@@ -61,11 +71,15 @@ Task(
   description: "Query {tool} CLI",
   prompt: "Execute this shell command and return ONLY the raw output:
 
-    bash {PLUGIN_ROOT}/scripts/invoke-cli.sh {tool} \"{QUESTION}\" \".\" 300 \"{MODE}\" 1 \"\"
+    bash {PLUGIN_ROOT}/scripts/invoke-cli.sh {tool} \"{QUESTION}\" \".\" 300 \"{MODE}\" 1 \"\" \"{ENABLED_BASH_TOOLS}\" \"{BASH_TIMEOUT}\"
 
     Return the complete stdout. Do not interpret or summarize."
 )
 ```
+
+**BASH TOOLS NOTE**: The last two parameters pass the enabled bash tools and timeout:
+- `{ENABLED_BASH_TOOLS}`: Comma-separated list (e.g., "gh,git") or empty string
+- `{BASH_TIMEOUT}`: Timeout in seconds for bash operations (default: 30)
 
 **CRITICAL**: Launch ALL Task calls in a SINGLE message for true parallelism.
 
@@ -152,11 +166,13 @@ Task(
   description: "Query {tool} CLI (Round {N})",
   prompt: "Execute this shell command and return ONLY the raw output:
 
-    bash {PLUGIN_ROOT}/scripts/invoke-cli.sh {tool} \"{QUESTION}\" \".\" 300 thorough {N} \"{CONTEXT_FOR_ROUND_N}\"
+    bash {PLUGIN_ROOT}/scripts/invoke-cli.sh {tool} \"{QUESTION}\" \".\" 300 thorough {N} \"{CONTEXT_FOR_ROUND_N}\" \"{ENABLED_BASH_TOOLS}\" \"{BASH_TIMEOUT}\"
 
     Return the complete stdout. Do not interpret or summarize."
 )
 ```
+
+**Note**: Bash tools remain available across all rounds if enabled.
 
 ### 6.3 Update Context
 
@@ -199,6 +215,7 @@ From ALL responses across ALL rounds, identify main recommendations (typically 3
 ┌───────────────────────────────────────────────────────────────┐
 │  🤝 COUNCIL SYNTHESIS                                         │
 │  Mode: {mode} | Tools: {tool list}                            │
+│  Bash Tools: {enabled_bash_tools or "none"}                   │
 │  Rounds: {N} | Consensus: {High/Medium/Low}                   │
 └───────────────────────────────────────────────────────────────┘
 

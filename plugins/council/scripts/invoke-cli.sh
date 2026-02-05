@@ -1,13 +1,15 @@
 #!/bin/bash
 # invoke-cli.sh - Safely invoke AI CLI tools with READ-ONLY enforcement
 #
-# Usage: invoke-cli.sh <tool> <prompt> <cwd> <timeout>
+# Usage: invoke-cli.sh <tool> <prompt> <cwd> <timeout> [mode] [round] [context] [enabled_bash_tools] [bash_timeout]
 #
 # CRITICAL SAFETY RULES:
 # 1. ONLY READ-ONLY sandbox modes are used
 # 2. NEVER pass --yolo, --dangerously-bypass-approvals-and-sandbox, --full-auto
 # 3. All output is captured, no interactive mode
 # 4. Strict timeout enforcement
+# 5. Bash tools only from validated allowlist
+# 6. Dangerous commands always blocked
 
 set -e
 
@@ -25,6 +27,34 @@ FORBIDDEN_FLAGS=(
     "--sandbox=full"
 )
 
+# ============================================================================
+# SAFETY: BLOCKED BASH COMMANDS - NEVER ALLOW THESE
+# ============================================================================
+BLOCKED_BASH_COMMANDS=(
+    "rm"
+    "sudo"
+    "chmod"
+    "chown"
+    "mkfs"
+    "dd"
+    "format"
+    "fdisk"
+    "kill"
+    "pkill"
+    "shutdown"
+    "reboot"
+    "mv"          # Can overwrite files
+    "cp"          # Can overwrite files
+    "wget"        # Can download arbitrary files
+    "curl"        # Can download/upload (when used with -o or POST)
+    "eval"        # Arbitrary code execution
+    "exec"        # Arbitrary code execution
+    "source"      # Can source malicious scripts
+    ">"           # Redirect/overwrite
+    ">>"          # Redirect/append
+    "|"           # Pipe (could be dangerous in context)
+)
+
 # Check if prompt contains forbidden flags (injection attempt)
 check_injection() {
     local prompt="$1"
@@ -35,6 +65,107 @@ check_injection() {
             exit 1
         fi
     done
+}
+
+# ============================================================================
+# BASH TOOL ACCESS CONTROL
+# ============================================================================
+
+# Validate that requested bash tools are in the allowlist
+# Returns 0 if all valid, 1 if any invalid
+validate_bash_tools() {
+    local enabled_tools="$1"
+    local config_path="${2:-$HOME/.claude/council.local.md}"
+
+    # If no tools requested, nothing to validate
+    if [[ -z "$enabled_tools" ]]; then
+        return 0
+    fi
+
+    # Parse allowlist from config file
+    local allowlist=""
+    if [[ -f "$config_path" ]]; then
+        # Extract allowlist items between bash_tools: and next section
+        allowlist=$(sed -n '/^bash_tools:/,/^[a-z_]*:/{/allowlist:/,/^[[:space:]]*[a-z]/p}' "$config_path" 2>/dev/null | \
+                    grep -E '^[[:space:]]*-' | \
+                    sed 's/^[[:space:]]*-[[:space:]]*//' | \
+                    sed 's/#.*//' | \
+                    tr -d '[:space:]' | \
+                    tr '\n' ',' || echo "")
+    fi
+
+    # Default allowlist if none in config
+    if [[ -z "$allowlist" ]]; then
+        allowlist="gh,git,az,npm,docker,kubectl,yarn,pnpm,cargo,pip"
+    fi
+
+    # Check each requested tool
+    IFS=',' read -ra TOOLS <<< "$enabled_tools"
+    for tool in "${TOOLS[@]}"; do
+        tool=$(echo "$tool" | tr -d '[:space:]')
+
+        # Check against blocked commands (always blocked regardless of allowlist)
+        for blocked in "${BLOCKED_BASH_COMMANDS[@]}"; do
+            if [[ "$tool" == "$blocked" ]]; then
+                echo "ERROR: Blocked command requested: $tool" >&2
+                return 1
+            fi
+        done
+
+        # Check against allowlist
+        if [[ ",$allowlist," != *",$tool,"* ]]; then
+            echo "ERROR: Bash tool not in allowlist: $tool" >&2
+            echo "Allowed tools: $allowlist" >&2
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+# Generate bash tool context for the prompt
+generate_bash_tool_context() {
+    local enabled_tools="$1"
+    local bash_timeout="${2:-30}"
+
+    # If no tools enabled, return empty
+    if [[ -z "$enabled_tools" ]]; then
+        echo ""
+        return
+    fi
+
+    # Build the tool context
+    cat << EOF
+
+AVAILABLE BASH TOOLS: ${enabled_tools}
+BASH TIMEOUT: ${bash_timeout} seconds
+
+You may use these commands when helpful for your analysis.
+To execute a command, clearly indicate the command you want to run.
+Example: "Let me check the git status: \`git status\`"
+
+RESTRICTIONS:
+- Only the listed tools are available
+- Commands will timeout after ${bash_timeout} seconds
+- No file modifications allowed (read-only operations only)
+- No piping to dangerous commands
+- No shell redirects (>, >>)
+
+Use these tools to gather real data that supports your analysis.
+EOF
+}
+
+# Log which tools were enabled for this session
+log_tool_usage() {
+    local tool="$1"
+    local enabled_bash_tools="$2"
+    local log_file="${HOME}/.claude/council-tool-usage.log"
+
+    # Create log directory if needed
+    mkdir -p "$(dirname "$log_file")"
+
+    # Append log entry
+    echo "$(date -Iseconds) | AI_TOOL=$tool | BASH_TOOLS=${enabled_bash_tools:-none}" >> "$log_file"
 }
 
 # ============================================================================
@@ -224,21 +355,49 @@ TIMEOUT="${4:-120}"
 MODE="${5:-quick}"  # quick or thorough
 ROUND="${6:-1}"     # Round number for thorough mode
 CONTEXT="${7:-}"    # Additional context for cross-examination
+ENABLED_BASH_TOOLS="${8:-}"  # Comma-separated list of enabled bash tools
+BASH_TIMEOUT="${9:-30}"      # Timeout for bash operations
 
 if [ -z "$TOOL" ] || [ -z "$RAW_PROMPT" ]; then
-    echo "Usage: invoke-cli.sh <tool> <prompt> [cwd] [timeout]" >&2
-    echo "  tool: codex|gemini|opencode|aider" >&2
+    echo "Usage: invoke-cli.sh <tool> <prompt> [cwd] [timeout] [mode] [round] [context] [enabled_bash_tools] [bash_timeout]" >&2
+    echo "  tool: codex|gemini|opencode|aider|agent" >&2
     echo "  prompt: Question to ask (will be quoted)" >&2
     echo "  cwd: Working directory (default: .)" >&2
-    echo "  timeout: Max seconds (default: 120)" >&2
+    echo "  timeout: Max seconds for AI tool (default: 120)" >&2
+    echo "  mode: quick|thorough (default: quick)" >&2
+    echo "  round: Round number for thorough mode (default: 1)" >&2
+    echo "  context: Additional context for cross-examination" >&2
+    echo "  enabled_bash_tools: Comma-separated bash tools to enable (from allowlist)" >&2
+    echo "  bash_timeout: Timeout for bash operations (default: 30)" >&2
     exit 1
 fi
 
 # Safety check on raw prompt
 check_injection "$RAW_PROMPT"
 
+# Validate bash tools against allowlist
+if [[ -n "$ENABLED_BASH_TOOLS" ]]; then
+    if ! validate_bash_tools "$ENABLED_BASH_TOOLS" "$HOME/.claude/council.local.md"; then
+        echo "ERROR: Invalid bash tools requested" >&2
+        exit 1
+    fi
+fi
+
+# Log tool usage for audit
+log_tool_usage "$TOOL" "$ENABLED_BASH_TOOLS"
+
+# Generate bash tool context if tools are enabled
+BASH_TOOL_CONTEXT=$(generate_bash_tool_context "$ENABLED_BASH_TOOLS" "$BASH_TIMEOUT")
+
 # Generate structured prompt (includes persona loading with CWD for precedence)
 PROMPT=$(generate_structured_prompt "$TOOL" "$RAW_PROMPT" "$MODE" "$ROUND" "$CONTEXT" "$CWD")
+
+# Append bash tool context if present
+if [[ -n "$BASH_TOOL_CONTEXT" ]]; then
+    PROMPT="${PROMPT}
+
+${BASH_TOOL_CONTEXT}"
+fi
 
 # ============================================================================
 # TOOL INVOCATION (READ-ONLY ONLY)
