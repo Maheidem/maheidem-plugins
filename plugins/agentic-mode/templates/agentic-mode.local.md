@@ -14,15 +14,27 @@ blocked_tools:
   - Bash
   - NotebookEdit
 
-# Agent suggestions by task type (for reference)
+# Tool-to-agent mapping (looked up by tool name)
+# When a tool is blocked, the suggestion from this map is shown
 agent_suggestions:
-  code_changes: general-programmer-agent
-  documentation: project-docs-writer
-  notebooks: jupyter-notebook-agent
-  data_analysis: data-scientist-agent
-  research: deep-research-agent
-  mcp_config: mcp-manager-agent
-  multi_agent: main-orchestrator-agent
+  Edit: general-programmer-agent
+  Write: general-programmer-agent
+  Bash: general-programmer-agent
+  NotebookEdit: jupyter-notebook-agent
+  Read: deep-research-agent
+
+# Bash commands that bypass blocking (regex patterns matched against command start)
+# Only applies when Bash is in blocked_tools
+bash_whitelist:
+  - "git status"
+  - "git diff"
+  - "git log"
+  - "ls"
+  - "pwd"
+  - "which"
+
+# Message verbosity: minimal, standard, verbose
+message_verbosity: standard
 ---
 
 # Agentic Mode
@@ -52,3 +64,7 @@ performing direct edits in the main session.
 ## Disable Temporarily
 
 Set `enabled: false` in the YAML frontmatter above.
+
+## Debug Mode
+
+Set `AGENTIC_DEBUG=true` environment variable to see detailed hook decisions in stderr.

@@ -1,0 +1,10 @@
+{
+  "session_id": "test_session_003",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "/Users/maheidem/Documents/dev/test-project/src/app.py"
+  },
+  "cwd": "/Users/maheidem/Documents/dev/test-project",
+  "transcript_path": "/Users/maheidem/.claude/sessions/session-789.jsonl",
+  "tool_use_id": "toolu_01READ789"
+}

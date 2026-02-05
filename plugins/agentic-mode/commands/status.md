@@ -30,93 +30,68 @@ Display current agentic mode configuration and status for this project.
 ### When Configured and Enabled
 
 ```
+┌─────────────────────────────────────────────────────┐
+│  🤖 AGENTIC MODE: ENABLED ✓                         │
+│  Config: .claude/agentic-mode.local.md              │
+└─────────────────────────────────────────────────────┘
+
+BLOCKED (main session):
+  ✗ Edit, Write, Bash, NotebookEdit
+
+ALLOWED (main session):
+  ✓ Read, Task, Glob, Grep, WebSearch, WebFetch
+
+DELEGATE VIA TASK TOOL TO:
+  • general-programmer-agent   → code changes
+  • project-docs-writer        → documentation
+  • jupyter-notebook-agent     → notebooks
+  • data-scientist-agent       → statistics
+  • deep-research-agent        → research
+  • mcp-manager-agent          → MCP config
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  AGENTIC MODE STATUS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Status: ENABLED ✓
-Config: /absolute/path/to/project/.claude/agentic-mode.local.md
-
-BLOCKED TOOLS IN MAIN SESSION:
-  • Edit           → Use general-programmer-agent
-  • Write          → Use general-programmer-agent
-  • Bash           → Use general-programmer-agent
-  • NotebookEdit   → Use jupyter-notebook-agent
-
-ALWAYS ALLOWED:
-  • Read           → Context gathering
-  • Task           → Agent delegation (the whole point!)
-
-AVAILABLE AGENTS:
-  • general-programmer-agent   → Code changes, bug fixes, features
-  • project-docs-writer        → README, documentation
-  • jupyter-notebook-agent     → Notebook operations
-  • data-scientist-agent       → Statistical analysis
-  • deep-research-agent        → Web research, documentation
-  • mcp-manager-agent          → MCP server configuration
-  • main-orchestrator-agent    → Multi-agent coordination
-
-QUICK COMMANDS:
-  Disable:  /project:agentic:disable
-  Status:   /project:agentic:status
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Commands: /project:agentic:disable | /project:agentic:status
 ```
+
+**Note:** If `Read` is also blocked (include-read preset), show it in BLOCKED section instead.
+Update ALLOWED section accordingly.
 
 ### When Configured but Disabled
 
 ```
+┌─────────────────────────────────────────────────────┐
+│  🤖 AGENTIC MODE: DISABLED                          │
+│  Config: .claude/agentic-mode.local.md (exists)     │
+└─────────────────────────────────────────────────────┘
+
+All tools available - no delegation enforced.
+
+Would block when enabled: Edit, Write, Bash, NotebookEdit
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  AGENTIC MODE STATUS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Status: DISABLED
-Config: /absolute/path/to/project/.claude/agentic-mode.local.md
-
-All tools available for direct use in main session.
-
-CONFIGURED BLOCKING (when enabled):
-  • Edit
-  • Write
-  • Bash
-  • NotebookEdit
-
-QUICK COMMANDS:
-  Enable:  /project:agentic:enable
-  Status:  /project:agentic:status
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Commands: /project:agentic:enable | /project:agentic:status
 ```
 
 ### When Not Configured
 
 ```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  AGENTIC MODE STATUS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+┌─────────────────────────────────────────────────────┐
+│  🤖 AGENTIC MODE: NOT CONFIGURED                    │
+└─────────────────────────────────────────────────────┘
 
-Status: NOT CONFIGURED
+No config found at: .claude/agentic-mode.local.md
 
-Config file not found at:
-  .claude/agentic-mode.local.md
-
-Agentic mode is not set up for this project.
-
-WHAT IS AGENTIC MODE?
-
-Forces Claude to delegate work to specialized agents instead of
-performing direct edits in the main session. The main session is
-blocked from using write tools (Edit, Write, Bash) and must use
-the Task tool to spawn specialized agents.
+WHAT IS IT?
+Forces delegation to specialized agents (Task tool) by blocking
+direct use of Edit, Write, Bash in the main session.
 
 BENEFITS:
-  ✓ Better separation of concerns
   ✓ Leverages specialized agent expertise
   ✓ Prevents accidental direct edits
-  ✓ Encourages proper delegation workflow
+  ✓ Enforces proper delegation workflow
 
-QUICK COMMANDS:
-  Enable:  /project:agentic:enable
-  Help:    See plugin README for details
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Get started: /project:agentic:enable
 ```
 
 ## Error Handling
