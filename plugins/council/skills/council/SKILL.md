@@ -31,10 +31,11 @@ Query your AI council - multiple AI CLI tools in parallel with automatic synthes
 
 ## How It Works
 
-1. **Parallel Query**: All enabled AI CLI tools receive your question simultaneously
+1. **Parallel Task Agents**: Claude spawns one Task agent per CLI tool (true parallelism)
 2. **READ-ONLY Safety**: Tools run in sandbox/query-only modes - no file modifications
-3. **Synthesis**: Claude mediates and combines the best insights
-4. **Raw Access**: Full tool responses available in collapsible sections
+3. **Long Timeout**: Default 300 seconds (5 minutes) per tool for complex queries
+4. **Synthesis**: Claude mediates and combines the best insights
+5. **Raw Access**: Full tool responses available in collapsible sections
 
 ## Supported Tools
 
