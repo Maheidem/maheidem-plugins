@@ -1,0 +1,5 @@
+{
+  "name": "pdf-fatura-patterns",
+  "version": "1.0.0",
+  "description": "Battle-tested patterns and pitfalls for parsing Brazilian credit card PDF statements (Nubank, BradesCard/Amazon, Itau VISA)"
+}
