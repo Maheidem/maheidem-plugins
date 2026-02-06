@@ -74,14 +74,14 @@
       "category": "ai"
     },
     {
-      "name": "pdf-fatura-patterns",
-      "description": "Battle-tested patterns and pitfalls for parsing Brazilian credit card PDF statements (Nubank, BradesCard/Amazon, Itau VISA)",
-      "version": "1.0.0",
+      "name": "controle-financeiro",
+      "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking.",
+      "version": "1.1.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
       },
-      "source": "./plugins/pdf-fatura-patterns",
+      "source": "./plugins/controle-financeiro",
       "category": "finance"
     }
   ]
