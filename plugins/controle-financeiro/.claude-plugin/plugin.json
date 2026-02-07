@@ -1,6 +1,6 @@
 {
   "name": "controle-financeiro",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking.",
   "author": {
     "name": "maheidem",
