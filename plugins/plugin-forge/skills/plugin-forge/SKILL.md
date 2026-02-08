@@ -4,8 +4,10 @@ description: |
   Create or update marketplace plugins from conversations and workflows.
   Use when: (1) "forge a plugin" or "package this", (2) "create a skill/plugin from this",
   (3) "make this reusable" or "save this workflow", (4) "turn this into a command",
-  (5) creating something that should persist across sessions. Handles marketplace
-  registration, conflict detection, and lesson extraction automatically.
+  (5) creating something that should persist across sessions, (6) "analyze my sessions",
+  (7) "evaluate past conversations", (8) "what patterns in my history",
+  (9) "learn from past sessions". Handles marketplace registration, conflict detection,
+  lesson extraction, and session history analysis automatically.
 ---
 
 # Plugin Forge Skill
@@ -16,14 +18,15 @@ Creates new marketplace plugins by reflecting on sessions or building from scrat
 
 - **Workflow**: See `references/workflow.md` for complete 6-phase process
 - **Lesson Extraction**: See `references/reflection-patterns.md` for session analysis
+- **History Analysis**: See `references/history-analysis.md` for past conversation evaluation
 - **Config**: `~/.plugin-forge-config.json` stores default marketplace
-- **Scripts**: `${CLAUDE_PLUGIN_ROOT}/scripts/` contains config_manager.py and marketplace_scanner.py
+- **Scripts**: `${CLAUDE_PLUGIN_ROOT}/scripts/` contains config_manager.py, marketplace_scanner.py, and session_analyzer.py
 
 ## Core Workflow Overview
 
 Execute the 6-phase workflow:
 
-1. **Intent Clarification** - Determine reflect vs create new
+1. **Intent Clarification** - Determine reflect vs evaluate history vs create new
 2. **Marketplace Setup** - Configure target marketplace path
 3. **Conflict Detection** - Scan for existing similar plugins
 4. **Plugin Planning** - Design structure using skill-creator and plugin-dev skills
@@ -36,6 +39,7 @@ Execute the 6-phase workflow:
 
 When triggered, determine if user wants to:
 - **Reflect**: Extract patterns from current session
+- **Evaluate history**: Analyze past sessions for patterns across all projects
 - **Create new**: Build plugin from description
 
 Use AskQuestion with clear options to confirm intent.
@@ -120,6 +124,28 @@ plugins/{plugin-name}/
 │       └── references/      # Detailed procedures
 └── scripts/                 # Helper utilities (if needed)
 ```
+
+## History Analysis
+
+Scan past Claude Code sessions for patterns and forge plugins from findings.
+
+**Commands**:
+```bash
+# List projects
+python ${CLAUDE_PLUGIN_ROOT}/scripts/session_analyzer.py list-projects
+
+# Scan for patterns (with optional filters)
+python ${CLAUDE_PLUGIN_ROOT}/scripts/session_analyzer.py scan [--project X] [--after DATE] [--before DATE]
+
+# Extract excerpts for deep analysis
+python ${CLAUDE_PLUGIN_ROOT}/scripts/session_analyzer.py extract <session-id> <project-dir> [--context 3]
+```
+
+**Two-tier process**:
+1. **Tier 1**: Automated scan detects errors, retries, corrections, tool failures, successful workflows
+2. **Tier 2**: AI reads excerpts from high-scoring sessions, classifies with reflection-patterns.md, recommends plugins
+
+See `references/history-analysis.md` for full procedure.
 
 ## Critical Rules
 

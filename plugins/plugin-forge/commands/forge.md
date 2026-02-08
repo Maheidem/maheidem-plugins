@@ -20,13 +20,60 @@ This command orchestrates these core skills:
 ### Phase 1: Intent Clarification
 
 Use AskQuestion to determine user intent:
-- **Options**: "Reflect on this session" | "Create something new"
+- **Options**: "Reflect on this session" | "Evaluate past conversations" | "Create something new"
 - If **reflect**: Analyze current session transcript for patterns, lessons, reusable workflows
+- If **evaluate history**: Proceed to Phase 1.5 (history analysis)
 - If **new**: Ask for plugin description/purpose
 
 Follow-up questions based on choice:
 - For reflection: "What aspect of this session should become a plugin?"
+- For evaluate history: Phase 1.5 handles all follow-ups
 - For new: "What should this plugin do? Give a brief description."
+
+### Phase 1.5: History Analysis (if "Evaluate past conversations" chosen)
+
+See `references/history-analysis.md` for full procedure details.
+
+#### Step 1.5.1: Tier 1 - Automated Scan
+
+Run the session analyzer to scan all past sessions:
+```bash
+python ${CLAUDE_PLUGIN_ROOT}/scripts/session_analyzer.py scan
+```
+
+Optionally filter by project or date:
+```bash
+python ${CLAUDE_PLUGIN_ROOT}/scripts/session_analyzer.py scan --project "<filter>" --after "YYYY-MM-DD"
+```
+
+Present the scan summary to the user:
+- Total sessions scanned
+- Top errors and tool failures
+- Number of corrections detected
+- Top 5 session highlights (by pattern score)
+
+#### Step 1.5.2: User Decision
+
+Use AskQuestion: "What would you like to do with these findings?"
+- **"Deep-dive into a session"** - Tier 2 analysis on a highlighted session
+- **"Forge a plugin from a finding"** - Pick a finding and proceed to Phase 2
+- **"Just show the report"** - Display full report and exit cleanly
+
+#### Step 1.5.3: Tier 2 - Deep-Dive (if chosen)
+
+Extract excerpts from the selected session:
+```bash
+python ${CLAUDE_PLUGIN_ROOT}/scripts/session_analyzer.py extract "<session-id>" "<project-dir>" --context 3
+```
+
+Analyze excerpts using `references/reflection-patterns.md` categories:
+- Classify each pattern (Error→Lesson, Retry→Best Practice, etc.)
+- Cross-reference against existing marketplace plugins
+- Present recommendations with the categories from `references/history-analysis.md`
+
+Use AskQuestion: "Would you like to forge a plugin from these recommendations?"
+- **"Yes, forge from recommendation"** → Proceed to Phase 2 with pre-populated context
+- **"No, just save the analysis"** → Report findings and exit cleanly
 
 ### Phase 2: Marketplace Setup
 
