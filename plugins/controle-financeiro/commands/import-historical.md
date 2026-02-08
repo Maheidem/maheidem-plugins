@@ -21,6 +21,10 @@ Bulk-import financial data for a date range. Creates months sequentially, then s
 
 Parse `$ARGUMENTS` as: `from_year from_month to_year to_month`
 
+**Shorthand**: If only a single year is provided (e.g., `2024`), expand to full year:
+- `2024` -> `2024 1 2024 12`
+- `2023` -> `2023 1 2023 12`
+
 Examples:
 - `2025 3 2025 12` -> March 2025 to December 2025
 - `2025 1 2025 1` -> January 2025 only
@@ -207,6 +211,24 @@ After spawning each batch, periodically check agent output files. Log progress:
 [month-2025-04] DONE - 9/9 providers OK, 3 CC imports
 ```
 
+### 2.5 Post-Batch Cleanup
+
+After ALL agents in a batch complete:
+
+**2.5a Mark CC bills paid:**
+CC bills cannot be marked paid via `mark-paid` CLI (that only works on expenses). Use SQL:
+```bash
+python -c "import sqlite3; conn=sqlite3.connect('controle.db'); c=conn.cursor(); c.execute('SELECT b.id FROM credit_card_bill b JOIN month m ON b.month_id=m.id WHERE m.year={year} AND m.month IN ({month_list}) AND b.is_paid=0'); ids=[r[0] for r in c.fetchall()]; conn.execute(f'UPDATE credit_card_bill SET is_paid=1 WHERE id IN ({','.join(map(str,ids))})')  if ids else None; conn.commit(); print(f'Marked {len(ids)} CC bills paid')"
+```
+
+**2.5b Clean up temp files:**
+```bash
+rm -f tmp_*.py tmp_*.txt
+```
+
+**2.5c Verify batch:**
+Quick SQL check that all expenses and CC bills are paid for the batch months.
+
 ---
 
 ## Phase 3: Summary and Verification
@@ -354,6 +376,9 @@ MONTH_NAMES = {
 
 /controle-financeiro:import-historical 2024 6 2025 5
 -> 12-month range spanning year boundary
+
+/controle-financeiro:import-historical 2024
+-> Full year shorthand: expands to 2024 1 2024 12
 ```
 
 ## Important Notes
@@ -366,3 +391,36 @@ MONTH_NAMES = {
 - All expenses marked paid automatically (historical data = already paid).
 - CC categorization uses 2-layer only (hard rules + exact history). Unknown merchants default to `outros` (cat 20).
 - **Windows**: All Python scripts written to temp files. No multiline `python -c`. GARIN filenames sanitized. Paths quoted.
+
+## Crash Recovery
+
+If the import crashes mid-execution (agents partially completed), detect and fix partial state:
+
+### Detection
+```bash
+python app/src/cli.py view-month {year} {month}
+```
+
+Look for:
+- PJ income = 0 when it shouldn't be (agent didn't set it)
+- Expenses at R$ 0 (agent didn't fill them)
+- Expenses PENDING (agent didn't mark paid)
+- CC bills missing or PENDING
+
+### Fix Partial State
+
+1. **Mark unpaid expenses paid:**
+```bash
+python app/src/cli.py mark-paid {id1} {id2} ...
+```
+
+2. **Mark unpaid CC bills paid (SQL):**
+```python
+import sqlite3
+conn = sqlite3.connect('controle.db')
+conn.execute('UPDATE credit_card_bill SET is_paid=1 WHERE month_id=(SELECT id FROM month WHERE year=Y AND month=M) AND is_paid=0')
+conn.commit()
+```
+
+3. **Respawn agents for incomplete work only:**
+Spawn new agents targeting ONLY the missing pieces (e.g., just CC imports, not full month re-import).

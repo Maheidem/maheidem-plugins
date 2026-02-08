@@ -279,6 +279,12 @@ from:faturadigital@minhaclaro.com.br subject:"Fatura Digital Claro" has:attachme
 from:nao-responda@nao-responda.ccomtelecom.com.br subject:"Lembrete de Pagamento" has:attachment newer_than:45d
 ```
 
+**Legacy sender (2023 Jan-Mar):**
+```
+from:boleto@ccomtelecom.com.br subject:"Boleto C-ComTelecom" has:attachment {date_bounds}
+```
+For historical imports before April 2023, try the legacy sender first. The format changed from `boleto@ccomtelecom.com.br` to `nao-responda@nao-responda.ccomtelecom.com.br` around April 2023.
+
 **MCP tool workflow:**
 1. `search_emails` -- find the payment reminder email
 2. Parse snippet for amount and due date (usually sufficient)

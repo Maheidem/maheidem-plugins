@@ -73,10 +73,23 @@ If the month immediately before the range doesn't exist in the DB:
 - First month in range: create WITHOUT `--from-previous` (uses defaults: R$1518 prolaborio, 9% tax)
 - All subsequent months: create WITH `--from-previous` (copies recurrents from prior month)
 
+## Expense Structure Evolution
+
+The number and types of expenses changed across years. When using `--from-previous`, expenses are inherited from the prior month.
+
+| Era | Months | Expense Count | Expenses |
+|-----|--------|--------------|----------|
+| CLT (2022-2023) | Dec 2022 - Dec 2023 | 6 | Nubank, Financiamento, Condominio, Luz, Gas, CCom |
+| PJ Year 1 (2024) | Jan 2024 - Dec 2024 | 9 | + IPVA, Gastos Pontuais, Amazon |
+| PJ Year 2 (2025+) | Jan 2025+ | 11 | + Claro, Cuidado Avos, Quentinha |
+
+**Impact**: When importing a full year (e.g., 2023), months inherit from the prior month's structure. If Dec 2022 has 6 expenses, all 2023 months will have 6 expenses. Amazon CC bills can still be imported (add-cc-bill) even without an "Amazon" expense line.
+
 ## Quick Reference
 
 - Date bounds: `references/date-bounded-searches.md`
 - Agent template: `references/per-month-agent-spec.md`
+- Provider timeline: `references/provider-timeline.md`
 - Provider queries: `../gmail-bill-patterns/references/email-search-patterns.md`
 - CC parsers: `../fatura-debug-guide/references/card-parsers.md`
 - Currency parsing: `../gmail-bill-patterns/references/currency-parsing.md`

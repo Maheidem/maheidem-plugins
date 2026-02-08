@@ -28,6 +28,10 @@ DATE_BEFORE       = {before_str}         (e.g., "before:2025/04/01")
 
 Execute all 9 Gmail searches in PARALLEL. Use date-bounded queries from `date-bounded-searches.md`.
 
+**IMPORTANT**: Not all 9 providers exist in every year. Check `references/provider-timeline.md` for which providers are active in the target year. Only search for active providers.
+
+For pre-PJ years (before 2024), skip Husky entirely and leave pj_total at 0.
+
 For each provider, track status:
 - `[OK]` = found, validated, amount extracted
 - `[??]` = not found in Gmail for this date window
