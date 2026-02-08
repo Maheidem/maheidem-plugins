@@ -1,5 +1,5 @@
 {
   "name": "plugin-forge",
-  "version": "1.0.1",
-  "description": "Forge new plugins from session reflections or from scratch"
+  "version": "1.1.0",
+  "description": "Forge new plugins from session reflections, past conversation analysis, or from scratch"
 }

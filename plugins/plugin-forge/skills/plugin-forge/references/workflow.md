@@ -10,6 +10,7 @@ Complete 6-phase workflow for creating marketplace plugins.
 
 1. Use AskQuestion tool with options:
    - "Reflect on this session" - Analyze current conversation for patterns
+   - "Evaluate past conversations" - Scan session history across all projects
    - "Create something new" - Build from scratch with description
 
 2. If reflecting:
@@ -18,7 +19,13 @@ Complete 6-phase workflow for creating marketplace plugins.
    - Note tools and skills used effectively
    - Ask: "What aspect of this session should become a plugin?"
 
-3. If creating new:
+3. If evaluating history:
+   - Proceed to Phase 1.5 (see `references/history-analysis.md` for full procedure)
+   - Run Tier 1 automated scan with session_analyzer.py
+   - Present summary, let user choose deep-dive or forge from finding
+   - If user chooses to forge → continue to Phase 2 with pre-populated context
+
+4. If creating new:
    - Ask for plugin name (suggest kebab-case)
    - Ask for brief description of purpose
    - Ask for primary command name
