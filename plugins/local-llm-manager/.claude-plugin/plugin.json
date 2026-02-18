@@ -1,0 +1,5 @@
+{
+  "name": "local-llm-manager",
+  "version": "1.0.0",
+  "description": "Unified local LLM management across backends: diagnostics, API operations, model loading, and troubleshooting"
+}
