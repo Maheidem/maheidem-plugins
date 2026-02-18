@@ -1,6 +1,6 @@
 {
   "name": "agents-team",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Assemble specialized agent teams for development tasks. Multiple team profiles with PO-coordinated swarm workflow. /agents-team:full-dev for the full 10-agent crack-shot team.",
   "author": {
     "name": "maheidem",
