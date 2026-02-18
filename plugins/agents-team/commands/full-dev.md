@@ -23,12 +23,18 @@ Call **TeamCreate**:
 
 ---
 
-## Phase 2: Read Agent Role Prompts
+## Phase 2: Read Role Prompts & Discover Available Agents
 
+### Step 2a: Read role prompts
 **Read** the agent roles reference file:
 `${CLAUDE_PLUGIN_ROOT}/skills/agents-team/references/agent-roles.md`
 
 This contains the system prompts for all 10 agents. Use these prompts VERBATIM when spawning each agent.
+
+### Step 2b: Inventory available agent types
+Review the `subagent_type` options listed in your **Task tool description**. These are the agent types you can spawn. Note their names, descriptions, and tool access.
+
+You will use this inventory in Phase 4 to dynamically match roles to the best agent type.
 
 ---
 
@@ -47,13 +53,44 @@ Use **Task** tool:
 
 ---
 
-## Phase 4: Spawn Requested Specialists
+## Phase 4: Spawn Requested Specialists (Dynamic Agent Matching)
 
-Based on PO's analysis, spawn the requested agents **in parallel** (single message, multiple Task calls):
+Based on PO's analysis, spawn the requested agents **in parallel** (single message, multiple Task calls).
 
-For each agent:
+### For each agent, determine `subagent_type` dynamically:
+
+1. Check the agent inventory from Step 2b
+2. Match the role to the **best available agent type** using the guide below
+3. If no specialized match exists, use `general-purpose`
+4. **Always include the role-specific prompt from agent-roles.md** regardless of which type is selected
+
+### Agent Matching Guide
+
+For each role, search available agent type names and descriptions for these keywords. Pick the **first match** found; if none match, use the default.
+
+| Role | Search Keywords | Required Capabilities | Default Fallback |
+|------|----------------|----------------------|-----------------|
+| `architect` | "plan", "architect" | Read, analysis, design | general-purpose |
+| `frontend` | "programmer", "frontend", "code" | Read, Write, Edit | general-purpose |
+| `backend` | "programmer", "backend", "code" | Read, Write, Edit, Bash | general-purpose |
+| `qa` | "programmer", "test", "qa" | Read, Write, Edit, Bash | general-purpose |
+| `librarian` | "explore", "docs", "documentation" | Read, Grep, Glob | general-purpose |
+| `data-eng` | "data-scientist", "data" | All tools | general-purpose |
+| `devops` | "ci-cd", "devops", "deploy" | All tools | general-purpose |
+| `security` | "security" | All tools | general-purpose |
+| `research` | "research", "deep-research" | Web search, Read | general-purpose |
+
+### IMPORTANT RULES:
+- **The role prompt defines behavior** — it tells the agent what to do and how to act
+- **The subagent_type determines capabilities** — it controls available tools and base expertise
+- A `general-programmer-agent` spawned with the `backend` role prompt becomes a backend specialist with full code editing tools
+- A `ci-cd-agent` spawned with the `devops` role prompt gets CI/CD expertise PLUS the team coordination behavior
+- **Never use a read-only agent type** (like `Explore` or `Plan`) for roles that need to write code (frontend, backend, qa, data-eng, devops, security)
+- **PO is always `general-purpose`** — it needs task management tools, not code tools
+
+### Spawn parameters:
 - `name`: role name from roster below
-- `subagent_type`: `general-purpose` (except `research` → `deep-research-agent`)
+- `subagent_type`: **matched dynamically** (see guide above)
 - `team_name`: `full-dev`
 - `mode`: `bypassPermissions`
 - `run_in_background`: `true`
@@ -93,15 +130,15 @@ When PO confirms all work is complete:
 
 ## Agent Roster
 
-| Name | Role | Subagent Type |
-|------|------|---------------|
-| `po` | Product Owner — coordinator & entry point | general-purpose |
-| `architect` | Software Architect — system design & patterns | general-purpose |
-| `frontend` | Frontend Developer — UI/UX & client code | general-purpose |
-| `backend` | Backend Developer — APIs & server logic | general-purpose |
-| `qa` | QA Engineer — testing & quality gates | general-purpose |
-| `librarian` | Librarian — docs, knowledge & codebase intel | general-purpose |
-| `data-eng` | Data Engineer — data pipelines & modeling | general-purpose |
-| `devops` | DevOps Engineer — CI/CD, Docker & infra | general-purpose |
-| `security` | Security Specialist — vuln review & hardening | general-purpose |
-| `research` | Deep Researcher — web research & tech eval | deep-research-agent |
+| Name | Role | Writes Code? |
+|------|------|-------------|
+| `po` | Product Owner — coordinator & entry point | No (always `general-purpose`) |
+| `architect` | Software Architect — system design & patterns | Sometimes |
+| `frontend` | Frontend Developer — UI/UX & client code | Yes |
+| `backend` | Backend Developer — APIs & server logic | Yes |
+| `qa` | QA Engineer — testing & quality gates | Yes |
+| `librarian` | Librarian — docs, knowledge & codebase intel | Sometimes |
+| `data-eng` | Data Engineer — data pipelines & modeling | Yes |
+| `devops` | DevOps Engineer — CI/CD, Docker & infra | Yes |
+| `security` | Security Specialist — vuln review & hardening | Yes |
+| `research` | Deep Researcher — web research & tech eval | No |
