@@ -94,6 +94,17 @@
       },
       "source": "./plugins/agents-team",
       "category": "development"
+    },
+    {
+      "name": "local-llm-manager",
+      "description": "Unified local LLM management across backends (LM Studio, TabbyAPI, TensorRT-LLM, Ollama, vLLM, llama.cpp). Diagnostics, API operations, VRAM estimation, model loading, parameter reference, and endpoint testing.",
+      "version": "1.0.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/local-llm-manager",
+      "category": "ai"
     }
   ]
 }
