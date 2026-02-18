@@ -84,9 +84,10 @@ When PO confirms all work is complete:
 
 1. **ALL work routes through PO** — never assign tasks directly to specialists
 2. **PO decides** who works on what — respect the PO's distribution plan
-3. **Spawn only what PO requests** — don't spawn all 10 if only 3 are needed
-4. **Agents coordinate** via TaskList and SendMessage — let them self-organize
-5. **You are the team lead** — your job is spawning, relaying, and reporting
+3. **PO NEVER writes code** — if PO attempts to claim implementation tasks or doesn't request specialists, message PO to remind it to delegate. PO must request AT LEAST ONE specialist.
+4. **Spawn only what PO requests** — don't spawn all 10 if only 3 are needed
+5. **Agents coordinate** via TaskList and SendMessage — let them self-organize
+6. **You are the team lead** — your job is spawning, relaying, and reporting
 
 ---
 

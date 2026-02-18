@@ -36,8 +36,9 @@ Every request routes through the PO — no direct task assignment to specialists
 ## Core Principles
 
 - **PO is the single entry point** — all requests route through PO
+- **PO NEVER writes code** — PO is a manager only (no Edit, Write, or code tools). Must always delegate to specialists.
 - **Agents are autonomous** — they figure out their work based on role and tasks
-- **Spawn only what's needed** — PO decides team composition per request
+- **Spawn only what's needed** — PO decides team composition per request (minimum 1 specialist)
 - **Self-organizing** — agents coordinate via task list and messaging
 
 ## When to Suggest
