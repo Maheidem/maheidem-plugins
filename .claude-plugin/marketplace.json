@@ -105,6 +105,17 @@
       },
       "source": "./plugins/local-llm-manager",
       "category": "ai"
+    },
+    {
+      "name": "journey-auditor",
+      "description": "Discover all user journeys in a web app codebase, map paths into tiered test plans, find coverage gaps, and generate production-quality Playwright E2E tests. Battle-tested across 63 sessions producing 210+ passing tests.",
+      "version": "1.0.1",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/journey-auditor",
+      "category": "testing"
     }
   ]
 }
