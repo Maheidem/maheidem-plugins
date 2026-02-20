@@ -1,0 +1,5 @@
+{
+  "name": "journey-auditor",
+  "version": "1.0.1",
+  "description": "Discover all user journeys in a codebase, map paths, find test gaps, generate Playwright E2E tests"
+}
