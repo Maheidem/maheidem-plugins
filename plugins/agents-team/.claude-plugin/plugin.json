@@ -1,7 +1,7 @@
 {
   "name": "agents-team",
-  "version": "1.1.1",
-  "description": "Assemble specialized agent teams for development tasks. Multiple team profiles with PO-coordinated swarm workflow. /agents-team:full-dev for the full 10-agent crack-shot team.",
+  "version": "2.0.0",
+  "description": "Reusable team templates. /agents-team:start <profile> <request> to launch a saved team. /agents-team:list to see available profiles.",
   "author": {
     "name": "maheidem",
     "email": "maheidem@users.noreply.github.com"
@@ -9,11 +9,8 @@
   "keywords": [
     "agents",
     "team",
-    "swarm",
-    "multi-agent",
-    "delegation",
-    "coordination",
-    "crack-team"
+    "templates",
+    "multi-agent"
   ],
   "repository": "https://github.com/Maheidem/maheidem-plugins"
 }
