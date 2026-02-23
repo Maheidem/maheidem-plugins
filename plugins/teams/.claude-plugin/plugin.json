@@ -1,7 +1,7 @@
 {
-  "name": "agents-team",
-  "version": "2.0.0",
-  "description": "Reusable team templates. /agents-team:start <profile> <request> to launch a saved team. /agents-team:list to see available profiles.",
+  "name": "teams",
+  "version": "2.1.0",
+  "description": "Reusable team templates. /teams:start <profile> <request> to launch a saved team. /teams:list to see available profiles.",
   "author": {
     "name": "maheidem",
     "email": "maheidem@users.noreply.github.com"

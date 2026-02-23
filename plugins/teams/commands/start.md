@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Launch a team from a saved template. Usage: /agents-team:start <profile-name> <your request>"
+description: "Launch a team from a saved template. Usage: /teams:start <profile-name> <your request>"
 ---
 
 # Start Agent Team from Template

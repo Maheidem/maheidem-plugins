@@ -1,6 +1,6 @@
 ---
 name: list
-description: "List available team profiles. Usage: /agents-team:list"
+description: "List available team profiles. Usage: /teams:list"
 ---
 
 # List Available Team Profiles
@@ -24,7 +24,7 @@ Available Team Profiles:
 
 | Profile | Description | Agents | Command |
 |---------|-------------|--------|---------|
-| full-dev | Full stack dev team | 7 agents | /agents-team:start full-dev <request> |
+| full-dev | Full stack dev team | 7 agents | /teams:start full-dev <request> |
 ```
 
 If no templates found, tell the user they can create one at `${CLAUDE_PLUGIN_ROOT}/teams/<name>.md`.
