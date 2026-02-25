@@ -1,0 +1,17 @@
+{
+  "description": "Quality gate hook - blocks edits to feature code without journey documentation",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/journey-gate.py\"",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
