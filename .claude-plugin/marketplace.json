@@ -108,13 +108,24 @@
     },
     {
       "name": "journey-auditor",
-      "description": "Discover all user journeys in a web app codebase, map paths into tiered test plans, find coverage gaps, and generate production-quality Playwright E2E tests. Battle-tested across 63 sessions producing 210+ passing tests.",
+      "description": "[DEPRECATED — replaced by quality-gate] Discover all user journeys in a web app codebase, map paths into tiered test plans, find coverage gaps, and generate production-quality Playwright E2E tests.",
       "version": "1.0.1",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
       },
       "source": "./plugins/journey-auditor",
+      "category": "testing"
+    },
+    {
+      "name": "quality-gate",
+      "description": "Journey-first development workflow: define user journeys before code, discover gaps, generate Playwright E2E tests, validate with real providers. 5-phase workflow (define, discover, map, generate, validate). Replaces journey-auditor.",
+      "version": "1.0.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/quality-gate",
       "category": "testing"
     },
     {
