@@ -9,7 +9,9 @@ Reads .quality-gate.json from the project root to determine:
 
 Called as a PreToolUse hook on Write/Edit tools.
 Receives tool input as JSON on stdin.
-Outputs JSON with decision: "block" or "allow".
+Outputs Claude Code hook format:
+  - Allow: exit 0, stdout with permissionDecision "allow"
+  - Block: exit 0, stdout with permissionDecision "deny" + systemMessage
 """
 
 import json
@@ -116,18 +118,36 @@ def has_journey_docs(tab, config, project_root):
     return len(md_files) > 0
 
 
+def allow():
+    """Output allow decision"""
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "permissionDecision": "allow"
+        }
+    }))
+
+
+def deny(message):
+    """Output deny decision with system message"""
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "permissionDecision": "deny"
+        },
+        "systemMessage": message
+    }))
+
+
 def main():
     try:
         tool_input = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, EOFError):
-        # Can't parse input, allow by default
-        print(json.dumps({"decision": "allow"}))
+        allow()
         return
 
     # Extract file path from tool input
     file_path = tool_input.get("tool_input", {}).get("file_path", "")
     if not file_path:
-        print(json.dumps({"decision": "allow"}))
+        allow()
         return
 
     project_root = find_project_root()
@@ -135,14 +155,14 @@ def main():
 
     # No config file = no enforcement
     if config is None:
-        print(json.dumps({"decision": "allow"}))
+        allow()
         return
 
     rel_path = get_relative_path(file_path, project_root)
 
     # Check if file is gated
     if not is_file_gated(rel_path, config):
-        print(json.dumps({"decision": "allow"}))
+        allow()
         return
 
     # Resolve which tab this file belongs to
@@ -150,27 +170,25 @@ def main():
     if tab is None:
         # Can't determine tab, allow with warning
         print(json.dumps({
-            "decision": "allow",
-            "message": f"⚠️ Quality Gate: Could not determine feature tab for {rel_path}. Consider updating .quality-gate.json tab_mapping."
+            "hookSpecificOutput": {
+                "permissionDecision": "allow"
+            },
+            "systemMessage": f"Quality Gate: Could not determine feature tab for {rel_path}. Consider updating .quality-gate.json tab_mapping."
         }))
         return
 
     # Check if journey docs exist for this tab
     if has_journey_docs(tab, config, project_root):
-        print(json.dumps({"decision": "allow"}))
+        allow()
         return
 
-    # BLOCK — no journey docs found
-    print(json.dumps({
-        "decision": "block",
-        "reason": (
-            f"🚫 Quality Gate BLOCKED: No journey documentation found for '{tab}' tab.\n"
-            f"   File: {rel_path}\n"
-            f"   Expected: .documentation/user-journeys/{tab}/ (with at least one .md file)\n\n"
-            f"   Run /define-journey {tab}/{{journey-name}} to create the journey doc first.\n"
-            f"   This is required before implementing feature code."
-        )
-    }))
+    # DENY — no journey docs found
+    deny(
+        f"Quality Gate BLOCKED: No journey documentation found for '{tab}' tab. "
+        f"File: {rel_path}. "
+        f"Expected: .documentation/user-journeys/{tab}/ (with at least one .md file). "
+        f"Run /define-journey {tab}/{{journey-name}} to create the journey doc first."
+    )
 
 
 if __name__ == "__main__":

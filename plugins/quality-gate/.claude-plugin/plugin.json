@@ -1,16 +1,5 @@
 {
   "name": "quality-gate",
-  "version": "1.0.0",
-  "description": "Journey-first development workflow: define user journeys before code, discover gaps, generate Playwright E2E tests, validate with real providers. Replaces journey-auditor.",
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hook": {
-          "type": "command",
-          "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/journey-gate.py"
-        }
-      }
-    ]
-  }
+  "version": "1.0.1",
+  "description": "Journey-first development workflow: define user journeys before code, discover gaps, generate Playwright E2E tests, validate with real providers. Replaces journey-auditor."
 }
