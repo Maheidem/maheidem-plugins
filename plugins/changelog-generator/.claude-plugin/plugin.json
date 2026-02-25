@@ -1,0 +1,5 @@
+{
+  "name": "changelog-generator",
+  "version": "1.0.0",
+  "description": "Generate structured changelogs from git history with categorized features, fixes, and metrics"
+}

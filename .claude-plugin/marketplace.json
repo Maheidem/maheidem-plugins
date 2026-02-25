@@ -116,6 +116,17 @@
       },
       "source": "./plugins/journey-auditor",
       "category": "testing"
+    },
+    {
+      "name": "changelog-generator",
+      "description": "Generate structured changelogs from git history with categorized features, fixes, and metrics. Conventional commit parsing, file-path heuristics, table/bullet output formats.",
+      "version": "1.0.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/changelog-generator",
+      "category": "development"
     }
   ]
 }
