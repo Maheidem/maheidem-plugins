@@ -1,62 +1,100 @@
 ---
 description: >
-  Generate structured changelogs from git history. Use when the user says
-  "generate changelog", "what changed since", "show me changes",
-  "changelog since monday", "list recent commits", "summarize git history",
-  "what was shipped", "release notes", "what did we do this week",
-  or asks about recent changes in a git repository.
+  Generate and maintain a human-readable CHANGELOG.md file from git history.
+  Use when the user says "generate changelog", "update changelog", "what changed since",
+  "show me changes", "changelog since monday", "write release notes",
+  "summarize git history", "what was shipped", "what did we do this week",
+  "add to changelog", "maintain changelog", or asks about recent changes
+  in a git repository. Writes a persistent CHANGELOG.md file that accumulates
+  entries over time.
 ---
 
 # Changelog Generator
 
-Generate categorized, formatted changelogs from git commit history.
+Write and maintain a human-readable CHANGELOG.md file from git commit history.
+
+## Core Principle: Human-Readable First
+
+The changelog is for HUMANS, not machines. Every entry should be understandable by someone who doesn't read code.
+
+**Transform commit messages into plain language:**
+
+| Commit Message | Changelog Entry |
+|---|---|
+| `feat: add JWT refresh token rotation` | Added automatic session refresh so users stay logged in longer |
+| `fix: handle None auto_judge_threshold` | Fixed a crash when running auto-judge without a threshold set |
+| `refactor: modular routers` | Reorganized backend code for better maintainability |
+| `fix: progress bar stuck at 100%` | Fixed progress bar that wouldn't reset between runs |
+| `feat: Sprint 11 — 9 tool eval features` | Break this into individual feature bullets |
 
 ## Commit Classification
 
-Use conventional commit prefixes to categorize:
+Use conventional commit prefixes, then map to human-friendly categories:
 
-| Prefix | Category |
+| Prefix | Human Category |
 |---|---|
-| `feat:`, `feature:` | Features |
+| `feat:`, `feature:` | New Features |
 | `fix:`, `bugfix:` | Bug Fixes |
-| `chore:`, `ci:`, `build:` | Infrastructure |
-| `docs:` | Documentation |
-| `refactor:` | Refactoring |
-| `test:`, `tests:` | Testing |
-| `perf:` | Performance |
+| `perf:` | Improvements |
+| `refactor:`, `chore:`, `ci:`, `build:`, `docs:`, `test:` | Under the Hood |
 
-For commits without conventional prefixes, classify by file paths:
-- `tests/` changes → Testing
-- `docs/` changes → Documentation
-- `.github/`, `Dockerfile`, `docker-compose*` → Infrastructure
-- `frontend/` only → Frontend
-- Otherwise → Other
+For commits without prefixes, classify by file paths:
+- `tests/` → Under the Hood
+- `docs/` → Under the Hood
+- `.github/`, `Dockerfile` → Under the Hood
+- `frontend/` only → Improvements (if UX change) or Under the Hood
+- Otherwise → look at the commit body for intent
 
-## Output Structure
+## Entry Structure
 
-1. **Header** with date range
-2. **Features** table — commit hash, feature name (bold), brief description
-3. **Bug Fixes** table — commit hash, what was fixed
-4. **Infrastructure / Docs** table — category, details
-5. **By the Numbers** — total commits, files changed, lines +/-, test delta
+Each changelog entry follows this format:
 
-## Metrics Extraction
+```markdown
+## [version or date label] -- YYYY-MM-DD
 
-From `git log --stat`:
-- Count `files changed` from the summary line per commit
-- Sum `insertions(+)` and `deletions(-)`
-- Count unique files across all commits for total files touched
+### New Features
+- **Feature Name** -- plain-language description of what users can now do
+- **Another Feature** -- what it enables, why it matters
 
-Test count detection:
-- Look for pytest collection: `uv run pytest --collect-only -q 2>/dev/null | tail -1`
-- Or count test files: `ls tests/test_*.py | wc -l`
+### Improvements
+- Better X when doing Y
+- Faster Z under heavy load
 
-## Handling Edge Cases
+### Bug Fixes
+- Fixed: description of what was broken and what it does now
+- Fixed: another fix in plain language
 
-- **Merge commits**: Exclude with `--no-merges`
-- **Co-author lines**: Strip `Co-Authored-By:` from descriptions
-- **Multi-scope commits**: Use the commit message prefix, not file heuristics
-- **Squash commits**: Treat as single entry, may contain bullet lists in body — summarize
-- **Empty categories**: Omit sections with zero entries
+### Under the Hood
+- Upgraded dependencies, reorganized backend, added N tests
+- CI/CD improvements, Docker changes
+```
 
-See `references/changelog-format.md` for the exact output template.
+## File Maintenance Rules
+
+1. **CHANGELOG.md lives in the project root**
+2. **Newest entries at the top** (reverse chronological)
+3. **Never overwrite existing entries** — only prepend new ones
+4. **Auto-detect last entry date** — scan for the most recent `## [` header to avoid duplicate coverage
+5. **Skip empty categories** — don't include a section with zero items
+6. **Group related commits** — if 5 commits all fix the same feature, write one bullet
+7. **Collapse infrastructure** — "Under the Hood" should be 1-3 lines max, not a full list
+
+## Writing Guidelines
+
+- Start bullets with a verb: "Added", "Fixed", "Improved", "Removed", "Updated"
+- Don't mention commit hashes in the file (keep it clean)
+- Don't include `Co-Authored-By` lines
+- Skip `static/assets/` hash-renamed files entirely
+- For mega-commits (20+ files), summarize the theme, don't list files
+- Keep each bullet to 1-2 lines max
+- Use `--` (double dash) not `-` for em-dash separators
+
+## Metrics (optional, at end of entry)
+
+If the entry covers significant work, add a brief stats line:
+
+```markdown
+> 12 commits, 45 files changed, +2,400 / -320 lines
+```
+
+See `references/changelog-format.md` for the exact file template and examples.

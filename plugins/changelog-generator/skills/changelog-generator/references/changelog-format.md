@@ -1,104 +1,133 @@
-# Changelog Output Format
+# CHANGELOG.md File Format
 
-## Table Format (default)
+## File Header (created once)
 
 ```markdown
-## Changelog: [start date] - [end date]
+# Changelog
 
-### Features
+All notable changes to this project are documented here.
+Format: human-readable summaries grouped by impact.
 
-| Commit | What Was Added |
-|---|---|
-| `abc1234` | **Feature Name** -- brief description of what was added |
-| `def5678` | **Another Feature** -- what it does and why it matters |
+---
+```
+
+## Entry Template
+
+```markdown
+## [v1.3.0] -- 2026-02-25
+
+### New Features
+- **Forgot Password** -- users can now reset their password via email link
+- **Google OAuth** -- sign in with Google, auto-merges with existing accounts
+- **Public Leaderboard** -- anonymous model rankings visible without login
+- **Auto-Optimize** -- iterative prompt refinement using meta-model feedback
+
+### Improvements
+- Progress bars now show accurate ETA and persist across page navigation
+- Model selector upgraded from text input to searchable dropdown
+- Auth tokens extended to 24 hours with proactive background refresh
 
 ### Bug Fixes
+- Fixed progress bar getting stuck at 100% between runs
+- Fixed auto-judge crashing when threshold was not set
+- Fixed cross-provider errors when judge and eval share the same endpoint
+- Fixed Docker builds missing required Python modules
 
-| Commit | Fix |
-|---|---|
-| `ghi9012` | Fixed X that caused Y when Z happened |
-| `jkl3456` | Description of what was broken and how it was resolved |
+### Under the Hood
+- Migrated tool eval and judge from SSE to WebSocket for real-time updates
+- Added 170+ new tests (total: 988), reorganized test fixtures
+- Backend restructured into 24 modular routers
 
-### Infrastructure / Docs
-
-| What | Details |
-|---|---|
-| CI/CD | Description of pipeline changes |
-| Docker | Description of container changes |
-| Docs | Documentation updates |
-
-### By the Numbers
-
-| Metric | Value |
-|---|---|
-| Commits | 9 |
-| Files changed | 42 |
-| Lines added | +2,400 |
-| Lines removed | -320 |
-| Tests | 815 -> 988 |
+> 56 commits, 736 files changed, +72,342 / -13,192 lines
 ```
 
-## Bullet Format (alternative)
+## Full File Example
 
 ```markdown
-## Changelog: [start date] - [end date]
+# Changelog
 
-### Features
-- **`abc1234`** -- **Feature Name**: brief description
-- **`def5678`** -- **Another Feature**: what it does
+All notable changes to this project are documented here.
+Format: human-readable summaries grouped by impact.
+
+---
+
+## [v1.3.0] -- 2026-02-25
+
+### New Features
+- **Forgot Password** -- users can now reset their password via email link
+- **Google OAuth** -- sign in with Google, auto-merges with existing accounts
 
 ### Bug Fixes
-- **`ghi9012`** -- Fixed X that caused Y
-- **`jkl3456`** -- Fixed broken Z
+- Fixed progress bar getting stuck at 100%
 
-### Infrastructure / Docs
-- **`mno7890`** -- Updated CI pipeline for staging deploys
-- **`pqr1234`** -- Added Docker healthcheck
+> 12 commits, 45 files changed, +2,400 / -320 lines
 
-### Summary
-- **9 commits**, 42 files changed
-- **+2,400** lines added, **-320** removed
-- Tests: 815 -> 988
+---
+
+## [v1.2.0] -- 2026-02-18
+
+### New Features
+- **Parameter Tuner** -- grid search across temperature, top_p, and provider-specific params
+- **Search Space Presets** -- save and load tuning configurations
+
+### Improvements
+- WebSocket migration for real-time job updates (replaced SSE)
+
+### Bug Fixes
+- Fixed tool accuracy percentage showing double the actual value
+
+> 20 commits, 89 files changed, +3,806 / -306 lines
+
+---
+
+## [v1.1.0] -- 2026-02-10
+
+### New Features
+- **Process Tracker** -- centralized job management with queuing and concurrency limits
+
+### Under the Hood
+- Added 405 automated tests across 12 files
+
+> 8 commits, 32 files changed, +1,200 / -150 lines
 ```
 
-## Grouping Rules
+## Version Label Conventions
 
-When multiple commits relate to the same feature, group them:
+Pick the style that fits the project:
 
-```markdown
-| `abc1234`, `def5678` | **Auth System** -- JWT login, forgot password flow, OAuth integration |
-```
-
-## Conventional Commit Prefix Map
-
-| Prefix | Category | Icon (optional) |
+| Style | Example | When to Use |
 |---|---|---|
-| `feat:` | Features | -- |
-| `fix:` | Bug Fixes | -- |
-| `chore:` | Infrastructure | -- |
-| `ci:` | Infrastructure | -- |
-| `build:` | Infrastructure | -- |
-| `docs:` | Documentation | -- |
-| `refactor:` | Refactoring | -- |
-| `test:` | Testing | -- |
-| `perf:` | Performance | -- |
+| Semver | `[v1.3.0]` | Projects with formal releases |
+| Sprint | `[Sprint 11]` | Agile/sprint-based teams |
+| Date | `[2026-02-25]` | Continuous delivery, no formal versions |
+| Week | `[Week of Feb 24]` | Weekly cadence teams |
 
-## File Path Fallback Classification
+## Auto-Detection of Last Entry
 
-When no conventional prefix is present:
+To find where to insert a new entry, scan for:
+1. The first line matching `^## \[` after the file header
+2. Extract the date from `-- YYYY-MM-DD` at the end of that line
+3. Use that date as the `--since` for git log
+4. If no match, use the last `---` separator or end of header
 
-| Path Pattern | Category |
-|---|---|
-| `tests/`, `test_*` | Testing |
-| `docs/`, `*.md` (not README) | Documentation |
-| `.github/`, `Dockerfile`, `docker-compose*` | Infrastructure |
-| `frontend/`, `*.vue`, `*.js` (in frontend) | Frontend |
-| `static/` | Build Artifacts (skip or summarize) |
-| Everything else | Other |
+## Separator Rules
 
-## Tips
+- Put `---` between each entry for visual separation
+- The header ends with `---` before the first entry
+- Each entry is separated by `---`
 
-- Skip `static/assets/` hash-renamed files -- they're build artifacts, mention as "Frontend rebuilt" once
-- For large commits (20+ files), summarize rather than listing every file
-- Strip `Co-Authored-By:` lines from commit messages
-- Use `--` (em dash) not `-` for separating commit title from description
+## Category Priority Order
+
+Always list categories in this order (skip empty ones):
+1. New Features
+2. Improvements
+3. Bug Fixes
+4. Breaking Changes (rare, only when applicable)
+5. Under the Hood
+
+## Grouping Heuristics
+
+When multiple commits touch the same area:
+- 3 commits fixing auth → one "Fixed" bullet mentioning all three
+- 5 commits building param tuner → one "New Feature" bullet describing the end result
+- 10 commits that are all `static/assets/` renames → skip entirely or "Frontend rebuilt"
