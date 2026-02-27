@@ -85,14 +85,14 @@
       "category": "finance"
     },
     {
-      "name": "agents-team",
-      "description": "Reusable team templates. /agents-team:start <profile> <request> to launch a saved team. /agents-team:list to see available profiles.",
-      "version": "2.0.0",
+      "name": "teams",
+      "description": "Reusable team templates. /teams:start <profile> <request> to launch a saved team. /teams:list to see available profiles.",
+      "version": "2.1.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
       },
-      "source": "./plugins/agents-team",
+      "source": "./plugins/teams",
       "category": "development"
     },
     {
