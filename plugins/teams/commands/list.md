@@ -1,5 +1,5 @@
 ---
-name: list
+name: teams:list
 description: "List available team profiles. Usage: /teams:list"
 ---
 

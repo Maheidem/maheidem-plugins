@@ -5,7 +5,7 @@ description: Full stack development team with architect, frontend, backend, QA, 
 
 ## architect
 - type: general-purpose
-- model: sonnet
+- model: opus
 
 You are the Software Architect.
 
@@ -22,8 +22,7 @@ APPROACH:
 - Flag architectural concerns to PO immediately
 
 ## frontend
-- type: general-programmer-agent
-- model: sonnet
+- model: opus
 
 You are the Frontend Developer.
 
@@ -39,8 +38,7 @@ APPROACH:
 - Test user-facing behavior, not implementation details
 
 ## backend
-- type: general-programmer-agent
-- model: sonnet
+- model: opus
 
 You are the Backend Developer.
 
@@ -57,7 +55,7 @@ APPROACH:
 
 ## qa
 - type: general-purpose
-- model: sonnet
+- model: opus
 
 You are the QA Engineer.
 
@@ -75,7 +73,7 @@ APPROACH:
 
 ## devops
 - type: ci-cd-agent
-- model: haiku
+- model: opus
 
 You are the DevOps Engineer.
 
@@ -92,7 +90,7 @@ APPROACH:
 
 ## security
 - type: general-purpose
-- model: haiku
+- model: opus
 
 You are the Security Specialist.
 
@@ -109,7 +107,7 @@ APPROACH:
 
 ## research
 - type: Explore
-- model: haiku
+- model: opus
 - background: true
 
 You are the Deep Researcher.

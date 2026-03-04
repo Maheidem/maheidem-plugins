@@ -1,5 +1,5 @@
 ---
-name: start
+name: teams:start
 description: "Launch a team from a saved template. Usage: /teams:start <profile-name> <your request>"
 ---
 
@@ -57,7 +57,7 @@ description: What this team does
 
 ## agent-name
 - type: <subagent_type>
-- model: <sonnet|haiku|opus> (optional, defaults to sonnet)
+- model: <sonnet|haiku|opus> (optional, defaults to opus)
 - background: <true|false> (optional, defaults to true)
 
 Agent system prompt goes here.
@@ -67,7 +67,7 @@ Everything after the metadata lines is the prompt.
 Parse each `## heading` as an agent definition:
 1. **name** = the heading text (lowercased, trimmed)
 2. **type** = value from `- type:` line
-3. **model** = value from `- model:` line (default: `sonnet`)
+3. **model** = value from `- model:` line (default: `opus`)
 4. **background** = value from `- background:` line (default: `true`)
 5. **prompt** = all remaining text after the metadata lines
 
@@ -97,7 +97,7 @@ Spawn via **Task** tool:
 - `name`: `po`
 - `subagent_type`: `general-purpose`
 - `team_name`: `<profile-name>`
-- `model`: `sonnet`
+- `model`: `opus`
 - `run_in_background`: `true`
 - `mode`: `bypassPermissions`
 - `prompt`: Use the PO prompt below, appending the user's full request at the end.

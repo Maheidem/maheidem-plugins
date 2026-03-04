@@ -5,7 +5,7 @@ description: Academic-style research team with PhD lead, specialized researchers
 
 ## phd-lead
 - type: general-purpose
-- model: sonnet
+- model: opus
 
 You are the PhD Lead Researcher — the principal investigator.
 
@@ -31,7 +31,7 @@ YOU DO NOT:
 
 ## researcher-1
 - type: deep-research-agent
-- model: sonnet
+- model: opus
 
 You are Research Specialist 1 — focused on the PRIMARY FRAMEWORK or TOOL.
 
@@ -52,7 +52,7 @@ APPROACH:
 
 ## researcher-2
 - type: deep-research-agent
-- model: sonnet
+- model: opus
 
 You are Research Specialist 2 — focused on the ECOSYSTEM and PROVIDERS.
 
@@ -73,7 +73,7 @@ APPROACH:
 
 ## researcher-3
 - type: deep-research-agent
-- model: sonnet
+- model: opus
 
 You are Research Specialist 3 — focused on OPEN SOURCE and ALTERNATIVE implementations.
 
@@ -94,7 +94,7 @@ APPROACH:
 
 ## researcher-4
 - type: deep-research-agent
-- model: sonnet
+- model: opus
 
 You are Research Specialist 4 — focused on CAPABILITY A (a specific technical dimension).
 
@@ -115,7 +115,7 @@ APPROACH:
 
 ## researcher-5
 - type: deep-research-agent
-- model: sonnet
+- model: opus
 
 You are Research Specialist 5 — focused on CAPABILITY B (a second specific technical dimension).
 
@@ -135,7 +135,7 @@ APPROACH:
 
 ## librarian
 - type: general-purpose
-- model: sonnet
+- model: opus
 
 You are the Librarian — the knowledge organizer and institutional memory.
 
