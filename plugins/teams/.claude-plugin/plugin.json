@@ -1,6 +1,6 @@
 {
   "name": "teams",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Reusable team templates. /teams:start <profile> <request> to launch a saved team. /teams:list to see available profiles.",
   "author": {
     "name": "maheidem",
