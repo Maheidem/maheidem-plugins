@@ -138,6 +138,17 @@
       },
       "source": "./plugins/changelog-generator",
       "category": "development"
+    },
+    {
+      "name": "deep-research",
+      "description": "Deep research agent with 5-phase workflow (SCOPE → SEARCH+CAPTURE → SYNTHESIZE → VALIDATE → HANDOFF), deterministic citation gate, dedup preflight, source-reliability rubric, and auto-maintained research index. Slash command /deep-research:research, agent-handoff protocol, validate-citations.sh + build-research-index.sh deterministic scripts, fixture test suite.",
+      "version": "2.0.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/deep-research",
+      "category": "research"
     }
   ]
 }

@@ -1,0 +1,21 @@
+{
+  "name": "deep-research",
+  "version": "2.0.0",
+  "description": "Deep research agent with 5-phase workflow (SCOPE → SEARCH+CAPTURE → SYNTHESIZE → VALIDATE → HANDOFF), deterministic citation gate, dedup preflight, source-reliability rubric, and auto-maintained research index.",
+  "author": {
+    "name": "Symphony",
+    "email": "maheidem@users.noreply.github.com"
+  },
+  "allowed-tools": [
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Glob",
+    "Grep",
+    "Bash",
+    "WebSearch",
+    "WebFetch",
+    "AskUserQuestion"
+  ]
+}
