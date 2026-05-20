@@ -1,9 +1,0 @@
-{
-  "name": "ralph-loop-mac",
-  "description": "Mac-compatible Ralph Loop - continuous self-referential AI loops for iterative development. Bash implementation of the Ralph Wiggum technique pioneered by Geoffrey Huntley. v2.2.0: Fixed start-loop execution, added pipefail, hook timeout.",
-  "author": {
-    "name": "maheidem",
-    "email": "maheidem@users.noreply.github.com"
-  },
-  "version": "2.2.0"
-}

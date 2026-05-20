@@ -1,5 +1,0 @@
-{
-  "name": "quality-gate",
-  "version": "1.0.1",
-  "description": "Journey-first development workflow: define user journeys before code, discover gaps, generate Playwright E2E tests, validate with real providers. Replaces journey-auditor."
-}
