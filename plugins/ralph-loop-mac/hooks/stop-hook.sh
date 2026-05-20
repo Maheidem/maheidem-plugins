@@ -18,6 +18,12 @@ if ! command -v jq &> /dev/null; then
     exit 0
 fi
 
+# Guard: if stop_hook_active is set, allow exit to prevent infinite loops
+STOP_HOOK_ACTIVE=$(echo "$HOOK_INPUT" | jq -r '.stop_hook_active // false')
+if [[ "$STOP_HOOK_ACTIVE" == "true" ]]; then
+    exit 0
+fi
+
 MY_SESSION=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty')
 
 if [[ -z "$MY_SESSION" ]]; then

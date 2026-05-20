@@ -149,6 +149,17 @@
       },
       "source": "./plugins/deep-research",
       "category": "research"
+    },
+    {
+      "name": "handoff",
+      "description": "Standardized handoff documents for context preservation across agent / session boundaries. Ships the agent-handoff skill (write) and /handoff-resume command (read latest handoff after /clear).",
+      "version": "0.1.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/handoff",
+      "category": "productivity"
     }
   ]
 }

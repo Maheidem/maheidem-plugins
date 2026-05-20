@@ -1,0 +1,11 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "handoff",
+  "version": "0.1.0",
+  "description": "Standardized handoff documents for context preservation across agent / session boundaries. Ships the agent-handoff skill (write) and /handoff-resume command (read).",
+  "author": {
+    "name": "maheidem",
+    "email": "maheidem@users.noreply.github.com"
+  },
+  "category": "productivity"
+}
