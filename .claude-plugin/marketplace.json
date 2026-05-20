@@ -8,39 +8,6 @@
   },
   "plugins": [
     {
-      "name": "ralph-loop-mac",
-      "description": "Mac-compatible Ralph Loop - Bash implementation for iterative AI development loops (Ralph Wiggum technique). v2.2.0: Fixed start-loop execution, pipefail, timeout.",
-      "version": "2.2.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/ralph-loop-mac",
-      "category": "development"
-    },
-    {
-      "name": "ralph-loop-windows",
-      "description": "Windows-compatible Ralph Loop - PowerShell implementation for iterative AI development loops (Ralph Wiggum technique). v2.1.0: Stuck detection warns when no file changes.",
-      "version": "2.1.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/ralph-loop-windows",
-      "category": "development"
-    },
-    {
-      "name": "meeting",
-      "description": "Self-contained meeting transcription and summarization using Whisper AI. Interactive guided mode, multiple output formats, speaker diarization, and AI-powered summaries.",
-      "version": "1.3.2",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/meeting",
-      "category": "productivity"
-    },
-    {
       "name": "plugin-forge",
       "description": "Forge new plugins from session reflections, past conversation analysis, or from scratch. 6-phase workflow with history analysis: intent clarification, marketplace setup, conflict detection, plugin planning, generation, and optional git commit/push.",
       "version": "1.1.0",
@@ -63,17 +30,6 @@
       "category": "development"
     },
     {
-      "name": "council",
-      "description": "Query multiple AI CLI tools (codex, gemini, opencode, aider) in parallel with READ-ONLY safety enforcement. Claude synthesizes diverse opinions into actionable insights. Supports quick mode and thorough multi-round debate.",
-      "version": "1.2.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/council",
-      "category": "ai"
-    },
-    {
       "name": "controle-financeiro",
       "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking. v1.5.1: subagents tuned with full setup (10 recurrent expenses, CCom prior-month fallback, Quentinha calc-aware anomaly check, repository.py import path, memory-driven PJ defaults).",
       "version": "1.5.1",
@@ -93,50 +49,6 @@
         "email": "maheidem@users.noreply.github.com"
       },
       "source": "./plugins/teams",
-      "category": "development"
-    },
-    {
-      "name": "local-llm-manager",
-      "description": "Unified local LLM management across backends (LM Studio, TabbyAPI, TensorRT-LLM, Ollama, vLLM, llama.cpp). Diagnostics, API operations, VRAM estimation, model loading, parameter reference, and endpoint testing.",
-      "version": "1.0.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/local-llm-manager",
-      "category": "ai"
-    },
-    {
-      "name": "journey-auditor",
-      "description": "[DEPRECATED — replaced by quality-gate] Discover all user journeys in a web app codebase, map paths into tiered test plans, find coverage gaps, and generate production-quality Playwright E2E tests.",
-      "version": "1.0.1",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/journey-auditor",
-      "category": "testing"
-    },
-    {
-      "name": "quality-gate",
-      "description": "Journey-first development workflow: define user journeys before code, discover gaps, generate Playwright E2E tests, validate with real providers. 5-phase workflow (define, discover, map, generate, validate). Replaces journey-auditor.",
-      "version": "1.0.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/quality-gate",
-      "category": "testing"
-    },
-    {
-      "name": "changelog-generator",
-      "description": "Generate structured changelogs from git history with categorized features, fixes, and metrics. Conventional commit parsing, file-path heuristics, table/bullet output formats.",
-      "version": "1.1.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/changelog-generator",
       "category": "development"
     },
     {
