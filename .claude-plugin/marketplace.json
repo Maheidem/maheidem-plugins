@@ -72,6 +72,17 @@
       },
       "source": "./plugins/handoff",
       "category": "productivity"
+    },
+    {
+      "name": "presales-toolkit",
+      "description": "Symphony presales omnichannel knowledge management v9 — deterministic action surface with LLM-validated semantics. Bouncer engine, phase-state machine, phases.json DAGs, deterministic migration scripts, JSONL observability streams, metrics-summary CLI, and ship-gate orchestrator. Skills for check-updates, consolidate, discover-sources, freshness, audit, doctor, RFP/SOW, proposal/status drafting, and meeting prep.",
+      "version": "9.6.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/presales-toolkit",
+      "category": "business"
     }
   ]
 }
