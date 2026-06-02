@@ -30,6 +30,7 @@ To re-verify any of this on a fresh host: `references/verify-recipes.md`.
 | Intent | Bash |
 |---|---|
 | Spawn detached session | `tmux new-session -d -s NAME 'CMD'` |
+| Spawn detached, fixed size (avoids wrap breaking regexes) | `tmux new-session -d -s NAME -x 200 -y 50 'CMD'` |
 | List sessions | `tmux list-sessions` |
 | Send a command + Enter | `tmux send-keys -t NAME 'CMD' Enter` |
 | Send special keys (C-u, Esc, Tab, arrows) | `tmux send-keys -t NAME <Key>` |
@@ -74,7 +75,7 @@ modifiers `C-`/`M-`/`S-`. Full table + recipes: `references/send-keys-cookbook.m
 | Send input (especially anything beyond `cmd + Enter`) | `references/send-keys-cookbook.md` |
 | Read output, stream logs, assert on screen state, manage scrollback | `references/capture-and-stream.md` |
 | Coordinate multiple sessions, detect completion, hooks, `wait-for`, format strings | `references/orchestration-patterns.md` |
-| Drive and assert against a TUI/REPL end-to-end | `references/tui-testing.md` (pi specifics live in the pi-session-monitor skill) |
+| Drive a TUI/REPL — or another `claude` — end-to-end (startup gates, idle detection, completion sentinels, autonomy) | `references/tui-testing.md` (pi specifics live in the pi-session-monitor skill) |
 | Assert that any tmux flag / command / hook / format variable exists | `references/verify-recipes.md` ← always before asserting |
 
 ## Helper scripts (`scripts/`)
@@ -86,6 +87,7 @@ tmux 3.6a on this host.
 |---|---|
 | `new-driven-session.sh <name> <cmd…>` | Spawns a detached named session, returns `TMUX_SESSION=…` and `PANE_ID=%N` for `eval`. Errors if name collides. |
 | `wait-for-pane-text.sh [--quiet] <target> <regex> [timeout=30] [interval=0.5]` | Polls `capture-pane -S -100` until regex matches. `--quiet` adds prompt-readiness stability check. |
+| `wait-for-idle.sh <target> [stable_polls=3] [timeout=60] [interval=1]` | Regex-free readiness: waits until the pane stops changing. Use when you don't know the app's ready glyph (heavy/unfamiliar TUIs). Can't distinguish prompt from dialog — verify with an `-e` capture. |
 | `assert-pane-contains.sh <target> <regex> [lines=50]` | One-shot capture + grep; exit 1 with diagnostic dump on miss. |
 | `stream-pane-to-file.sh <target> <logfile> [--detach]` | Opens `pipe-pane -o "cat >> file"` with EXIT-trap cleanup (foreground) or fire-and-forget (`--detach`). |
 

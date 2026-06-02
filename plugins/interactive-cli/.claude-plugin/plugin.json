@@ -1,6 +1,6 @@
 {
   "name": "interactive-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Drive any interactive, human-oriented CLI from Claude — spawn persistent sessions, send input, observe and stream output, wait for completion, and run end-to-end terminal tests. First skill: tmux-orchestrator (pure-CLI, no MCP dependency).",
   "author": {
     "name": "maheidem",
