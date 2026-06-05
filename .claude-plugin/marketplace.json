@@ -30,17 +30,6 @@
       "category": "development"
     },
     {
-      "name": "delegation-mode",
-      "description": "Force delegation to specialized agents by blocking direct tool use (Edit, Write, Bash, NotebookEdit) in main session. Subagents have full access. Per-project config via .claude/agentic-mode.local.md.",
-      "version": "0.2.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/delegation-mode",
-      "category": "development"
-    },
-    {
       "name": "controle-financeiro",
       "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking. v1.5.1: subagents tuned with full setup (10 recurrent expenses, CCom prior-month fallback, Quentinha calc-aware anomaly check, repository.py import path, memory-driven PJ defaults).",
       "version": "1.5.1",
@@ -94,6 +83,17 @@
       },
       "source": "./plugins/presales-toolkit",
       "category": "business"
+    },
+    {
+      "name": "orchestrator-mode",
+      "description": "Per-project orchestrator mode: the main conversation agent goes read-only (allowlist of read/search/delegation tools only; Write/Edit/Bash/NotebookEdit and all MCP tools blocked) while subagents keep full access. OFF by default, opt-in per project via a root .orchestrator-mode.state file. Injects a delegation reminder into the main thread when active.",
+      "version": "0.1.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/orchestrator-mode",
+      "category": "development"
     }
   ]
 }

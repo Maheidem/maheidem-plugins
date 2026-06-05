@@ -1,0 +1,16 @@
+{
+  "name": "orchestrator-mode",
+  "description": "Per-project orchestrator mode: the main conversation agent goes read-only via an allowlist (only read/meta/delegation tools; Write/Edit/Bash/MCP/everything else denied) while subagents keep full access. OFF by default, opt-in per project via .orchestrator-mode.state at the project root. Injects a delegation reminder into the main thread when active.",
+  "author": {
+    "name": "maheidem",
+    "email": "maheidem@users.noreply.github.com"
+  },
+  "keywords": [
+    "orchestration",
+    "delegation",
+    "read-only",
+    "subagents",
+    "hooks"
+  ],
+  "repository": "https://github.com/maheidem/maheidem-plugins"
+}

@@ -8,3 +8,8 @@ Thumbs.db
 
 # Local state files (these are created at runtime)
 *.local.md
+
+# Python build artifacts
+__pycache__/
+*.pyc
+.ruff_cache/
