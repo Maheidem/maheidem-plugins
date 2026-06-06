@@ -31,8 +31,8 @@
     },
     {
       "name": "controle-financeiro",
-      "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking. v1.5.1: subagents tuned with full setup (10 recurrent expenses, CCom prior-month fallback, Quentinha calc-aware anomaly check, repository.py import path, memory-driven PJ defaults).",
-      "version": "1.5.1",
+      "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking. v2.0.0: import-fatura and new-month commands reworked so all embedded Python snippets are directly runnable end-to-end.",
+      "version": "2.0.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
