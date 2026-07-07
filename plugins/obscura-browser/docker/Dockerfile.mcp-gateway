@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1
+#
+# Obscura MCP gateway: a single container that exposes stealth Obscura's browser
+# automation as a Claude-Code-compatible Streamable-HTTP MCP server (35 tools:
+# browser_navigate, browser_snapshot, browser_click, browser_extract, ...).
+#
+# WHY A GATEWAY: Obscura's own `mcp --http` mode is NOT spec-compliant for
+# Claude Code — it omits the Mcp-Session-Id header, so Claude Code's client
+# connects but times out on tools/list. Obscura's mcp STDIO mode works perfectly,
+# so we wrap it with supergateway --stateful, which owns the session layer and
+# re-exposes proper Streamable-HTTP (with the session header Claude Code needs).
+#
+# BUILD (needs obscura-stealth:local to exist — build it from ./Dockerfile first):
+#   docker build -f Dockerfile.mcp-gateway -t obscura-mcp-gw:local .
+# RUN (one persistent container, loopback-bound):
+#   docker run -d --name obscura-mcp --restart unless-stopped -p 127.0.0.1:3000:3000 obscura-mcp-gw:local
+# WIRE into Claude Code at user scope (all projects):
+#   claude mcp add --scope user --transport http obscura http://localhost:3000/mcp
+
+# ---- stage 1: pull the stealth obscura binaries from the prebuilt image ----
+FROM obscura-stealth:local AS obscura
+
+# ---- stage 2: node base that also carries the glibc/openssl libs obscura needs ----
+# obscura is a debian-bookworm (glibc) build; node:22-bookworm-slim is a superset
+# of the libc/libgcc/libm/openssl runtime obscura links against.
+FROM node:22-bookworm-slim
+
+# TLS roots for outbound HTTPS; tini for clean PID1 signal handling of child procs
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# supergateway pinned to the version verified for stdio -> Streamable-HTTP with sessions
+RUN npm install -g supergateway@3.4.3
+
+# obscura headless browser + its worker (obscura spawns /obscura-worker as a sidecar)
+COPY --from=obscura /obscura /obscura
+COPY --from=obscura /obscura-worker /obscura-worker
+
+# stdio shim that injects MCP server-level `instructions` (usage guidance) into
+# the initialize response, so every client receives it — not just projects with
+# a CLAUDE.md note.
+COPY mcp-inject-instructions.js /mcp-inject-instructions.js
+
+EXPOSE 3000
+
+# Chain: supergateway (HTTP/session layer, --stateful => Mcp-Session-Id header)
+#   -> node shim (injects instructions) -> /obscura mcp --stealth (the browser).
+# --stateful is mandatory (emits the session header Claude Code needs);
+# --outputTransport streamableHttp must be explicit (stdio defaults to sse).
+ENTRYPOINT ["tini","--","supergateway", \
+  "--stdio","node /mcp-inject-instructions.js", \
+  "--outputTransport","streamableHttp", \
+  "--port","3000", \
+  "--streamableHttpPath","/mcp", \
+  "--stateful"]

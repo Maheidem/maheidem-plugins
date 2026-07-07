@@ -8,6 +8,17 @@
   },
   "plugins": [
     {
+      "name": "obscura-browser",
+      "description": "Stealth Obscura headless browser as a system-wide MCP (35 browser_* tools) that gets past Cloudflare. Bundles the Docker build (Obscura compiled --features stealth for real Chrome TLS/JA4), a supergateway HTTP gateway that injects server-level usage instructions, the /obscura:start command, and the driving-obscura skill.",
+      "version": "0.1.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/obscura-browser",
+      "category": "development"
+    },
+    {
       "name": "interactive-cli",
       "description": "Drive any interactive, human-oriented CLI from Claude — spawn persistent sessions, send input, observe and stream output, wait for completion, and run end-to-end terminal tests. First skill: tmux-orchestrator (pure-CLI, no MCP dependency).",
       "version": "0.2.0",
