@@ -96,9 +96,20 @@
       "category": "business"
     },
     {
-      "name": "orchestrator-mode",
-      "description": "Per-project orchestrator mode: the main conversation agent goes read-only (allowlist of read/search/delegation tools only; Write/Edit/Bash/NotebookEdit and all MCP tools blocked) while subagents keep full access. OFF by default, opt-in per project via a root .orchestrator-mode.state file. Injects a delegation reminder into the main thread when active.",
+      "name": "pi-delegate",
+      "description": "Forward a coding task to the locally-installed pi CLI (pi.dev's pi-coding-agent) so Claude Code can offload work to a local model instead of doing it itself. Thin, foreground-only, one-shot subprocess wrapper (pi-companion.mjs) around `pi -p --mode json --no-session`. Ships /pi-delegate:delegate and /pi-delegate:setup commands and a Bash-only forwarding subagent. Composes one-directionally with orchestrator-mode's 'pi' state, which allowlists this plugin's subagent as the only delegation target -- but works completely standalone without it.",
       "version": "0.1.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/pi-delegate",
+      "category": "development"
+    },
+    {
+      "name": "orchestrator-mode",
+      "description": "Per-project orchestrator mode with three states (off/on/pi): the main conversation agent goes read-only (allowlist of read/search/delegation tools only; Write/Edit/Bash/NotebookEdit and all MCP tools blocked) while subagents keep full access. The 'pi' state additionally closes the general delegation escape hatch, allowing Task/Agent only to the pi-delegate plugin's subagent -- forcing all code changes through the local pi CLI. OFF by default, opt-in per project via a root .orchestrator-mode.state file. Injects a mode-specific reminder into the main thread when active.",
+      "version": "0.2.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
