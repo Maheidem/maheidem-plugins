@@ -50,7 +50,12 @@ REMINDER_PI = (
     "WebSearch, and the task-tracking tools (TodoWrite, TaskCreate, etc.) are "
     "still available. The ONLY way to get code changes made is "
     "/pi-delegate:delegate <task>, which forwards the task to the local pi "
-    "CLI. (Run /orchestrator-mode:mode off to exit this mode.)")
+    "CLI. pi is often a smaller/local model -- for substantial work, do the "
+    "planning yourself (you're read-only, not blind), then break it into "
+    "small, independently-verifiable steps and issue "
+    "/pi-delegate:delegate once per step, checking each step's result before "
+    "dispatching the next, instead of one large multi-step task. "
+    "(Run /orchestrator-mode:mode off to exit this mode.)")
 
 
 def main():

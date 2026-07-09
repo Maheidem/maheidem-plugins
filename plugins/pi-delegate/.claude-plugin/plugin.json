@@ -1,6 +1,6 @@
 {
   "name": "pi-delegate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Forward a coding task to the locally-installed pi CLI (pi.dev's pi-coding-agent) so Claude Code can offload work to a local model. Thin, foreground-only, one-shot subprocess wrapper.",
   "author": {
     "name": "maheidem",

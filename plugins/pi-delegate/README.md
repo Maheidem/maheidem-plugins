@@ -9,7 +9,11 @@ wrapper — not a persistent broker, not a JSON-RPC server.
 
 - `/pi-delegate:delegate <task>` — forwards `<task>` to the `delegate`
   subagent, which runs it through `pi -p --mode json --no-session` and
-  returns pi's result verbatim.
+  returns pi's result verbatim. For substantial multi-step work, prefer
+  issuing several small, independently-verifiable `/pi-delegate:delegate`
+  calls in sequence over one large task — `pi` is often a smaller/local
+  model, and narrow, well-scoped tasks succeed far more reliably than
+  open-ended ones. See `commands/delegate.md`'s "Task sizing" section.
 - `/pi-delegate:setup` — checks that `pi` is on PATH, reports its version and
   the configured `defaultProvider`/`defaultModel` from
   `~/.pi/agent/settings.json`, optionally offers to install it
