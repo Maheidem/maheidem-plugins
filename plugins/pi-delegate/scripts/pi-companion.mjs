@@ -9,13 +9,16 @@
 //     spawnPi() below for why. `setup`/`list-models` still use `spawnSync`
 //     since their outputs are small and fixed-size.
 //   - No background/job-tracking subcommands. That is a v2 idea, not built here.
-//   - Never trust the process exit code alone: pi exits 0 even on internal
-//     errors, so we always parse the NDJSON stream and look at the last
-//     agent_end event's final message.
+//   - Completion-marker contract: every task invocation instructs pi to write
+//     a JSON completion-report file as its LAST action. The presence and
+//     well-formedness of that file is the PRIMARY success signal. NDJSON
+//     stream parsing is retained as a fallback for diagnostics when the
+//     marker is missing or malformed.
 //   - Never throw an uncaught exception as the primary output. All failure
 //     paths degrade to a structured `{ ok: false, ... }` object.
 
 import { spawn, spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -354,7 +357,36 @@ async function runTask(opts) {
   if (opts.thinking) args.push("--thinking", opts.thinking);
   if (opts.tools) args.push("--tools", opts.tools);
   if (opts.excludeTools) args.push("--exclude-tools", opts.excludeTools);
-  args.push(opts.text);
+
+  // --- Completion-marker setup ---
+  // Generate a unique, absolute marker file path for this invocation.
+  const markerPath = path.join(os.tmpdir(), `pi-delegate-result-${crypto.randomUUID()}.json`);
+
+  // Defensive: unlink if a stale file somehow already exists at this fresh path.
+  try {
+    fs.unlinkSync(markerPath);
+  } catch {
+    // Expected — path is freshly generated so this should be a no-op.
+  }
+
+  // Append the completion-marker instruction to the task text. This is
+  // injected automatically for every task so callers never have to remember.
+  const completionMarkerInstruction = `
+
+--- COMPLETION MARKER (REQUIRED) ---
+As your ABSOLUTE LAST action before finishing, use a write-file tool to write a JSON completion report to this exact path: ${markerPath}
+
+The file MUST contain valid JSON with this exact schema:
+{
+  "status": "ok" | "error",
+  "summary": "one or two sentence description of what was done, or why it failed",
+  "nextSteps": ["optional", "array", "of", "recommended", "follow-ups"]
+}
+
+Use "status": "ok" if the task completed successfully, or "status": "error" if it failed.
+This is a required protocol step — do not skip it.`;
+
+  args.push(opts.text + completionMarkerInstruction);
 
   let result;
   try {
@@ -411,18 +443,75 @@ async function runTask(opts) {
   }
 
   const { events, unparseableLines } = parseNdjson(rawStdout);
+
+  // --- Completion-marker resolution (primary signal) ---
+  let markerResult = null;
+  let markerError = null;
+
+  try {
+    if (fs.existsSync(markerPath)) {
+      const raw = fs.readFileSync(markerPath, "utf8");
+      const parsed = JSON.parse(raw);
+
+      // Validate schema: status must be "ok" or "error", summary must be a string.
+      if (
+        parsed &&
+        (parsed.status === "ok" || parsed.status === "error") &&
+        typeof parsed.summary === "string"
+      ) {
+        markerResult = parsed;
+      } else {
+        markerError = "Completion marker file exists but has invalid schema (missing or wrong status/summary fields)";
+      }
+    } else {
+      markerError = "Completion marker file was not found at expected path";
+    }
+  } catch (err) {
+    markerError = `Completion marker file could not be read/parsed: ${err && err.message ? err.message : String(err)}`;
+  } finally {
+    // Always clean up the marker file so we don't leave artifacts in tmp.
+    try {
+      fs.unlinkSync(markerPath);
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+
+  // Build the final result based on whether the marker was valid.
+  if (markerResult) {
+    // Marker is present and well-formed — this is the PRIMARY result.
+    return {
+      ok: markerResult.status === "ok",
+      finalText: markerResult.summary,
+      errorMessage: markerResult.status === "error" ? markerResult.summary : null,
+      nextSteps: Array.isArray(markerResult.nextSteps) ? markerResult.nextSteps : [],
+      rawStdout,
+      rawStderr,
+      exitCode,
+      willRetry: null,
+      completionMarker: markerResult
+    };
+  }
+
+  // Marker was missing or malformed — fall back to NDJSON stream parsing for
+  // diagnostics, and report the marker failure as part of the error.
   const interpreted = interpretEvents(events);
 
-  if (unparseableLines.length > 0 && !interpreted.ok) {
-    // Surface a hint that some stdout lines weren't valid JSON — helpful for
-    // diagnosing a truly broken/foreign output stream without ever throwing.
-    interpreted.errorMessage = `${interpreted.errorMessage} (also saw ${unparseableLines.length} non-JSON line(s) in stdout)`;
+  let fallbackMessage = markerError;
+  if (!interpreted.ok && interpreted.errorMessage) {
+    fallbackMessage = `${markerError}; NDJSON fallback: ${interpreted.errorMessage}`;
+  } else if (interpreted.ok && interpreted.finalText) {
+    fallbackMessage = `${markerError} (NDJSON stream appeared normal but completion marker was not written)`;
+  }
+
+  if (unparseableLines.length > 0) {
+    fallbackMessage += ` (also saw ${unparseableLines.length} non-JSON line(s) in stdout)`;
   }
 
   return {
-    ok: interpreted.ok,
-    finalText: interpreted.finalText,
-    errorMessage: interpreted.errorMessage,
+    ok: false,
+    finalText: interpreted.finalText ?? null,
+    errorMessage: fallbackMessage,
     rawStdout,
     rawStderr,
     exitCode,

@@ -49,13 +49,15 @@ subcommands: `task`, `setup`, `list-models`, `write-config`, and
 `remove-config`. `task` runs `pi` via an async `spawn` (accumulating stdout in
 JS memory rather than relying on a fixed OS/Node buffer, since `pi`'s NDJSON
 stream can otherwise exceed any static `maxBuffer` on large tasks; stdin is
-explicitly ignored so `pi` never blocks reading it), parses the resulting
-NDJSON output stream, and returns a structured result — because `pi` exits 0
-even on internal errors, the script never trusts the exit code alone; it
-inspects the last `agent_end` event's final message for `stopReason: "error"`.
-See `skills/pi-cli-runtime/SKILL.md` for the full invocation contract
-(including the per-project pin) and `skills/pi-result-handling/SKILL.md` for
-how results and failures are presented.
+explicitly ignored so `pi` never blocks reading it), and uses a
+**completion-marker contract** as the primary success signal: every task
+automatically instructs `pi` to write a JSON report file (`/tmp/pi-delegate-result-<uuid>.json`)
+as its last action. The presence and well-formedness of that file determines
+success/failure. NDJSON stream parsing is retained as a fallback for
+diagnostics when the marker is missing or malformed. See
+`skills/pi-cli-runtime/SKILL.md` for the full invocation contract
+(including the per-project pin and completion-marker schema) and
+`skills/pi-result-handling/SKILL.md` for how results and failures are presented.
 
 ## Relationship to orchestrator-mode
 

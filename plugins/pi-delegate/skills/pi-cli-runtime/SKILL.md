@@ -96,9 +96,36 @@ if unset) and passed to Node's `spawn(cmd, args, { cwd, stdio: ["ignore", "pipe"
 
 ## Result contract
 
-`pi --mode json` streams NDJSON (one JSON object per line), and the process
-exits 0 even when pi hit an internal error — the failure only shows up inside
-the stream. The helper already does the correct parsing for you:
+### Completion-marker contract (primary signal)
+
+Every `task` invocation automatically appends a completion-marker instruction
+to the task text, telling `pi` to write a JSON report file as its ABSOLUTE
+LAST action. The helper treats this file as the PRIMARY success signal:
+
+- **Path**: A unique, per-invocation path under `os.tmpdir()`:
+  `/tmp/pi-delegate-result-<uuid>.json` (generated via `crypto.randomUUID()`
+  so concurrent runs never collide).
+- **Schema** (written by `pi`):
+  ```json
+  {
+    "status": "ok" | "error",
+    "summary": "one or two sentence description of what was done, or why it failed",
+    "nextSteps": ["optional", "array", "of", "recommended", "follow-ups"]
+  }
+  ```
+- **Resolution** (done by the helper after `pi` exits):
+  1. Check if the marker file exists and parses as valid JSON matching the schema.
+  2. If valid:
+     - `status: "ok"` → success. `finalText` = `summary`, `nextSteps` forwarded.
+     - `status: "error"` → failure. `errorMessage` = `summary` (pi itself reported failure).
+  3. If missing or malformed → failure. The helper falls back to NDJSON stream
+     parsing for diagnostics and includes the marker-failure reason in the error.
+  4. The marker file is always deleted after reading (cleanup).
+
+### NDJSON stream parsing (fallback only)
+
+The helper still captures the full NDJSON stream for observability and as a
+fallback when the completion marker is missing or malformed:
 
 1. Splits stdout on newlines, parses each non-empty line as JSON, and skips
    (does not throw on) any line that isn't valid JSON.
@@ -109,6 +136,9 @@ the stream. The helper already does the correct parsing for you:
    surfaces `errorMessage` verbatim.
 5. Otherwise the run succeeded — the helper's `finalText` is the concatenation
    of that message's `{"type":"text"}` content items.
+
+This fallback is only used when the completion marker is absent or invalid.
+It is never the primary signal.
 
 The subagent should not re-parse pi's stdout itself; it only needs to run the
 helper with `--json` and act on the structured result it returns.
