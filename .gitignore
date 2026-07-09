@@ -13,3 +13,4 @@ Thumbs.db
 __pycache__/
 *.pyc
 .ruff_cache/
+.orchestrator-mode.state

@@ -108,8 +108,8 @@
     },
     {
       "name": "orchestrator-mode",
-      "description": "Per-project orchestrator mode with three states (off/on/pi): the main conversation agent goes read-only (allowlist of read/search/delegation tools only; Write/Edit/Bash/NotebookEdit and all MCP tools blocked) while subagents keep full access. The 'pi' state additionally closes the general delegation escape hatch, allowing Task/Agent only to the pi-delegate plugin's subagent -- forcing all code changes through the local pi CLI. OFF by default, opt-in per project via a root .orchestrator-mode.state file. Injects a mode-specific reminder into the main thread when active.",
-      "version": "0.2.0",
+      "description": "Per-project orchestrator mode with three states (off/on/pi): the main conversation agent goes read-only (allowlist of read/search/delegation tools only; Write/Edit/Bash/NotebookEdit and all MCP tools blocked) while subagents keep full access. The 'pi' state additionally closes the general delegation escape hatch, allowing Task/Agent only to the pi-delegate plugin's subagent -- forcing all code changes through the local pi CLI. SendMessage is allowed (Task/Agent gating means any target is necessarily a pi-delegate teammate), plus an audited set of non-mutating tools (Monitor, CronList, LSP, MCP resource-read tools, PushNotification, ScheduleWakeup). OFF by default, opt-in per project via a root .orchestrator-mode.state file. Injects a mode-specific reminder into the main thread when active.",
+      "version": "0.2.1",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"

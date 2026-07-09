@@ -60,14 +60,24 @@ write tools actually reach the gate.
 
 ```
 Read, Grep, Glob, LS,
-Task, Agent,
+Task, Agent, SendMessage,
 TodoWrite,
 TaskCreate, TaskUpdate, TaskList, TaskGet, TaskStop, TaskOutput,
 AskUserQuestion,
 Skill, SlashCommand,
 ExitPlanMode, EnterPlanMode,
-ToolSearch
+ToolSearch,
+Monitor, CronList, LSP,
+ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool,
+PushNotification, ScheduleWakeup
 ```
+
+The last eight (`Monitor` through `ScheduleWakeup`) were added in a 2026-07-09
+audit of every built-in tool in the environment: each is read-only or a
+non-mutating side effect (streaming/listing/querying/notifying/scheduling),
+none writes files, executes commands, or spawns subagents. The MCP resource
+tools are generic read infra (not any one server) so this isn't a
+server-specific carve-out.
 
 **Denied on the main thread** — everything else, including:
 
@@ -75,6 +85,10 @@ ToolSearch
 - `Bash` (command execution)
 - **ALL `mcp__*` tools** (every MCP server tool is blocked on main)
 - `WebFetch`, `WebSearch`
+- `Artifact`, `CronCreate`, `CronDelete`, `EnterWorktree`, `ExitWorktree`,
+  `RemoteTrigger`, `Workflow` (external side effects, state mutation, or can
+  spawn arbitrary subagents — `Workflow` in particular is a known open
+  question, see the TODO comment in `enforce-orchestrator.py`)
 - any unknown / future tool not on the allowlist
 
 `Skill` and `SlashCommand` are allowlisted because any tool calls they spawn are
@@ -109,14 +123,23 @@ Same allowlist as `on`, minus Task/Agent (handled specially, see below), plus
 
 ```
 Read, Grep, Glob, LS,
-WebFetch, WebSearch,
+WebFetch, WebSearch, SendMessage,
 TodoWrite,
 TaskCreate, TaskUpdate, TaskList, TaskGet, TaskStop, TaskOutput,
 AskUserQuestion,
 Skill, SlashCommand,
 ExitPlanMode, EnterPlanMode,
-ToolSearch
+ToolSearch,
+Monitor, CronList, LSP,
+ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool,
+PushNotification, ScheduleWakeup
 ```
+
+`SendMessage` is safe here because Task/Agent is already gated to allow
+spawning only the `pi-delegate:delegate` subagent (see below) — no other
+subagent type can exist in a pi-mode session, so any `SendMessage` target is
+necessarily a pi-delegate teammate. Without it, a backgrounded pi-delegate
+dispatch is unreachable once launched.
 
 **Task/Agent** gets special handling instead of a flat allow/deny: it is
 allowed **only** when `tool_input.subagent_type` exactly equals

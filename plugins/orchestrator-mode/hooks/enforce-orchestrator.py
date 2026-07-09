@@ -69,13 +69,17 @@ from _state import get_mode, project_dir, state_file_path  # noqa: E402
 # themselves re-checked by this PreToolUse hook.
 MAIN_ALLOWLIST = {
     "Read", "Grep", "Glob", "LS",
-    "Task", "Agent",
+    "Task", "Agent", "SendMessage",
     "TodoWrite",
     "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop", "TaskOutput",
     "AskUserQuestion",
     "Skill", "SlashCommand",
     "ExitPlanMode", "EnterPlanMode",
     "ToolSearch",
+    # Read-only/introspection tools, audited and confirmed non-mutating:
+    "Monitor", "CronList", "LSP",
+    "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
+    "PushNotification", "ScheduleWakeup",
 }
 
 # The ONLY subagent_type Task/Agent may target while mode == "pi". Source of
@@ -91,15 +95,42 @@ PI_DELEGATE_SUBAGENT_TYPE = "pi-delegate:delegate"
 # subagent only), PLUS WebFetch/WebSearch -- the deliberate deviation from
 # "on" mode, since research/browsing isn't a mutation and there's no reason to
 # force it through pi.
+#
+# SendMessage is included deliberately: under mode == "pi", Task/Agent is
+# already gated (see handle_pi_mode below) to allow spawning ONLY the
+# pi-delegate subagent -- no other subagent type can ever be created in a
+# pi-mode session. That means any teammate SendMessage could possibly target
+# is necessarily a pi-delegate teammate, so allowing SendMessage unconditionally
+# here does not reopen the general delegation escape hatch; it only restores
+# the ability to check in on / resume the one subagent pi mode already
+# sanctions. Without this, a backgrounded pi-delegate dispatch is unreachable
+# once launched (TaskOutput/TaskGet fetch results, but SendMessage is what's
+# needed to continue/resume a named teammate).
 PI_MODE_ALLOWLIST = {
     "Read", "Grep", "Glob", "LS",
-    "WebFetch", "WebSearch",
+    "WebFetch", "WebSearch", "SendMessage",
     "TodoWrite",
     "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop", "TaskOutput",
     "AskUserQuestion",
     "Skill", "SlashCommand",
     "ExitPlanMode", "EnterPlanMode",
     "ToolSearch",
+    # Read-only/introspection tools, audited 2026-07-09 and confirmed
+    # non-mutating -- none of these write files, execute commands, or spawn
+    # subagents, so allowing them doesn't reopen any escape hatch:
+    #   Monitor: streams events from a background process (notifications only)
+    #   CronList: lists existing scheduled jobs (no create/delete)
+    #   LSP: language server queries (hover/definitions/references)
+    #   ListMcpResourcesTool/ReadMcpResourceTool/ReadMcpResourceDirTool:
+    #     generic MCP resource read infra -- not any one server, so this
+    #     isn't a server-specific carve-out (deliberately, per project
+    #     preference: no particular MCP server gets special-cased here)
+    #   PushNotification: sends a device notification, no repo/state mutation
+    #   ScheduleWakeup: schedules a future re-invocation, same category as
+    #     the already-allowed TaskCreate/TaskUpdate
+    "Monitor", "CronList", "LSP",
+    "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
+    "PushNotification", "ScheduleWakeup",
 }
 
 # TODO(open question): should the `Workflow` tool be deny-listed like Bash /
