@@ -34,14 +34,61 @@ flag entirely so pi's own configured default (from `~/.pi/agent/settings.json`)
 applies. Never hardcode a specific provider or model as a default in the
 wrapper or in this subagent's behavior.
 
+## Per-project provider/model pin
+
+`pi-companion.mjs` also reads an optional per-project config file,
+`<project>/.claude/pi-delegate.local.md`, with YAML frontmatter:
+
+```markdown
+---
+provider: zai
+model: glm-4.5-air
+---
+```
+
+Both keys are optional. Precedence for `provider`/`model` on every `task` call
+is three-tier:
+
+1. An explicit `--provider`/`--model` flag passed to that specific `task` call
+   (highest).
+2. This project config file, if present.
+3. pi's own global default from `~/.pi/agent/settings.json` (lowest — used
+   when neither of the above is set).
+
+The config file is managed through `/pi-delegate:setup`, which is the primary
+interface for viewing, setting, or clearing this pin — it drives a picker
+built from `pi --list-models` so the provider/model always come from a real,
+validated combination rather than free-typed text (a mistyped provider name
+silently falls through to the default; a mistyped model name hard-fails pi at
+run time). The same functionality is exposed as three `pi-companion.mjs`
+subcommands, mainly for scripting/debugging rather than everyday use:
+
+- `list-models --json` — enumerate real provider/model combinations available
+  on this machine, via `pi --list-models`.
+- `write-config --provider <name> --model <name> --json` — write/overwrite
+  the project config file (creates `.claude/` if needed).
+- `remove-config --json` — delete the project config file if present.
+
+`setup --json` also reports the current pin state via `projectConfigPath` /
+`projectConfigFound` / `projectConfigProvider` / `projectConfigModel`.
+
 `pi` has no `--cwd` flag. The working directory is resolved from the
 `CLAUDE_PROJECT_DIR` environment variable (falling back to `process.cwd()`
-if unset) and passed to Node's `spawnSync(cmd, args, { cwd })`.
+if unset) and passed to Node's `spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"] })`.
 
 ## Execution model
 
-- Foreground only. The helper uses synchronous `spawnSync`, one process per
-  `task` call, and returns only after pi exits or the timeout fires.
+- Foreground only. The helper uses an async `spawn` (`await`ed to completion,
+  not backgrounded), one process per `task` call, and returns only after pi
+  exits or the timeout fires. It deliberately does NOT use `spawnSync`: that
+  imposes a fixed `maxBuffer` ceiling on captured stdout, and `pi`'s `--mode
+  json` NDJSON stream re-emits the full accumulated assistant message on every
+  `text_delta` event, so output size can grow well past any static cap on
+  large/multi-step tasks. The async version accumulates stdout as JS-memory
+  chunks instead, which has no such ceiling. Its `stdio` is explicitly
+  `["ignore", "pipe", "pipe"]` — `pi` reads/checks stdin at startup, and
+  `spawn()`'s default of an open, unfed stdin pipe makes it block forever;
+  ignoring stdin is required, not stylistic.
 - Default timeout is 600000 ms (600s). Callers may override with `--timeout <ms>`.
 - **Background execution, job tracking, and `status`/`result`/`cancel`
   subcommands do not exist in this version.** That is a v2 idea, not built
