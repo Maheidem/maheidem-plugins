@@ -9,12 +9,12 @@ Applies whenever the user asks to publish, release, ship, cut a new version, or 
 **2. Bump the version in both manifests with one command:**
 
 ```bash
-python3 plugins/plugin-forge/scripts/version_bumper.py bump plugins/<plugin-name> --type <patch|minor|major>
+python3 scripts/version_bumper.py bump plugins/<plugin-name> --type <patch|minor|major>
 ```
 
-This script updates `plugins/<plugin-name>/.claude-plugin/plugin.json` **and** the matching entry in the root `.claude-plugin/marketplace.json` in one call (it derives the marketplace root from the plugin path's grandparent — see `plugins/plugin-forge/scripts/version_bumper.py:104-136`). It also transparently handles the one plugin (`handoff`) whose manifest sits at `plugins/handoff/plugin.json` instead of under `.claude-plugin/` (`find_plugin_json`, same file lines 56-70) — no special-casing needed.
+This script updates `plugins/<plugin-name>/.claude-plugin/plugin.json` **and** the matching entry in the root `.claude-plugin/marketplace.json` in one call (it derives the marketplace root from the plugin path's grandparent — see `scripts/version_bumper.py:104-136`). It also transparently handles the one plugin (`handoff`) whose manifest sits at `plugins/handoff/plugin.json` instead of under `.claude-plugin/` (`find_plugin_json`, same file lines 56-70) — no special-casing needed.
 
-To set an exact version instead of bumping: `python3 plugins/plugin-forge/scripts/version_bumper.py set plugins/<plugin-name> <version>` (only touches `plugin.json`, **not** `marketplace.json` — prefer `bump` unless you have a reason not to).
+To set an exact version instead of bumping: `python3 scripts/version_bumper.py set plugins/<plugin-name> <version>` (only touches `plugin.json`, **not** `marketplace.json` — prefer `bump` unless you have a reason not to).
 
 **3. Validate the two manifests agree**, then eyeball the diff:
 
@@ -56,5 +56,5 @@ claude plugin update <plugin-name>@maheidem-plugins
 ## Gotchas
 
 - Steps 6 and 7 are two distinct operations: marketplace update pulls the new catalog (manifest metadata); plugin update re-syncs the actual installed plugin files from that catalog entry. Both are needed — running only one leaves either a stale catalog or a stale install.
-- `marketplace.json`'s per-plugin `description` field sometimes drifts from the plugin's own `plugin.json` description (pre-existing in this repo, e.g. `presales-toolkit`). The bump script does not reconcile these — only sync descriptions manually if you're intentionally updating them.
+- `marketplace.json`'s per-plugin `description` field sometimes drifts from the plugin's own `plugin.json` description (pre-existing in this repo, e.g. `handoff`). The bump script does not reconcile these — only sync descriptions manually if you're intentionally updating them.
 - Sources: `https://code.claude.com/docs/en/plugin-marketplaces.md`, `https://code.claude.com/docs/en/plugins-reference.md`.

@@ -38,12 +38,10 @@ See `.claude/rules/publish-plugin.md` for the exact, ordered steps (version bump
 - After changing a plugin, sanity-check it loads: `ls plugins/<plugin-name>/` and confirm the manifest(s) parse (`python3 -m json.tool plugins/<plugin-name>/.claude-plugin/plugin.json`).
 - Most plugins have no automated tests. Where they exist, run them directly — there's no unified test command:
   - `bash plugins/deep-research/tests/run_all.sh` (orchestrates that plugin's suites, non-zero exit on failure)
-  - `bash plugins/presales-toolkit/skills/check-updates/scripts/validate-sweep.sh`
-- `plugin-forge`'s `scripts/version_bumper.py` handles semver bumps for any plugin: `python3 plugins/plugin-forge/scripts/version_bumper.py bump <plugin_path> [--type patch|minor|major]`.
+- `scripts/version_bumper.py` handles semver bumps for any plugin: `python3 scripts/version_bumper.py bump <plugin_path> [--type patch|minor|major]`.
 
 ## Notable non-obvious architecture
 
-- **`presales-toolkit`** is the largest and most complex plugin: a deterministic action surface (a "bouncer" decide/fail-closed engine + kill-switch), a phase-state machine driven by `phases.json` DAGs, JSONL observability streams, and migration scripts under `scripts/migrate_*`. Its own `ARCHITECTURE.md`, `ROADMAP.md`, and `KNOWN_FAILURES.md` are the authoritative docs for that subsystem — read those before changing anything under `plugins/presales-toolkit/`.
 - **`orchestrator-mode`** and **`pi-delegate`** compose one-directionally: `orchestrator-mode`'s `pi` state restricts the main agent's `Task`/`Agent` tool to only `pi-delegate`'s subagent, forcing all delegated code changes through a local `pi` CLI subprocess. `pi-delegate` itself works standalone without `orchestrator-mode`. State for `orchestrator-mode` lives in a root `.orchestrator-mode.state` file (gitignored, off by default, per-project opt-in).
 - Several plugins wrap external processes/services rather than pure prompts: `obscura-browser` bundles a Docker build + supergateway MCP gateway, `pi-delegate`'s `scripts/pi-companion.mjs` is a subprocess wrapper around the `pi` CLI with a completion-marker success contract (NDJSON stream parsing is only a fallback).
 - Untracked `run_*.txt` files and the `latest` symlink at the repo root are session/log artifacts, not source — don't treat them as part of the codebase.

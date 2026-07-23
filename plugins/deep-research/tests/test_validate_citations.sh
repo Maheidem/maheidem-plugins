@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Tests for validate-citations.sh — the deterministic citation gate.
 #
-# Pattern mirrors presales-toolkit/tests/test_validate_sweep.sh: shell-driven,
-# fixture-based, trap'd cleanup. Each case writes a self-contained artifact
-# under $TMP via heredoc and asserts exit code + a substring in stderr/stdout.
+# Shell-driven, fixture-based, trap'd cleanup. Each case writes a
+# self-contained artifact under $TMP via heredoc and asserts exit code +
+# a substring in stderr/stdout.
 set -uo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

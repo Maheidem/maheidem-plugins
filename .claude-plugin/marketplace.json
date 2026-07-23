@@ -30,28 +30,6 @@
       "category": "development"
     },
     {
-      "name": "plugin-forge",
-      "description": "Forge new plugins from session reflections, past conversation analysis, or from scratch. 6-phase workflow with history analysis: intent clarification, marketplace setup, conflict detection, plugin planning, generation, and optional git commit/push.",
-      "version": "1.1.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/plugin-forge",
-      "category": "development"
-    },
-    {
-      "name": "teams",
-      "description": "Reusable team templates. /teams:start <profile> <request> to launch a saved team. /teams:list to see available profiles.",
-      "version": "2.4.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/teams",
-      "category": "development"
-    },
-    {
       "name": "deep-research",
       "description": "Deep research agent with 5-phase workflow (SCOPE \u2192 SEARCH+CAPTURE \u2192 SYNTHESIZE \u2192 VALIDATE \u2192 HANDOFF), deterministic citation gate, dedup preflight, source-reliability rubric, and auto-maintained research index. Slash command /deep-research:research, agent-handoff protocol, validate-citations.sh + build-research-index.sh deterministic scripts, fixture test suite.",
       "version": "2.0.0",
@@ -72,17 +50,6 @@
       },
       "source": "./plugins/handoff",
       "category": "productivity"
-    },
-    {
-      "name": "presales-toolkit",
-      "description": "Symphony presales omnichannel knowledge management v9 \u2014 deterministic action surface with LLM-validated semantics. Bouncer engine, phase-state machine, phases.json DAGs, deterministic migration scripts, JSONL observability streams, metrics-summary CLI, and ship-gate orchestrator. Skills for check-updates, consolidate, discover-sources, freshness, audit, doctor, RFP/SOW, proposal/status drafting, and meeting prep.",
-      "version": "9.6.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/presales-toolkit",
-      "category": "business"
     },
     {
       "name": "pi-delegate",

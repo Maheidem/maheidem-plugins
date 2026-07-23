@@ -45,9 +45,10 @@ Format: human-readable summaries grouped by impact. See [marketplace CHANGELOG](
   validation gate (7 cases: good artifact, missing References, bare claim,
   malformed URL, orphan footnote, missing reliability rating, missing
   `date:`).
-- **Presales-toolkit integration documentation.** README documents three
-  concrete patterns where presales-toolkit workflows naturally delegate to
-  `/deep-research:research`: RFP analysis, discovery prep, SOW redline.
+- **Delegation documentation.** README documents three concrete patterns
+  where another workflow naturally delegates to `/deep-research:research`:
+  filling a knowledge gap mid-task, background research before a decision,
+  and grounding a specific claim.
 
 ### Improvements
 

@@ -104,49 +104,47 @@ they're typically API examples, not citations.
 Cross-reference rule: a "consensus" claim requires ≥2 independent sources
 at 3★ or higher.
 
-## Integration with presales-toolkit
+## Delegating research from another workflow
 
-The deep-research agent is a clean delegation target from presales-toolkit
-workflows. Three concrete patterns:
+deep-research is a clean delegation target for any workflow that surfaces a
+question needing external grounding — it doesn't need to be invoked directly
+by a person. Three concrete patterns:
 
-### During RFP analysis
+### Filling a knowledge gap mid-task
 
-When `/presales-toolkit:rfp-analyze` surfaces a vendor / market /
-regulatory question that needs external grounding, delegate the gap to
-deep-research:
+When another agent or command surfaces a question it can't answer from local
+context, delegate the gap to deep-research:
 
 ```
-/presales-toolkit:rfp-analyze BigBank
-# ... surfaces "What is the current state of FedRAMP HIGH for vector DBs?"
+# ... a task surfaces "What is the current state of FedRAMP HIGH for vector DBs?"
 /deep-research:research --scope narrow FedRAMP HIGH for vector databases
-# ... artifact saved; cite from RFP response with the artifact path.
+# ... artifact saved; cite the artifact path from the calling workflow's output.
 ```
 
-### During discovery prep
+### Background research before a decision
 
-When `/presales-toolkit:prep-meeting` needs background on a stakeholder's
-company or recent strategy moves:
-
-```
-/presales-toolkit:prep-meeting Client D
-# ... briefs note "Client D announced new AI strategy 2026-Q1"
-/deep-research:research Client D AI strategy 2026 — public statements
-# ... artifact informs the meeting brief.
-```
-
-### During SOW redline
-
-When `/presales-toolkit:rfp` (redline mode) flags a clause whose
-acceptability depends on industry precedent:
+When a workflow needs background on a technology, standard, or market before
+proceeding:
 
 ```
-# rfp mode flags "Clause 8.4: data residency in <jurisdiction> — uncertain"
+# ... a planning step needs "recent developments in on-device LLM inference"
+/deep-research:research on-device LLM inference 2026 — recent developments
+# ... artifact informs the decision.
+```
+
+### Grounding a specific claim
+
+When a workflow flags a claim whose acceptability depends on external
+precedent or evidence:
+
+```
+# ... a review step flags "data residency requirements for AI services — uncertain"
 /deep-research:research data residency requirements for AI services in <jurisdiction>
-# ... artifact backs the redline comment with cited primary sources.
+# ... artifact backs the review comment with cited primary sources.
 ```
 
-The deep-research artifact path can be referenced from the presales-toolkit
-artifact (e.g., a discovery question's resolution can cite
+The deep-research artifact path can be referenced from the calling workflow's
+own output (e.g., a decision log can cite
 `.documentation/{slug}-YYYY-MM-DD.md`).
 
 ## Tests
