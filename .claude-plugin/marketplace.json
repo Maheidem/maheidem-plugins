@@ -41,17 +41,6 @@
       "category": "development"
     },
     {
-      "name": "controle-financeiro",
-      "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking. v2.3.0: migrate review + pay-bills to the MCP server.",
-      "version": "2.3.0",
-      "author": {
-        "name": "maheidem",
-        "email": "maheidem@users.noreply.github.com"
-      },
-      "source": "./plugins/controle-financeiro",
-      "category": "finance"
-    },
-    {
       "name": "teams",
       "description": "Reusable team templates. /teams:start <profile> <request> to launch a saved team. /teams:list to see available profiles.",
       "version": "2.4.0",

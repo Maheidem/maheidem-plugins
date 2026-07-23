@@ -14,3 +14,8 @@ __pycache__/
 *.pyc
 .ruff_cache/
 .orchestrator-mode.state
+
+# Session/log artifacts (not source)
+.scratchpad/
+run_*.txt
+latest
