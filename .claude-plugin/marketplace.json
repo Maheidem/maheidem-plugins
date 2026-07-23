@@ -42,8 +42,8 @@
     },
     {
       "name": "controle-financeiro",
-      "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking. v2.0.0: import-fatura and new-month commands reworked so all embedded Python snippets are directly runnable end-to-end.",
-      "version": "2.0.0",
+      "description": "Personal finance management workflows for Brazilian PJ tax calculations. CC PDF import, Gmail bill extraction, month creation, and expense tracking. v2.3.0: migrate review + pay-bills to the MCP server.",
+      "version": "2.3.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
