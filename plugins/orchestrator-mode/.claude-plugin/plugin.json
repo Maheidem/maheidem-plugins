@@ -12,5 +12,6 @@
     "subagents",
     "hooks"
   ],
-  "repository": "https://github.com/maheidem/maheidem-plugins"
+  "repository": "https://github.com/maheidem/maheidem-plugins",
+  "version": "0.3.0"
 }

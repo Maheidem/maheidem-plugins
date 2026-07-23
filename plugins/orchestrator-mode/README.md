@@ -1,7 +1,7 @@
 # orchestrator-mode
 
-Per-project "orchestrator" mode for Claude Code, with three states: `off`,
-`on`, and `pi`.
+Per-project "orchestrator" mode for Claude Code, with four states: `off`,
+`on`, `pi`, and `wf`.
 
 - **`on`**: the **main conversation agent is read-only via an allowlist**:
   only a small set of read/meta/delegation tools are permitted on the main
@@ -12,8 +12,15 @@ Per-project "orchestrator" mode for Claude Code, with three states: `off`,
   `pi-delegate:delegate` subagent (shipped by the separate `pi-delegate`
   plugin) — any other subagent_type is denied. The only way to get code
   changes made is `/pi-delegate:delegate <task>`, which forwards the task to
-  the local `pi` CLI. WebFetch/WebSearch are additionally allowlisted (unlike
-  `on` mode) since research/browsing isn't a mutation.
+  the local `pi` CLI. WebFetch/WebSearch stay allowlisted, same as under `on`
+  (both modes have included them since 0.2.3).
+- **`wf`** (workflow): the same read-only restriction, PLUS the general
+  delegation escape hatch is closed down to just the built-in read-only
+  `Explore` scout — Task/Agent is only allowed when it targets `Explore`; any
+  other subagent_type is denied. All other substantive delegation must go
+  through the `Workflow` tool (dynamic multi-agent workflows), which stays
+  allowlisted under `wf` (unlike under `pi`). Setting mode to `wf` is the
+  user's **standing opt-in to the Workflow tool** for this project.
 - **`off`**: normal behavior.
 
 A short reminder matching the active state is injected into the main thread
@@ -26,6 +33,7 @@ It is **OFF by default** and opt-in **per project**.
 ```
 /orchestrator-mode:mode on       # main agent read-only for this project
 /orchestrator-mode:mode pi       # read-only + only pi-delegate can make code changes
+/orchestrator-mode:mode wf       # read-only + orchestrate via the Workflow tool (Explore scout allowed)
 /orchestrator-mode:mode off      # back to normal
 /orchestrator-mode:mode status   # show current state
 ```
@@ -40,6 +48,7 @@ State is a plain-text file at `<project>/.orchestrator-mode.state` (at the
 - File absent, empty, or content `off` -> **OFF** (hooks no-op; normal behavior).
 - Content `on` (trimmed, case-insensitive) -> **ON**.
 - Content `pi` (trimmed, case-insensitive) -> **PI**.
+- Content `wf` (trimmed, case-insensitive) -> **WF**.
 
 Nothing else is read. Anything unexpected is treated as OFF. The file is local
 to the project; it is not shipped with the plugin. Both hook scripts parse the
@@ -61,35 +70,45 @@ write tools actually reach the gate.
 ```
 Read, Grep, Glob, LS,
 Task, Agent, SendMessage,
+Workflow,
 TodoWrite,
 TaskCreate, TaskUpdate, TaskList, TaskGet, TaskStop, TaskOutput,
 AskUserQuestion,
 Skill, SlashCommand,
 ExitPlanMode, EnterPlanMode,
 ToolSearch,
+WebFetch, WebSearch,
+ReportFindings,
+Artifact,
 Monitor, CronList, LSP,
 ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool,
 PushNotification, ScheduleWakeup
 ```
 
-The last eight (`Monitor` through `ScheduleWakeup`) were added in a 2026-07-09
-audit of every built-in tool in the environment: each is read-only or a
-non-mutating side effect (streaming/listing/querying/notifying/scheduling),
-none writes files, executes commands, or spawns subagents. The MCP resource
-tools are generic read infra (not any one server) so this isn't a
-server-specific carve-out.
+`Monitor` through `ScheduleWakeup` were added in a 2026-07-09 audit of every
+built-in tool in the environment: each is read-only or a non-mutating side
+effect (streaming/listing/querying/notifying/scheduling), none writes files,
+executes commands, or spawns subagents. The MCP resource tools are generic
+read infra (not any one server) so this isn't a server-specific carve-out.
+`Workflow`, `WebFetch`, `WebSearch`, `ReportFindings`, and `Artifact` were
+added in 0.2.3: `Workflow` is pure delegation (same category as Task/Agent),
+research isn't a mutation, `ReportFindings` is typed non-mutating review
+output, and `Artifact` publishes default-private deliverables.
 
 **Denied on the main thread** — everything else, including:
 
 - `Write`, `Edit`, `MultiEdit`, `NotebookEdit` (file mutation)
 - `Bash` (command execution)
 - **ALL `mcp__*` tools** (every MCP server tool is blocked on main)
-- `WebFetch`, `WebSearch`
-- `Artifact`, `CronCreate`, `CronDelete`, `EnterWorktree`, `ExitWorktree`,
-  `RemoteTrigger`, `Workflow` (external side effects, state mutation, or can
-  spawn arbitrary subagents — `Workflow` in particular is a known open
-  question, see the TODO comment in `enforce-orchestrator.py`)
+- `CronCreate`, `CronDelete`, `EnterWorktree`, `ExitWorktree`,
+  `RemoteTrigger` (external side effects or state mutation)
 - any unknown / future tool not on the allowlist
+
+Every deny message ends with explicit guidance for delegated agents: do NOT
+modify `.orchestrator-mode.state` to unblock yourself — report the blocker to
+your caller instead. (A blocked delegated agent once silently flipped the
+state file to `off` via the toggle exemption; see "Toggle exemption" below
+for the hard block that now backs this up.)
 
 `Skill` and `SlashCommand` are allowlisted because any tool calls they spawn are
 themselves re-checked by this PreToolUse hook, so they cannot be used to smuggle
@@ -99,13 +118,15 @@ The **UserPromptSubmit hook** injects a concise read-only / delegate reminder on
 each prompt while ON.
 
 Subagents are detected by the `agent_id` field in the hook payload (present only
-inside a subagent call) and are allowed to use every tool.
+inside a subagent call) and are allowed to use every tool — with one exception:
+a subagent `Write`, `Edit`, `MultiEdit`, or `NotebookEdit` targeting
+`.orchestrator-mode.state` is denied (see "Toggle exemption" below).
 
 ### Extending the allowlist
 
-Add the exact tool name to the `MAIN_ALLOWLIST` set (mode `on`) or
-`PI_MODE_ALLOWLIST` set (mode `pi`) in `hooks/enforce-orchestrator.py` — one
-line, e.g.:
+Add the exact tool name to the `MAIN_ALLOWLIST` set (mode `on`),
+`PI_MODE_ALLOWLIST` set (mode `pi`), or `WF_MODE_ALLOWLIST` set (mode `wf`) in
+`hooks/enforce-orchestrator.py` — one line, e.g.:
 
 ```python
 MAIN_ALLOWLIST = {
@@ -118,8 +139,9 @@ MAIN_ALLOWLIST = {
 
 ## Behavior when `pi` (forced delegation via pi-delegate)
 
-Same allowlist as `on`, minus Task/Agent (handled specially, see below), plus
-`WebFetch`/`WebSearch`:
+Same allowlist as `on`, minus Task/Agent (handled specially, see below) and
+minus `Workflow`/`ReportFindings`/`Artifact` (`WebFetch`/`WebSearch` are in
+both lists since 0.2.3, so they are no longer a pi-only carve-out):
 
 ```
 Read, Grep, Glob, LS,
@@ -159,9 +181,58 @@ name of `pi-delegate`'s subagent; `pi-delegate` has zero knowledge of
 
 **Denied under `pi`** — same as `on` (Write, Edit, MultiEdit, NotebookEdit,
 Bash, all `mcp__*`), plus Task/Agent to any subagent other than
-`pi-delegate:delegate`. The `Workflow` tool is an open question — see the
-`# TODO(open question)` comment in `hooks/enforce-orchestrator.py`; it is not
-specially handled and currently falls through to deny.
+`pi-delegate:delegate`. The `Workflow` question is resolved (see the
+`# RESOLVED (was an open question as of 0.2.2)` comment in
+`hooks/enforce-orchestrator.py`): `Workflow` was added to `MAIN_ALLOWLIST` in
+0.2.3 but deliberately NOT to `PI_MODE_ALLOWLIST` — it can spawn arbitrary
+subagents, which would bypass the pi-delegate-only restriction — so under
+`pi` it falls through to deny by default.
+
+## Behavior when `wf` (orchestrate via the Workflow tool)
+
+Same allowlist as `on`, minus Task/Agent (handled specially, see below), plus
+`Workflow` stays allowlisted (unlike under `pi`, where it is deliberately
+excluded — see above):
+
+```
+Read, Grep, Glob, LS,
+SendMessage,
+Workflow,
+TodoWrite,
+TaskCreate, TaskUpdate, TaskList, TaskGet, TaskStop, TaskOutput,
+AskUserQuestion,
+Skill, SlashCommand,
+ExitPlanMode, EnterPlanMode,
+ToolSearch,
+WebFetch, WebSearch,
+ReportFindings,
+Artifact,
+Monitor, CronList, LSP,
+ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool,
+PushNotification, ScheduleWakeup
+```
+
+**Task/Agent** gets special handling instead of a flat allow/deny: it is
+allowed **only** when `tool_input.subagent_type` exactly equals `"Explore"`
+(the `WF_EXPLORE_SUBAGENT_TYPE` constant in `hooks/enforce-orchestrator.py`)
+— the built-in, read-only "scout" agent type shipped with Claude Code itself,
+not a plugin. It's safe to spawn directly under `wf` because it can't
+write/edit any more than the main thread already can't. Any other
+subagent_type — including missing/empty — is **denied**. This is the same
+**fail-closed** exception used under `pi`: an unrecognized or missing
+subagent_type does not pass through, it is blocked. That's intentional — the
+whole point of `wf` mode is that there is no general Task/Agent delegation
+escape hatch, so ambiguity must resolve to deny, not allow.
+
+All other substantive delegation must go through the **`Workflow`** tool
+(dynamic multi-agent workflows) instead. **Setting mode to `wf` is the user's
+standing opt-in to the Workflow tool for this project** — that's why it stays
+allowlisted here even though it is deliberately excluded under `pi` (Workflow
+can spawn arbitrary subagents, which is exactly what `wf` mode intends to
+route through, unlike `pi`'s pi-delegate-only restriction).
+
+**Denied under `wf`** — same as `on` (Write, Edit, MultiEdit, NotebookEdit,
+Bash, all `mcp__*`), plus Task/Agent to any subagent other than `Explore`.
 
 ## Toggle exemption (how you can still turn it OFF while locked)
 
@@ -180,6 +251,17 @@ The exemption is deliberately narrow:
   abused to write anywhere, so Bash is never exempted (and Bash is denied
   outright on main anyway).
 - It targets exactly one fixed path. No other file can be written through it.
+- It is **main-thread-only**: a subagent (payload carries `agent_id`) that
+  targets `.orchestrator-mode.state` with `Write`, `Edit`, `MultiEdit`, or
+  `NotebookEdit` is **denied**, and that check runs *before* the general
+  "subagents have full access" bypass, so a stamped subagent can never reach
+  the exemption. A raw `Bash` write (e.g. `echo off > .orchestrator-mode.state`
+  from a subagent, which keeps full Bash access) remains possible — Bash
+  commands cannot be path-matched, the same limitation noted for embedded bash
+  under "Limitations" below. This check closes a real incident: a blocked
+  delegated agent once silently flipped the state file to `off` to unblock
+  itself. Subagents are told to report the blocker to the main thread instead
+  — and every deny message carries the same guidance.
 
 ## Robustness
 
@@ -187,11 +269,12 @@ Both hooks **fail open**: on malformed input, a missing/unreadable state file,
 or any unexpected error, they no-op (let normal flow proceed / inject nothing).
 A broken hook never bricks a session. The default is always OFF.
 
-The **one deliberate exception** is the Task/Agent subagent_type check under
-`pi` mode (see above): that specific check is fail-**closed** (unknown/missing
-subagent_type is denied, not passed through), because the entire purpose of
-`pi` mode is to remove the general delegation escape hatch. Don't "fix" that
-branch back to permissive.
+The **deliberate exceptions** are the Task/Agent subagent_type checks under
+`pi` mode and `wf` mode (see above): those specific checks are
+fail-**closed** (unknown/missing subagent_type is denied, not passed
+through), because the entire purpose of `pi`/`wf` mode is to remove the
+general delegation escape hatch. Don't "fix" those branches back to
+permissive.
 
 Set `ORCHESTRATOR_DEBUG=true` for stderr tracing from the hook scripts.
 
@@ -205,7 +288,10 @@ keep a well-behaved main agent in an orchestrate-and-delegate posture. It is
 - A determined main agent can unlock itself by writing `off` to the state file.
   The toggle is **intentionally model-serviceable** (that is how
   `/orchestrator-mode:mode off` works), so the same path can be used to disable
-  the lock.
+  the lock. (Subagents, by contrast, cannot do this through the file-mutation
+  tools — `Write`/`Edit`/`MultiEdit`/`NotebookEdit` targeting the state file
+  are denied; a raw `Bash` write remains possible since shell commands cannot
+  be path-matched. See "Toggle exemption" above.)
 - A main agent can route a denied write through a subagent via the Agent/Task
   tool — that is the **intended design**, not a bypass. Subagents have full
   access by design.
@@ -214,10 +300,19 @@ Do not rely on this plugin as a security boundary against an adversarial model.
 It reduces accidental mutation on the main thread and nudges toward delegation;
 it does not contain a model that is actively trying to escape.
 
-## Limitation
+## Limitations
 
 Embedded `` !`bash` `` preprocessing inside skills/commands runs before the
 PreToolUse gate and is not subject to it; the only lever there is
 `disableSkillShellExecution` in settings. Because `Skill` and `SlashCommand` are
 allowlisted, command-embedded bash preprocessing still runs before the gate. The
 read-only lock constrains the model's **tool calls**, not harness preprocessing.
+The same root cause (shell commands can't be path-matched) means a subagent's
+raw `Bash` write to `.orchestrator-mode.state` is not caught by the
+state-file deny either — see "Toggle exemption" above.
+
+**Teammate sessions**: agents spawned as separate teammate CLI sessions (e.g.
+via the experimental agent-teams feature) carry no `agent_id` in their hook
+payloads, so the gate cannot tell them apart from main agents — it treats them
+as main threads and blocks their writes. In locked projects, delegate with
+plain in-process subagents (Task/Agent) or the Workflow tool instead.

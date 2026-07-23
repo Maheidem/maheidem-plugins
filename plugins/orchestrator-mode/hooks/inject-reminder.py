@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """orchestrator-mode UserPromptSubmit reminder.
 
-Tri-state, read from `.orchestrator-mode.state` at the project root via
-`_state.get_mode()`: "off" | "on" | "pi".
+Four-state, read from `.orchestrator-mode.state` at the project root via
+`_state.get_mode()`: "off" | "on" | "pi" | "wf".
 
 - OFF: inject nothing.
 - ON: inject REMINDER_ON, telling the agent it is read-only and must delegate
@@ -10,6 +10,9 @@ Tri-state, read from `.orchestrator-mode.state` at the project root via
 - PI: inject REMINDER_PI, telling the agent it cannot delegate to ANY
   subagent except pi-delegate, and naming /pi-delegate:delegate as the only
   way to get code changes made.
+- WF: inject REMINDER_WF, telling the agent it is read-only and must
+  orchestrate via the Workflow tool, with Task/Agent restricted to the
+  built-in Explore scout.
 
 On any parse error, inject nothing (fail open).
 
@@ -57,6 +60,18 @@ REMINDER_PI = (
     "dispatching the next, instead of one large multi-step task. "
     "(Run /orchestrator-mode:mode off to exit this mode.)")
 
+REMINDER_WF = (
+    "ORCHESTRATION MODE is set to WF (workflow) for this project. You are "
+    "READ-ONLY on the main thread: only read/search/delegation tools are "
+    "allowed here (Read, Grep, Glob, todos, etc). Everything else -- Write, "
+    "Edit, NotebookEdit, Bash, and ALL MCP tools -- is blocked on the main "
+    "thread. All substantive delegation must go through the Workflow tool "
+    "(dynamic multi-agent workflows); Task/Agent is allowed ONLY for the "
+    "built-in read-only 'Explore' scout, not for spawning arbitrary "
+    "subagents. Setting this mode is your standing opt-in to the Workflow "
+    "tool for this project -- use it to orchestrate work. "
+    "(Run /orchestrator-mode:mode off to exit this mode.)")
+
 
 def main():
     try:
@@ -71,7 +86,12 @@ def main():
         log_debug("mode OFF -> inject nothing")
         sys.exit(0)
 
-    reminder = REMINDER_ON if mode == "on" else REMINDER_PI
+    if mode == "on":
+        reminder = REMINDER_ON
+    elif mode == "wf":
+        reminder = REMINDER_WF
+    else:  # mode == "pi"
+        reminder = REMINDER_PI
 
     out = {"hookSpecificOutput": {
         "hookEventName": "UserPromptSubmit",

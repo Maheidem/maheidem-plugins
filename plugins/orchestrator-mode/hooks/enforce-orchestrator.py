@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """orchestrator-mode PreToolUse gate (ALLOWLIST / deny-by-default).
 
-Tri-state, read from `.orchestrator-mode.state` at the project root via
-`_state.get_mode()`: "off" | "on" | "pi".
+Four-state, read from `.orchestrator-mode.state` at the project root via
+`_state.get_mode()`: "off" | "on" | "pi" | "wf".
 
 - OFF: silent no-op, normal behavior.
 - ON: the MAIN conversation agent is restricted to a small ALLOWLIST of
@@ -18,13 +18,23 @@ Tri-state, read from `.orchestrator-mode.state` at the project root via
   can itself spawn arbitrary subagents, which would bypass the pi-delegate-
   only restriction). Everything else that would be denied under ON is denied
   under PI too, with a pi-specific reason.
+- WF: like ON, but the general Task/Agent delegation escape hatch is closed
+  down to just the built-in read-only `Explore` scout (see
+  WF_EXPLORE_SUBAGENT_TYPE below) -- all other substantive delegation must go
+  through the `Workflow` tool (dynamic multi-agent workflows), which stays
+  allowlisted (see WF_MODE_ALLOWLIST). Setting mode to `wf` is the user's
+  standing opt-in to the Workflow tool for this project. Everything else that
+  would be denied under ON is denied under WF too, with a wf-specific reason.
 
 The matcher in hooks.json is `.*` (regex match-all) so MCP and future write
 tools actually reach this hook.
 
-This hook only ever emits non-empty stdout in two cases:
-  - an explicit "deny" on the main thread when the mode is ON/PI and the tool
-    is not allowlisted for that mode; and
+This hook only ever emits non-empty stdout in three cases:
+  - an explicit "deny" on the main thread when the mode is ON/PI/WF and the
+    tool is not allowlisted for that mode;
+  - an explicit "deny" when a SUBAGENT targets the state file with any
+    path-addressable mutation tool (Write/Edit/MultiEdit/NotebookEdit --
+    subagents may not toggle the mode; see step 3 below); and
   - an explicit "allow" on the narrow state-file toggle path, so the toggle
     never prompts while locked.
 Every other path exits silently (no stdout), which is a true no-op: the normal
@@ -37,21 +47,42 @@ broken hook must never brick a session, so the safe default is "do nothing /
 let normal flow proceed"):
   1. parse stdin                  -> on any error: silent no-op (fail open)
   2. state OFF / missing          -> silent no-op (OFF by default)
-  3. agent_id present (subagent)  -> silent no-op (subagents keep full access)
-  4. Write to the state file path -> explicit allow (toggle exemption, so the
-                                      mode can be turned OFF while locked
-                                      without a prompt)
-  5. mode == "on"  -> tool in MAIN_ALLOWLIST -> silent no-op; else deny.
-  6. mode == "pi"  -> Task/Agent -> allow ONLY subagent_type ==
+  3. subagent Write/Edit/MultiEdit/NotebookEdit
+     targeting the state file      -> DENY (subagents may not toggle the mode;
+                                      a blocked delegated agent once silently
+                                      flipped the state to "off" through the
+                                      toggle exemption, so this is checked
+                                      BEFORE the subagent bypass in step 4.
+                                      Bash cannot be path-matched, so a raw
+                                      shell write is NOT caught here -- a
+                                      documented limitation, not an oversight)
+  4. agent_id present (subagent)  -> silent no-op (subagents keep full access)
+  5. Write to the state file path -> explicit allow (toggle exemption, so the
+                                      MAIN thread can turn the mode OFF while
+                                      locked without a prompt)
+  6. mode == "on"  -> tool in MAIN_ALLOWLIST -> silent no-op; else deny.
+  7. mode == "wf"  -> Task/Agent -> allow ONLY subagent_type ==
+                       WF_EXPLORE_SUBAGENT_TYPE, else DENY (fail-CLOSED, same
+                       rationale as the pi branch below).
+                    -> tool in WF_MODE_ALLOWLIST -> silent no-op; else deny.
+  8. mode == "pi"  -> Task/Agent -> allow ONLY subagent_type ==
                        PI_DELEGATE_SUBAGENT_TYPE, else DENY (fail-CLOSED --
                        see the comment on that branch for why this is the one
                        intentional exception to fail-open).
                     -> tool in PI_MODE_ALLOWLIST -> silent no-op; else deny.
 
-Toggle exemption is intentionally NARROW: it matches the Write tool whose
-resolved `tool_input.file_path` equals this project's
-`.orchestrator-mode.state` (at the PROJECT ROOT). It never path-matches Bash
-(a shell could defeat that), so it cannot be used to smuggle arbitrary writes.
+Toggle exemption is intentionally NARROW: it matches ONLY the Write tool
+(the /orchestrator-mode:mode command flips state via Write) whose resolved
+`tool_input.file_path` equals this project's `.orchestrator-mode.state` (at
+the PROJECT ROOT). It never path-matches Bash (a shell could defeat that), so
+it cannot be used to smuggle arbitrary writes. It is also MAIN-THREAD-ONLY:
+subagents hit the deny in step 3 (which covers Write/Edit/MultiEdit/
+NotebookEdit, broader than this Write-only exemption) before the exemption is
+ever reached.
+
+Every deny reason ends with explicit guidance telling a delegated agent NOT
+to modify .orchestrator-mode.state to unblock itself (see DELEGATE_GUIDANCE
+below) -- the belt to step 3's suspenders.
 
 Debug: set ORCHESTRATOR_DEBUG=true for stderr tracing.
 """
@@ -62,6 +93,16 @@ from typing import NoReturn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _state import get_mode, project_dir, state_file_path  # noqa: E402
+
+
+# Appended to EVERY mode-branch deny reason. Background: a blocked delegated
+# agent once silently flipped the state file to "off" via the toggle exemption
+# to unblock itself. This guidance is the soft half of the fix; the hard half
+# is the subagent state-file Write deny in main() (step 3 in the docstring).
+DELEGATE_GUIDANCE = (
+    " If you are a delegated agent seeing this message, do NOT modify "
+    ".orchestrator-mode.state to unblock yourself -- report the blocker to "
+    "your caller instead.")
 
 
 # Tools the MAIN agent may still use while orchestrator-mode is ON. Everything
@@ -106,11 +147,19 @@ MAIN_ALLOWLIST = {
 # pi-delegate's agent is ever renamed, update this constant to match.
 PI_DELEGATE_SUBAGENT_TYPE = "pi-delegate:delegate"
 
-# Tools allowed on the main thread while mode == "pi": today's MAIN_ALLOWLIST
-# minus Task/Agent (handled separately below, restricted to the pi-delegate
-# subagent only), PLUS WebFetch/WebSearch -- the deliberate deviation from
-# "on" mode, since research/browsing isn't a mutation and there's no reason to
-# force it through pi.
+# The ONLY subagent_type Task/Agent may target while mode == "wf". This is the
+# built-in, read-only "scout" agent type shipped with Claude Code itself (not
+# a plugin) -- safe to spawn directly under WF because it cannot write/edit
+# any more than the main thread already can't.
+WF_EXPLORE_SUBAGENT_TYPE = "Explore"
+
+# Tools allowed on the main thread while mode == "pi": MAIN_ALLOWLIST minus
+# Task/Agent (handled separately below, restricted to the pi-delegate
+# subagent only) and minus Workflow/ReportFindings/Artifact (Workflow is
+# deliberately excluded -- see the RESOLVED note below; the other two simply
+# predate this list). WebFetch/WebSearch appear in BOTH lists: they were once
+# a pi-only carve-out, but MAIN_ALLOWLIST gained them in 0.2.3 for parity, so
+# no deviation between the modes remains on research tools.
 #
 # SendMessage is included deliberately: under mode == "pi", Task/Agent is
 # already gated (see handle_pi_mode below) to allow spawning ONLY the
@@ -155,6 +204,32 @@ PI_MODE_ALLOWLIST = {
 # arbitrary subagents (potentially bypassing the pi-delegate-only
 # restriction), so under mode == "pi" it still falls through to the final
 # `else: deny` branch below -- denied by default, not specially allowed.
+
+# Tools allowed on the main thread while mode == "wf": today's MAIN_ALLOWLIST
+# minus Task/Agent (handled separately below, restricted to the built-in
+# Explore scout only). Unlike PI_MODE_ALLOWLIST, `Workflow` IS included here
+# -- setting mode to "wf" is the user's standing opt-in to the Workflow tool
+# for this project, and Workflow is how all substantive delegation is meant
+# to happen under this mode. `ReportFindings` and `Artifact` are also kept
+# (both are already in MAIN_ALLOWLIST and neither is a delegation escape
+# hatch), unlike PI_MODE_ALLOWLIST which predates them.
+WF_MODE_ALLOWLIST = {
+    "Read", "Grep", "Glob", "LS",
+    "SendMessage",
+    "Workflow",
+    "TodoWrite",
+    "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop", "TaskOutput",
+    "AskUserQuestion",
+    "Skill", "SlashCommand",
+    "ExitPlanMode", "EnterPlanMode",
+    "ToolSearch",
+    "WebFetch", "WebSearch",
+    "ReportFindings",
+    "Artifact",
+    "Monitor", "CronList", "LSP",
+    "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
+    "PushNotification", "ScheduleWakeup",
+}
 
 
 def log_debug(msg):
@@ -208,8 +283,47 @@ def handle_on_mode(tool):
         "(allowlist of read/meta/delegation tools only). '%s' is blocked on the "
         "main thread. Delegate this work to a subagent via the Agent/Task tool "
         "(subagents have full write/execute access). To exit this mode, run "
-        "/orchestrator-mode:mode off." % tool)
+        "/orchestrator-mode:mode off." % tool) + DELEGATE_GUIDANCE
     log_debug("main thread, mode=on, not allowlisted -> DENY %s" % tool)
+    deny(reason)
+
+
+def handle_wf_mode(tool, tool_input):
+    # Task/Agent: allow ONLY the built-in read-only Explore scout. Same
+    # deliberate FAIL-CLOSED exception to the fail-open policy elsewhere in
+    # this file as handle_pi_mode below -- missing/empty/wrong subagent_type
+    # is DENIED, not passed through. Do not "fix" this back to permissive:
+    # fail-open here would reopen the general delegation escape hatch that
+    # mode=wf exists to close in favor of the Workflow tool.
+    if tool in ("Task", "Agent"):
+        subagent_type = (tool_input or {}).get("subagent_type")
+        if subagent_type == WF_EXPLORE_SUBAGENT_TYPE:
+            noop("mode=wf: %s -> Explore scout -> silent no-op" % tool)
+        reason = (
+            "orchestrator-mode is set to WF for this project: all substantive "
+            "delegation must go through the Workflow tool (dynamic multi-agent "
+            "workflows). '%s' with subagent_type=%r is blocked; only the "
+            "read-only 'Explore' scout may be spawned directly. Use the "
+            "Workflow tool to orchestrate work, or /orchestrator-mode:mode off "
+            "to exit. (Setting this mode is the user's standing opt-in to the "
+            "Workflow tool.)" % (tool, subagent_type)) + DELEGATE_GUIDANCE
+        log_debug(
+            "mode=wf: %s subagent_type=%r not Explore -> DENY (fail-closed)"
+            % (tool, subagent_type))
+        deny(reason)
+
+    if tool in WF_MODE_ALLOWLIST:
+        noop("allowlisted tool %s -> silent no-op (mode=wf)" % tool)
+
+    reason = (
+        "orchestrator-mode is set to WF for this project: the main agent is "
+        "read-only and must orchestrate via the Workflow tool ('%s' is "
+        "blocked). Only the read-only 'Explore' scout may be spawned directly "
+        "via Task/Agent; all other delegation must go through the Workflow "
+        "tool (dynamic multi-agent workflows) -- setting this mode is the "
+        "user's standing opt-in to it. To exit this mode, run "
+        "/orchestrator-mode:mode off." % tool) + DELEGATE_GUIDANCE
+    log_debug("mode=wf, not allowlisted -> DENY %s" % tool)
     deny(reason)
 
 
@@ -228,7 +342,7 @@ def handle_pi_mode(tool, tool_input):
             "cannot delegate to any subagent except pi-delegate. '%s' with "
             "subagent_type=%r is blocked. Use /pi-delegate:delegate <task> to "
             "get code changes made. To exit this mode, run "
-            "/orchestrator-mode:mode off." % (tool, subagent_type))
+            "/orchestrator-mode:mode off." % (tool, subagent_type)) + DELEGATE_GUIDANCE
         log_debug(
             "mode=pi: %s subagent_type=%r not pi-delegate -> DENY (fail-closed)"
             % (tool, subagent_type))
@@ -242,7 +356,7 @@ def handle_pi_mode(tool, tool_input):
         "cannot write, edit, or execute commands directly, and cannot "
         "delegate to any subagent except pi-delegate. '%s' is blocked. The "
         "only way to get code changes made is /pi-delegate:delegate <task>. "
-        "To exit this mode, run /orchestrator-mode:mode off." % tool)
+        "To exit this mode, run /orchestrator-mode:mode off." % tool) + DELEGATE_GUIDANCE
     log_debug("mode=pi, not allowlisted -> DENY %s" % tool)
     deny(reason)
 
@@ -265,12 +379,34 @@ def main():
     if mode == "off":
         noop("mode OFF -> silent no-op")
 
-    # 3. subagent -> proceeds normally (silent no-op; do NOT auto-approve)
+    # 3. subagents may NOT toggle the state file. Checked BEFORE the general
+    #    subagent bypass in step 4 so a stamped subagent can never reach the
+    #    toggle exemption in step 5 -- a blocked delegated agent once silently
+    #    flipped the state to "off" that way. Covers every path-addressable
+    #    mutation tool (Write/Edit/MultiEdit/NotebookEdit); Bash cannot be
+    #    path-matched, so a raw shell write stays a documented limitation.
+    #    The main thread (no agent_id) keeps its Write-only toggle exemption
+    #    below.
+    if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit") and agent_id:
+        base = project_dir(data)
+        path_key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+        target = norm(tool_input.get(path_key, ""), base)
+        if target and target == norm(state_file_path(data), base):
+            log_debug(
+                "subagent %s %s to state file -> DENY (no toggling)"
+                % (agent_id, tool))
+            deny(
+                "orchestrator-mode: subagents may not toggle "
+                ".orchestrator-mode.state. Report the blocker to the main "
+                "thread instead.")
+
+    # 4. subagent -> proceeds normally (silent no-op; do NOT auto-approve)
     if agent_id:
         noop("subagent %s -> silent no-op (full access)" % agent_id)
 
-    # 4. toggle exemption: allow Write to the project's own state file so the
-    #    /orchestrator-mode:mode command can flip modes while the lock is active.
+    # 5. toggle exemption: allow Write to the project's own state file so the
+    #    /orchestrator-mode:mode command can flip modes while the lock is
+    #    active. Main thread only -- subagents were already denied in step 3.
     if tool == "Write":
         base = project_dir(data)
         target = norm(tool_input.get("file_path", ""), base)
@@ -278,9 +414,11 @@ def main():
             log_debug("Write to state file -> ALLOW (toggle exemption)")
             allow("orchestrator-mode: state-file toggle exempted.")
 
-    # 5/6. branch on mode
+    # 6/7/8. branch on mode
     if mode == "on":
         handle_on_mode(tool)
+    elif mode == "wf":
+        handle_wf_mode(tool, tool_input)
     else:  # mode == "pi"
         handle_pi_mode(tool, tool_input)
 
