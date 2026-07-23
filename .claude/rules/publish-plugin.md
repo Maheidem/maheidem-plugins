@@ -48,10 +48,10 @@ claude plugin marketplace update maheidem-plugins
 **7. Update the installed plugin to the new version:**
 
 ```bash
-claude plugin update <plugin-name>
+claude plugin update <plugin-name>@maheidem-plugins
 ```
 
-(Interactive equivalent: `/plugin update <plugin-name>`.) Only add the `@maheidem-plugins` suffix (`<plugin-name>@maheidem-plugins`) if the same plugin name exists in more than one registered marketplace — check with `claude plugin marketplace list` / `/plugin marketplace list` if unsure. `plugin update` is a no-op if the version didn't actually change, so a failed step 2 or 5 will surface here.
+(Interactive equivalent: `/plugin update <plugin-name>@maheidem-plugins`.) Always use the full `<plugin-name>@maheidem-plugins` identifier — the bare plugin name has been observed to fail (CLI 2.1.x, 2026-07-23: `claude plugin update orchestrator-mode` exited 1 with `Plugin "orchestrator-mode" not found`, even with no cross-marketplace ambiguity) while the suffixed form succeeded. `plugin update` is a no-op if the version didn't actually change, so a failed step 2 or 5 will surface here.
 
 ## Gotchas
 
