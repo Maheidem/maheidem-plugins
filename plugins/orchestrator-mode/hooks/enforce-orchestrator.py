@@ -6,16 +6,18 @@ Tri-state, read from `.orchestrator-mode.state` at the project root via
 
 - OFF: silent no-op, normal behavior.
 - ON: the MAIN conversation agent is restricted to a small ALLOWLIST of
-  read-only / meta / delegation tools. Every other tool -- Write, Edit,
-  MultiEdit, NotebookEdit, Bash, ALL `mcp__*`, WebFetch, WebSearch, and any
-  unknown/future tool -- is DENIED on the main thread, and the model is told
-  to delegate the work to a subagent via the Agent/Task tool. Subagents
+  read-only / meta / delegation / research tools (see MAIN_ALLOWLIST, incl.
+  Workflow, WebFetch, WebSearch, ReportFindings, Artifact as of 0.2.3). Every
+  other tool -- Write, Edit, MultiEdit, NotebookEdit, Bash, ALL `mcp__*`, and
+  any unknown/future tool -- is DENIED on the main thread, and the model is
+  told to delegate the work to a subagent via the Agent/Task tool. Subagents
   (payload carries `agent_id`) keep FULL access.
 - PI: like ON, but there is no general delegation escape hatch -- Task/Agent
   is allowed ONLY when it targets the exact pi-delegate subagent (see
-  PI_DELEGATE_SUBAGENT_TYPE below). WebFetch/WebSearch are additionally
-  allowlisted (research/browsing isn't a mutation). Everything else that
-  would be denied under ON is denied under PI too, with a pi-specific reason.
+  PI_DELEGATE_SUBAGENT_TYPE below). Workflow is NOT allowlisted under PI (it
+  can itself spawn arbitrary subagents, which would bypass the pi-delegate-
+  only restriction). Everything else that would be denied under ON is denied
+  under PI too, with a pi-specific reason.
 
 The matcher in hooks.json is `.*` (regex match-all) so MCP and future write
 tools actually reach this hook.
@@ -63,19 +65,33 @@ from _state import get_mode, project_dir, state_file_path  # noqa: E402
 
 
 # Tools the MAIN agent may still use while orchestrator-mode is ON. Everything
-# else (Write, Edit, MultiEdit, NotebookEdit, Bash, all mcp__*, WebFetch,
-# WebSearch, and any unknown/future tool) is DENIED on the main thread.
+# else (Write, Edit, MultiEdit, NotebookEdit, Bash, all mcp__*, and any
+# unknown/future tool) is DENIED on the main thread.
 # Skill / SlashCommand are safe because any tool calls they spawn are
 # themselves re-checked by this PreToolUse hook.
 MAIN_ALLOWLIST = {
     "Read", "Grep", "Glob", "LS",
     "Task", "Agent", "SendMessage",
+    # Workflow: deterministic multi-agent orchestration -- pure delegation,
+    # same category as Task/Agent. NOT added to PI_MODE_ALLOWLIST: it can
+    # itself spawn arbitrary subagents, which would bypass the pi-delegate-
+    # only restriction mode=pi exists to enforce.
+    "Workflow",
     "TodoWrite",
     "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop", "TaskOutput",
     "AskUserQuestion",
     "Skill", "SlashCommand",
     "ExitPlanMode", "EnterPlanMode",
     "ToolSearch",
+    # Research isn't a mutation -- parity with the WebFetch/WebSearch carve-out
+    # already granted under mode=pi (see PI_MODE_ALLOWLIST below).
+    "WebFetch", "WebSearch",
+    # ReportFindings: typed code-review output, non-mutating.
+    "ReportFindings",
+    # Artifact: publishes deliverables; default-private (the user opts in to
+    # sharing afterward), so it's not a repo/state mutation in the sense the
+    # allowlist otherwise guards against.
+    "Artifact",
     # Read-only/introspection tools, audited and confirmed non-mutating:
     "Monitor", "CronList", "LSP",
     "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
@@ -133,13 +149,12 @@ PI_MODE_ALLOWLIST = {
     "PushNotification", "ScheduleWakeup",
 }
 
-# TODO(open question): should the `Workflow` tool be deny-listed like Bash /
-# mcp__* under mode == "pi"? Workflow can itself spawn subagents (potentially
-# including pi-delegate:delegate), so it's a plausible escape hatch around the
-# "only pi-delegate:delegate may mutate" guarantee. Left unresolved -- falls
-# through to the final `else: deny` branch below for now (i.e. currently
-# denied by default, not specially allowed), but flagging here rather than
-# silently deciding either way.
+# RESOLVED (was an open question as of 0.2.2): `Workflow` was added to
+# MAIN_ALLOWLIST in 0.2.3 (pure delegation, same category as Task/Agent) but
+# deliberately NOT added to PI_MODE_ALLOWLIST. Workflow can itself spawn
+# arbitrary subagents (potentially bypassing the pi-delegate-only
+# restriction), so under mode == "pi" it still falls through to the final
+# `else: deny` branch below -- denied by default, not specially allowed.
 
 
 def log_debug(msg):
