@@ -34,8 +34,12 @@ It is **OFF by default** and opt-in **per project**.
 /orchestrator-mode:mode on       # main agent read-only for this project
 /orchestrator-mode:mode pi       # read-only + only pi-delegate can make code changes
 /orchestrator-mode:mode wf       # read-only + orchestrate via the Workflow tool (Explore scout allowed)
-/orchestrator-mode:mode off      # back to normal
-/orchestrator-mode:mode status   # show current state
+/orchestrator-mode:mode off      # back to normal (also clears any model allowlist)
+/orchestrator-mode:mode status   # show current state (reports the model allowlist if set)
+
+/orchestrator-mode:mode wf --allowed-models opus,sonnet,haiku
+                                 # any of on/pi/wf + a per-project MODEL ALLOWLIST
+                                 # for delegated agents (see below)
 ```
 
 The command works even while the lock is active (see "Toggle exemption" below).
@@ -45,15 +49,23 @@ The command works even while the lock is active (see "Toggle exemption" below).
 State is a plain-text file at `<project>/.orchestrator-mode.state` (at the
 **project root**, NOT under `.claude/`):
 
-- File absent, empty, or content `off` -> **OFF** (hooks no-op; normal behavior).
-- Content `on` (trimmed, case-insensitive) -> **ON**.
-- Content `pi` (trimmed, case-insensitive) -> **PI**.
-- Content `wf` (trimmed, case-insensitive) -> **WF**.
+The file is a single line: a **mode token** optionally followed by
+whitespace-separated `key=value` **options**, e.g.
+`wf allowed-models=opus,sonnet,haiku`. The mode is the **first
+whitespace-separated token** (trimmed, case-insensitive) — options never
+affect mode detection:
 
-Nothing else is read. Anything unexpected is treated as OFF. The file is local
-to the project; it is not shipped with the plugin. Both hook scripts parse the
-state through a shared helper, `hooks/_state.py` (`get_mode()`), so the two
-hooks can't drift out of sync on what counts as a valid state.
+- File absent, empty, or mode token `off` -> **OFF** (hooks no-op; normal behavior).
+- Mode token `on` -> **ON**.
+- Mode token `pi` -> **PI**.
+- Mode token `wf` -> **WF**.
+
+Anything unexpected is treated as OFF; unparseable options are ignored (fail
+open). The file is local to the project; it is not shipped with the plugin.
+Both hook scripts parse the state through a shared helper, `hooks/_state.py`
+(`get_state()` returning `(mode, options)`; `get_mode()` remains as a
+mode-only wrapper), so the two hooks can't drift out of sync on what counts
+as a valid state.
 
 > The state file lives at the project root, not inside `.claude/`, on purpose.
 > Claude Code specially guards writes to `.claude/`, which blocked the toggle
@@ -233,6 +245,55 @@ route through, unlike `pi`'s pi-delegate-only restriction).
 
 **Denied under `wf`** — same as `on` (Write, Edit, MultiEdit, NotebookEdit,
 Bash, all `mcp__*`), plus Task/Agent to any subagent other than `Explore`.
+
+## Model allowlist (`--allowed-models`)
+
+Any of the three active modes can carry a per-project **model allowlist** that
+constrains which models delegated agents and workflow scripts may *explicitly*
+request:
+
+```
+/orchestrator-mode:mode wf --allowed-models opus,sonnet,haiku
+/orchestrator-mode:mode on --allowed-models opus,haiku
+/orchestrator-mode:mode pi --allowed-models haiku
+```
+
+The command writes the option into the state file after the mode token
+(e.g. `wf allowed-models=opus,sonnet,haiku` — single line, lowercased list).
+`/orchestrator-mode:mode off` clears it along with the mode;
+`/orchestrator-mode:mode status` reports it when set. The per-prompt reminder
+also names the allowlist while it is active.
+
+When set, the enforcement hook adds a check on delegation calls that the mode
+gating would otherwise allow:
+
+- **Task/Agent — deterministic.** If the call's `tool_input.model` field is
+  present and not in the list, the call is denied, naming the offending model
+  and the allowed set. This composes with the per-mode Task/Agent gating: it
+  runs for any subagent_type under `on`, for the `Explore` scout under `wf`,
+  and for `pi-delegate:delegate` under `pi`.
+- **Workflow — best-effort lint.** The workflow script text
+  (`tool_input.script`, or the file at `tool_input.scriptPath`; an unreadable
+  file fails open silently) is regex-scanned for quoted `model: "..."` option
+  values; any captured value outside the list denies the call, listing the
+  offending values. This is a **text lint, not a parser**: a computed or
+  obfuscated model value (string concatenation, a variable, etc.) can slip
+  through. That is consistent with the cooperative-guardrail security model
+  below — it catches a well-behaved agent's accidental off-list model choice,
+  not an adversarial one.
+
+**An omitted model is always allowed.** Absence of a `model` field (or of a
+model option in a workflow script) means the agent inherits the session
+default — that is never denied, anywhere. No `allowed-models` option in the
+state file means no restriction at all: behavior is identical to a plain mode
+token.
+
+> **BACKWARD COMPAT:** the mode-token-first state parsing shipped *together*
+> with this feature. An **older installed version of the hooks** reads the
+> whole state line as the mode string, so an option-bearing line like
+> `wf allowed-models=opus,haiku` does not match `on`/`pi`/`wf` and is treated
+> as **OFF** (fail open — no enforcement at all, but nothing breaks). Update
+> the installed plugin before relying on an option-bearing state line.
 
 ## Toggle exemption (how you can still turn it OFF while locked)
 

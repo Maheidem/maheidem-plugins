@@ -2,7 +2,8 @@
 """orchestrator-mode PreToolUse gate (ALLOWLIST / deny-by-default).
 
 Four-state, read from `.orchestrator-mode.state` at the project root via
-`_state.get_mode()`: "off" | "on" | "pi" | "wf".
+`_state.get_state()`: "off" | "on" | "pi" | "wf", plus optional key=value
+options after the mode token (e.g. "wf allowed-models=opus,sonnet,haiku").
 
 - OFF: silent no-op, normal behavior.
 - ON: the MAIN conversation agent is restricted to a small ALLOWLIST of
@@ -71,6 +72,20 @@ let normal flow proceed"):
                        intentional exception to fail-open).
                     -> tool in PI_MODE_ALLOWLIST -> silent no-op; else deny.
 
+MODEL ALLOWLIST (composes with steps 6/7/8): when the active mode carries an
+`allowed-models=<m1,m2,...>` option, an extra check runs on delegation calls
+that the mode gating would otherwise ALLOW:
+  - Task/Agent (any subagent_type under `on`; Explore under `wf`; pi-delegate
+    under `pi`): an explicit `tool_input.model` NOT in the list -> DENY.
+  - Workflow (under `on` and `wf`; denied outright under `pi` anyway): the
+    script text (`tool_input.script`, or the file at `tool_input.scriptPath`,
+    unreadable -> fail open) is regex-linted for quoted `model: "..."` option
+    values; any value NOT in the list -> DENY. Best-effort lint, consistent
+    with the cooperative-guardrail security model.
+An OMITTED model anywhere is always allowed (it inherits the session model);
+absence is never denied. No allowed-models option -> behavior identical to a
+plain mode token.
+
 Toggle exemption is intentionally NARROW: it matches ONLY the Write tool
 (the /orchestrator-mode:mode command flips state via Write) whose resolved
 `tool_input.file_path` equals this project's `.orchestrator-mode.state` (at
@@ -88,11 +103,12 @@ Debug: set ORCHESTRATOR_DEBUG=true for stderr tracing.
 """
 import json
 import os
+import re
 import sys
 from typing import NoReturn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _state import get_mode, project_dir, state_file_path  # noqa: E402
+from _state import get_state, project_dir, state_file_path  # noqa: E402
 
 
 # Appended to EVERY mode-branch deny reason. Background: a blocked delegated
@@ -275,8 +291,81 @@ def norm(path, base):
         return path
 
 
-def handle_on_mode(tool):
+# Matches quoted model option values in Workflow script text, e.g.
+# `model: "opus"` / `model:'sonnet'` / `"model": "haiku"`. Best-effort by
+# design: this is a text lint, not a parser -- a computed/obfuscated model
+# value (string concat, variable, etc.) will slip through. That is consistent
+# with the plugin's cooperative-guardrail security model (see README): the
+# goal is to catch a well-behaved agent's accidental off-list model choice,
+# not to contain an adversarial one.
+MODEL_OPTION_RE = re.compile(r"""\bmodel\b['"]?\s*:\s*(?:"([^"]*)"|'([^']*)')""")
+
+
+def check_task_model(tool, tool_input, allowed_models):
+    """Model-allowlist check for a Task/Agent call the mode gating would
+    otherwise allow. Explicit off-list model -> DENY; omitted model -> return
+    (it inherits the session model, which is always fine)."""
+    if not allowed_models:
+        return
+    model = (tool_input or {}).get("model")
+    if not model:
+        return  # omitted -> inherits session model -> never denied
+    if str(model).strip().lower() not in allowed_models:
+        deny(
+            "orchestrator-mode: model %r is not in this project's model "
+            "allowlist (%s). Pick a model from the allowlist, or omit the "
+            "model field to inherit the session default (always allowed)."
+            % (model, ", ".join(allowed_models)) + DELEGATE_GUIDANCE)
+
+
+def check_workflow_models(tool_input, allowed_models, data):
+    """Model-allowlist lint for a Workflow call the mode gating would
+    otherwise allow. Scans the script text (inline `script`, or the file at
+    `scriptPath` -- unreadable file fails open silently) for quoted model
+    option values; any value outside the allowlist -> DENY. Omitted model
+    (inherit) is fine. Best-effort, see MODEL_OPTION_RE above."""
+    if not allowed_models:
+        return
+    script = (tool_input or {}).get("script")
+    if not script:
+        script_path = (tool_input or {}).get("scriptPath")
+        if not script_path:
+            return
+        try:
+            if not os.path.isabs(script_path):
+                script_path = os.path.join(project_dir(data), script_path)
+            with open(script_path, "r") as f:
+                script = f.read()
+        except Exception:
+            return  # unreadable scriptPath -> fail open silently
+    try:
+        matches = MODEL_OPTION_RE.finditer(str(script))
+    except Exception:
+        return  # never let the lint itself brick a session
+    offending = []
+    for m in matches:
+        value = (m.group(1) if m.group(1) is not None else m.group(2))
+        value = value.strip().lower()
+        if value and value not in allowed_models and value not in offending:
+            offending.append(value)
+    if offending:
+        deny(
+            "orchestrator-mode: this Workflow script requests model(s) not in "
+            "this project's model allowlist: %s. Allowed models: %s. Change "
+            "the script to use allowed models, or omit the model option so "
+            "agents inherit the session default (always allowed)."
+            % (", ".join(repr(v) for v in offending),
+               ", ".join(allowed_models)) + DELEGATE_GUIDANCE)
+
+
+def handle_on_mode(tool, tool_input, allowed_models, data):
     if tool in MAIN_ALLOWLIST:
+        # Model allowlist composes with the mode gating: these delegation
+        # calls are otherwise allowed under ON, so run the model check first.
+        if tool in ("Task", "Agent"):
+            check_task_model(tool, tool_input, allowed_models)
+        elif tool == "Workflow":
+            check_workflow_models(tool_input, allowed_models, data)
         noop("allowlisted tool %s -> silent no-op (mode=on)" % tool)
     reason = (
         "orchestrator-mode is ON for this project: the main agent is read-only "
@@ -288,7 +377,7 @@ def handle_on_mode(tool):
     deny(reason)
 
 
-def handle_wf_mode(tool, tool_input):
+def handle_wf_mode(tool, tool_input, allowed_models, data):
     # Task/Agent: allow ONLY the built-in read-only Explore scout. Same
     # deliberate FAIL-CLOSED exception to the fail-open policy elsewhere in
     # this file as handle_pi_mode below -- missing/empty/wrong subagent_type
@@ -298,6 +387,8 @@ def handle_wf_mode(tool, tool_input):
     if tool in ("Task", "Agent"):
         subagent_type = (tool_input or {}).get("subagent_type")
         if subagent_type == WF_EXPLORE_SUBAGENT_TYPE:
+            # Otherwise allowed -> compose the model-allowlist check.
+            check_task_model(tool, tool_input, allowed_models)
             noop("mode=wf: %s -> Explore scout -> silent no-op" % tool)
         reason = (
             "orchestrator-mode is set to WF for this project: all substantive "
@@ -313,6 +404,9 @@ def handle_wf_mode(tool, tool_input):
         deny(reason)
 
     if tool in WF_MODE_ALLOWLIST:
+        if tool == "Workflow":
+            # Otherwise allowed -> compose the model-allowlist script lint.
+            check_workflow_models(tool_input, allowed_models, data)
         noop("allowlisted tool %s -> silent no-op (mode=wf)" % tool)
 
     reason = (
@@ -327,7 +421,7 @@ def handle_wf_mode(tool, tool_input):
     deny(reason)
 
 
-def handle_pi_mode(tool, tool_input):
+def handle_pi_mode(tool, tool_input, allowed_models):
     # Task/Agent: allow ONLY the exact pi-delegate subagent. This is a
     # deliberate FAIL-CLOSED exception to the fail-open policy elsewhere in
     # this file -- missing/empty/wrong subagent_type is DENIED, not passed
@@ -336,6 +430,9 @@ def handle_pi_mode(tool, tool_input):
     if tool in ("Task", "Agent"):
         subagent_type = (tool_input or {}).get("subagent_type")
         if subagent_type == PI_DELEGATE_SUBAGENT_TYPE:
+            # Otherwise allowed -> compose the model-allowlist check.
+            # (Workflow needs no equivalent under pi: it is denied outright.)
+            check_task_model(tool, tool_input, allowed_models)
             noop("mode=pi: %s -> pi-delegate subagent -> silent no-op" % tool)
         reason = (
             "orchestrator-mode is set to PI for this project: the main agent "
@@ -373,7 +470,8 @@ def main():
     agent_id = data.get("agent_id")
     log_debug("tool=%s agent_id=%s" % (tool, agent_id))
 
-    mode = get_mode(data)
+    mode, options = get_state(data)
+    allowed_models = options.get("allowed-models")
 
     # 2. state OFF / missing -> true no-op (normal permission flow proceeds)
     if mode == "off":
@@ -414,13 +512,14 @@ def main():
             log_debug("Write to state file -> ALLOW (toggle exemption)")
             allow("orchestrator-mode: state-file toggle exempted.")
 
-    # 6/7/8. branch on mode
+    # 6/7/8. branch on mode (the model allowlist, when set, composes inside
+    # each handler on delegation calls the mode gating would otherwise allow)
     if mode == "on":
-        handle_on_mode(tool)
+        handle_on_mode(tool, tool_input, allowed_models, data)
     elif mode == "wf":
-        handle_wf_mode(tool, tool_input)
+        handle_wf_mode(tool, tool_input, allowed_models, data)
     else:  # mode == "pi"
-        handle_pi_mode(tool, tool_input)
+        handle_pi_mode(tool, tool_input, allowed_models)
 
 
 if __name__ == "__main__":

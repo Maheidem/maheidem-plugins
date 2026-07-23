@@ -20,7 +20,7 @@
     },
     {
       "name": "interactive-cli",
-      "description": "Drive any interactive, human-oriented CLI from Claude — spawn persistent sessions, send input, observe and stream output, wait for completion, and run end-to-end terminal tests. First skill: tmux-orchestrator (pure-CLI, no MCP dependency).",
+      "description": "Drive any interactive, human-oriented CLI from Claude \u2014 spawn persistent sessions, send input, observe and stream output, wait for completion, and run end-to-end terminal tests. First skill: tmux-orchestrator (pure-CLI, no MCP dependency).",
       "version": "0.2.0",
       "author": {
         "name": "maheidem",
@@ -64,7 +64,7 @@
     },
     {
       "name": "deep-research",
-      "description": "Deep research agent with 5-phase workflow (SCOPE → SEARCH+CAPTURE → SYNTHESIZE → VALIDATE → HANDOFF), deterministic citation gate, dedup preflight, source-reliability rubric, and auto-maintained research index. Slash command /deep-research:research, agent-handoff protocol, validate-citations.sh + build-research-index.sh deterministic scripts, fixture test suite.",
+      "description": "Deep research agent with 5-phase workflow (SCOPE \u2192 SEARCH+CAPTURE \u2192 SYNTHESIZE \u2192 VALIDATE \u2192 HANDOFF), deterministic citation gate, dedup preflight, source-reliability rubric, and auto-maintained research index. Slash command /deep-research:research, agent-handoff protocol, validate-citations.sh + build-research-index.sh deterministic scripts, fixture test suite.",
       "version": "2.0.0",
       "author": {
         "name": "maheidem",
@@ -86,7 +86,7 @@
     },
     {
       "name": "presales-toolkit",
-      "description": "Symphony presales omnichannel knowledge management v9 — deterministic action surface with LLM-validated semantics. Bouncer engine, phase-state machine, phases.json DAGs, deterministic migration scripts, JSONL observability streams, metrics-summary CLI, and ship-gate orchestrator. Skills for check-updates, consolidate, discover-sources, freshness, audit, doctor, RFP/SOW, proposal/status drafting, and meeting prep.",
+      "description": "Symphony presales omnichannel knowledge management v9 \u2014 deterministic action surface with LLM-validated semantics. Bouncer engine, phase-state machine, phases.json DAGs, deterministic migration scripts, JSONL observability streams, metrics-summary CLI, and ship-gate orchestrator. Skills for check-updates, consolidate, discover-sources, freshness, audit, doctor, RFP/SOW, proposal/status drafting, and meeting prep.",
       "version": "9.6.0",
       "author": {
         "name": "maheidem",
@@ -109,7 +109,7 @@
     {
       "name": "orchestrator-mode",
       "description": "Per-project orchestrator mode with four states (off/on/pi/wf): the main conversation agent goes read-only (allowlist of read/search/delegation tools only; Write/Edit/Bash/NotebookEdit and all MCP tools blocked) while subagents keep full access. The 'pi' state additionally closes the general delegation escape hatch, allowing Task/Agent only to the pi-delegate plugin's subagent -- forcing all code changes through the local pi CLI. The 'wf' state closes delegation down to the Workflow tool: Task/Agent may spawn only the built-in read-only Explore scout, and all substantive delegation goes through Workflow (dynamic multi-agent workflows). SendMessage is allowed under 'pi' (Task/Agent gating means any target is necessarily a pi-delegate teammate), plus an audited set of non-mutating tools (Monitor, CronList, LSP, MCP resource-read tools, PushNotification, ScheduleWakeup). The PI reminder now nudges the main thread to decompose substantial delegated work into small, independently-verifiable steps dispatched sequentially, rather than one large task, since pi is often a smaller/local model. OFF by default, opt-in per project via a root .orchestrator-mode.state file. Injects a mode-specific reminder into the main thread when active.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"

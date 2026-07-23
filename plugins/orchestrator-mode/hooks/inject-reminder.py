@@ -2,7 +2,8 @@
 """orchestrator-mode UserPromptSubmit reminder.
 
 Four-state, read from `.orchestrator-mode.state` at the project root via
-`_state.get_mode()`: "off" | "on" | "pi" | "wf".
+`_state.get_state()`: "off" | "on" | "pi" | "wf", plus optional options
+(e.g. "wf allowed-models=opus,sonnet,haiku").
 
 - OFF: inject nothing.
 - ON: inject REMINDER_ON, telling the agent it is read-only and must delegate
@@ -13,6 +14,9 @@ Four-state, read from `.orchestrator-mode.state` at the project root via
 - WF: inject REMINDER_WF, telling the agent it is read-only and must
   orchestrate via the Workflow tool, with Task/Agent restricted to the
   built-in Explore scout.
+
+When the state carries an `allowed-models` option, one extra sentence naming
+the model allowlist is appended to whichever mode reminder is active.
 
 On any parse error, inject nothing (fail open).
 
@@ -26,7 +30,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _state import get_mode  # noqa: E402
+from _state import get_state  # noqa: E402
 
 
 def log_debug(msg):
@@ -80,7 +84,7 @@ def main():
         log_debug("could not parse stdin -> inject nothing")
         sys.exit(0)
 
-    mode = get_mode(data)
+    mode, options = get_state(data)
 
     if mode == "off":
         log_debug("mode OFF -> inject nothing")
@@ -92,6 +96,14 @@ def main():
         reminder = REMINDER_WF
     else:  # mode == "pi"
         reminder = REMINDER_PI
+
+    allowed_models = options.get("allowed-models")
+    if allowed_models:
+        reminder += (
+            " Model allowlist for delegated agents: %s. Explicit model "
+            "choices in agent()/Task/Agent calls must come from this list; "
+            "omitting the model (inheriting the session default) is allowed."
+            % ", ".join(allowed_models))
 
     out = {"hookSpecificOutput": {
         "hookEventName": "UserPromptSubmit",
