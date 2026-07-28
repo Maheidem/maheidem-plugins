@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stub pi --list-models: header + 3 valid rows, exit 0.
+if [ "${1:-}" = "--list-models" ]; then
+  echo "Provider  Model         Context  Max-Out  Thinking  Images"
+  echo "zai       glm-4.5-air   128k     8k       yes       no"
+  echo "openai    gpt-5.2       200k     16k      yes       yes"
+  echo "anthropic claude-opus-4 200k     32k      yes       yes"
+  exit 0
+fi
+exit 1

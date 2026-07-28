@@ -41,7 +41,9 @@ global default from `~/.pi/agent/settings.json`.
 `/pi-delegate:setup` is the primary way to view, set, or remove this pin — it
 builds its picker from the real provider/model combinations `pi` reports on
 your machine (`pi --list-models`) so you can never pin a typo'd, nonexistent
-combination. The underlying `pi-companion.mjs` subcommands
+combination. For providers with large catalogs the picker offers an optional
+name filter before paging: type a substring, it narrows the validated list,
+and the pin still always comes from that list. The underlying `pi-companion.mjs` subcommands
 (`list-models --json`, `write-config --provider <name> --model <name> --json`,
 `remove-config --json`) exist mainly for scripting/debugging — use the
 command for everyday use.
@@ -56,9 +58,16 @@ stream can otherwise exceed any static `maxBuffer` on large tasks; stdin is
 explicitly ignored so `pi` never blocks reading it), and uses a
 **completion-marker contract** as the primary success signal: every task
 automatically instructs `pi` to write a JSON report file (`/tmp/pi-delegate-result-<uuid>.json`)
-as its last action. The presence and well-formedness of that file determines
-success/failure. NDJSON stream parsing is retained as a fallback for
-diagnostics when the marker is missing or malformed. See
+as its last action. The marker (cross-checked against pi's exit code — a
+marker that says "ok" but a nonzero exit is treated as failure) determines
+success/failure, while the NDJSON stream is always parsed too: it supplies
+`finalText` (pi's actual final answer) even on marker success, and when the
+marker is missing but the stream shows a clean run, the result is a
+**degraded success** (`ok: true, degraded: true` — completed, but verify).
+Timeouts kill pi's whole process group (SIGTERM, then SIGKILL after 5s) and
+surface a retained progress log path for diagnosis; `--timeout` must be a
+positive integer or the helper exits 2. `--json` output truncates
+`rawStdout`/`rawStderr` to their last 10KB (with truncation flags). See
 `skills/pi-cli-runtime/SKILL.md` for the full invocation contract
 (including the per-project pin and completion-marker schema) and
 `skills/pi-result-handling/SKILL.md` for how results and failures are presented.
@@ -71,6 +80,15 @@ completely standalone. The coupling is one-directional: `orchestrator-mode`'s
 when orchestrator-mode is active, the main thread can still delegate to pi.
 `pi-delegate` itself doesn't reference or depend on `orchestrator-mode` in
 any way.
+
+## Tests
+
+```bash
+bash plugins/pi-delegate/tests/run_all.sh
+```
+
+Bash-driven suite (no framework) that runs the real `pi-companion.mjs`
+against stubbed `pi` executables; nonzero exit on any failure.
 
 ## Scope
 

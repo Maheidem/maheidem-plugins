@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stub pi: emits one NDJSON event (so the progress log initializes), ignores
+# SIGTERM, and sleeps 60s. Used to prove SIGKILL escalation on timeout.
+trap '' TERM
+echo '{"type":"agent_start"}'
+sleep 60
+exit 0

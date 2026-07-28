@@ -66,7 +66,13 @@ subcommands, mainly for scripting/debugging rather than everyday use:
 - `list-models --json` — enumerate real provider/model combinations available
   on this machine, via `pi --list-models`.
 - `write-config --provider <name> --model <name> --json` — write/overwrite
-  the project config file (creates `.claude/` if needed).
+  the project config file (creates `.claude/` if needed). Arguments are
+  strict: only `--provider`, `--model`, and `--json` are accepted (anything
+  else exits 2), and values are validated — no whitespace, no leading `-`,
+  no newlines/`---`, only `[A-Za-z0-9._/:@-]`. Invalid values are rejected
+  with `ok: false` rather than written. The same validation is applied when
+  *reading* provider/model from the project config: an unsafe value is
+  ignored (with a stderr warning) instead of being passed to `pi`.
 - `remove-config --json` — delete the project config file if present.
 
 `setup --json` also reports the current pin state via `projectConfigPath` /
@@ -90,11 +96,67 @@ if unset) and passed to Node's `spawn(cmd, args, { cwd, stdio: ["ignore", "pipe"
   `spawn()`'s default of an open, unfed stdin pipe makes it block forever;
   ignoring stdin is required, not stylistic.
 - Default timeout is 600000 ms (600s). Callers may override with `--timeout <ms>`.
+  The value is validated strictly: anything that isn't a finite positive
+  integer (`0`, `-5`, `abc`, …) makes the helper print a usage error and exit
+  with status 2 rather than silently falling back to the default.
+- **Timeout kill semantics**: `pi` is spawned `detached` in its own process
+  group. On timeout the helper sends `SIGTERM` to the whole group, then
+  escalates to `SIGKILL` after 5 seconds if the group hasn't exited. The
+  helper resolves on the child's `exit` event (with a short grace window for
+  stdio to flush), so a grandchild holding the pipes open can never hang the
+  helper.
+- **Progress log**: during a run the helper appends one line per NDJSON
+  event-type transition to `os.tmpdir()/pi-companion-progress-<pid>.log`. The
+  file is deleted on normal exit but **retained on timeout**, and its path is
+  surfaced in the result's `progressLogPath` field (and appended to the
+  timeout `errorMessage`) so a stalled run can be diagnosed after the fact.
 - **Background execution, job tracking, and `status`/`result`/`cancel`
   subcommands do not exist in this version.** That is a v2 idea, not built
   now — do not imply it exists or try to invoke it.
 
 ## Result contract
+
+`task --json` always prints one stable JSON shape, on every path (success,
+failure, ENOENT, timeout, spawn error):
+
+```json
+{
+  "ok": true,
+  "degraded": false,
+  "markerMissing": false,
+  "markerExitMismatch": false,
+  "finalText": "...",
+  "summary": "...",
+  "nextSteps": [],
+  "errorMessage": null,
+  "exitCode": 0,
+  "willRetry": null,
+  "completionMarker": {},
+  "progressLogPath": null,
+  "rawStdout": "...",
+  "rawStderr": "...",
+  "rawStdoutTruncated": false,
+  "rawStderrTruncated": false
+}
+```
+
+Field meanings:
+
+- `finalText` — pi's actual final assistant text, taken from the NDJSON
+  stream when available (falls back to the marker's `summary` if the stream
+  had no final text).
+- `summary` / `nextSteps` — metadata from the completion marker (`summary` is
+  `null` and `nextSteps` is `[]` when no marker was written). These describe
+  the work; `finalText` *is* pi's answer.
+- `degraded` — `true` when success was inferred without a clean completion
+  marker (see decision matrix below). Treat as "completed, but verify".
+- `markerMissing` — the marker file was absent or malformed.
+- `markerExitMismatch` — the marker said `ok` but pi exited nonzero; the run
+  is treated as a failure.
+- `progressLogPath` — set only on timeout (see above); otherwise `null`.
+- `rawStdout`/`rawStderr` — truncated to the **last 10KB** each, with the
+  matching `*Truncated` flag set when truncation occurred. Full stdout is
+  never emitted in `--json` output.
 
 ### Completion-marker contract (primary signal)
 
@@ -113,19 +175,37 @@ LAST action. The helper treats this file as the PRIMARY success signal:
     "nextSteps": ["optional", "array", "of", "recommended", "follow-ups"]
   }
   ```
-- **Resolution** (done by the helper after `pi` exits):
-  1. Check if the marker file exists and parses as valid JSON matching the schema.
-  2. If valid:
-     - `status: "ok"` → success. `finalText` = `summary`, `nextSteps` forwarded.
-     - `status: "error"` → failure. `errorMessage` = `summary` (pi itself reported failure).
-  3. If missing or malformed → failure. The helper falls back to NDJSON stream
-     parsing for diagnostics and includes the marker-failure reason in the error.
-  4. The marker file is always deleted after reading (cleanup).
+- **Resolution decision matrix** (done by the helper after `pi` exits; the
+  NDJSON stream is always interpreted, not just on fallback):
+  1. Marker valid, `status: "ok"`, exit code 0 → `ok: true, degraded: false`.
+     `finalText` comes from the NDJSON stream's final assistant text when
+     non-empty, else from `marker.summary`; `summary`/`nextSteps` forwarded.
+  2. Marker valid, `status: "ok"`, but exit code nonzero → `ok: false,
+     markerExitMismatch: true`. The exit code wins over the marker's claim;
+     `finalText`/`summary` are kept as diagnostics only.
+  3. Marker valid, `status: "error"` → `ok: false`, `errorMessage` =
+     `marker.summary`.
+  4. Marker missing/malformed, but the NDJSON stream shows a clean run and
+     exit code is 0 → **degraded success**: `ok: true, degraded: true,
+     markerMissing: true`, `finalText` from the stream, and a `warning` field
+     carrying the marker-failure reason.
+  5. Marker missing and the stream is not clean (or exit code nonzero) →
+     `ok: false` with a combined marker-error + NDJSON-fallback message.
+- The marker file is always deleted after each run, on **every** exit path
+  (success, error, ENOENT, timeout).
+- **Timeout caveat**: because the kill goes to the whole process group, pi may
+  have written the marker just before dying. On timeout the helper still
+  attempts to read it — the run stays `ok: false`, but if a marker was found
+  its `status`/`summary` are surfaced in `completionMarker`/`summary` and the
+  `errorMessage` notes it should be treated with caution.
 
-### NDJSON stream parsing (fallback only)
+### NDJSON stream parsing
 
-The helper still captures the full NDJSON stream for observability and as a
-fallback when the completion marker is missing or malformed:
+The NDJSON stream is no longer "fallback only": it is interpreted on **every**
+run. On marker success it supplies `finalText` (pi's real answer, richer than
+the marker's one-line `summary`); on a missing/malformed marker it can upgrade
+the run to degraded success (case 4 above) or provide failure diagnostics.
+The interpretation:
 
 1. Splits stdout on newlines, parses each non-empty line as JSON, and skips
    (does not throw on) any line that isn't valid JSON.
@@ -134,11 +214,11 @@ fallback when the completion marker is missing or malformed:
 3. Takes the last message from `agent_end.messages`.
 4. If that message's `stopReason` is `"error"`, the run failed — the helper
    surfaces `errorMessage` verbatim.
-5. Otherwise the run succeeded — the helper's `finalText` is the concatenation
-   of that message's `{"type":"text"}` content items.
+5. Otherwise the stream is "clean" — the helper's `finalText` is the
+   concatenation of that message's `{"type":"text"}` content items.
 
-This fallback is only used when the completion marker is absent or invalid.
-It is never the primary signal.
+The completion marker remains the primary *success* signal; the stream is the
+primary source of `finalText` and the safety net when the marker is absent.
 
 The subagent should not re-parse pi's stdout itself; it only needs to run the
 helper with `--json` and act on the structured result it returns.

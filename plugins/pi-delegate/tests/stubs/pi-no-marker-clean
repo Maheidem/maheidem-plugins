@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub pi: clean NDJSON agent_end, writes NO marker, exits 0 (degraded success path).
+echo '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"degraded final answer"}]}]}'
+exit 0

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Stub pi --list-models: unparseable rows (single tokens), exit 0.
+if [ "${1:-}" = "--list-models" ]; then
+  echo "garbagerow1"
+  echo "garbagerow2"
+  exit 0
+fi
+exit 1

@@ -78,13 +78,19 @@ AskUserQuestion hard-caps every question at 2-4 options (and at most 4 questions
 
 **Provider step:**
 - Deduplicate `models[].provider` into a sorted list.
+- If there are 9+ providers, first offer the same browse-or-filter choice
+  described in the model step below, scoped to provider names.
 - If exactly 1 provider remains unshown (only possible on the last page, or if the machine only has one provider at all), don't open a 1-option `AskUserQuestion` — `AskUserQuestion` requires at least 2 options. Just state it ("Only one provider is available: `<name>`") and treat it as selected.
 - If 2-4 providers remain unshown, ask one `AskUserQuestion` listing all of them.
 - Otherwise (5+ remain), page through them 3 at a time: show the next 3 unshown providers plus a 4th option `More providers...`. If the user picks it, show the next page the same way, applying the same 1/2-4/5+ rule to whatever remains.
 
 **Model step (same pagination scheme, scoped to the chosen provider):**
 - Filter `models[]` to `provider === <chosen provider>`, take `.model`, sorted.
-- Apply the identical 1-direct-confirm / 2-4-direct-ask / 5+-page-by-3-with-"More models..." logic.
+- If the chosen provider has more than ~8 models, first ask (one `AskUserQuestion`, two options) whether to `Browse all (paged)` or `Filter by name`:
+  - **Browse all** — proceed straight into the pagination below over the full list.
+  - **Filter by name** — ask the user to type a substring, then match it case-insensitively against this provider's model names from the `list-models --json` output. Run the pagination below over the **filtered** list. If the filter matches nothing, say so and re-offer the browse/filter choice. The typed text is only ever a filter — the pin the user finally picks still comes from the validated list, never from what they typed.
+- Apply the identical 1-direct-confirm / 2-4-direct-ask / 5+-page-by-3-with-"More models..." logic to whichever list (full or filtered) is in play.
+- Never write a model that isn't in the `list-models` output, filtered or not.
 - Providers with large catalogs may take several pages this way — that's the accepted tradeoff for never letting a typo reach `write-config`.
 
 5. Once both a provider and a model are chosen, run:

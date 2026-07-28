@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Stub pi: emits >100KB of NDJSON to stdout, valid marker, exit 0 (truncation test).
+marker="$(printf '%s\n' "$@" | grep -oE '[^ ]*pi-delegate-result-[0-9a-fA-F-]+\.json' | head -1)"
+filler="$(printf 'x%.0s' {1..1000})"
+for i in $(seq 1 120); do
+  echo "{\"type\":\"text_delta\",\"text\":\"$filler\"}"
+done
+echo '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"big final answer"}]}]}'
+if [ -n "$marker" ]; then
+  printf '{"status":"ok","summary":"big stub done","nextSteps":[]}\n' > "$marker"
+fi
+exit 0

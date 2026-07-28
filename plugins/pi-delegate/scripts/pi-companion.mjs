@@ -11,9 +11,9 @@
 //   - No background/job-tracking subcommands. That is a v2 idea, not built here.
 //   - Completion-marker contract: every task invocation instructs pi to write
 //     a JSON completion-report file as its LAST action. The presence and
-//     well-formedness of that file is the PRIMARY success signal. NDJSON
-//     stream parsing is retained as a fallback for diagnostics when the
-//     marker is missing or malformed.
+//     well-formedness of that file is the PRIMARY success signal. The NDJSON
+//     stream supplies pi's actual final answer text, and can upgrade a
+//     missing-marker run to a degraded success when the stream ended cleanly.
 //   - Never throw an uncaught exception as the primary output. All failure
 //     paths degrade to a structured `{ ok: false, ... }` object.
 
@@ -26,6 +26,7 @@ import process from "node:process";
 
 const DEFAULT_TIMEOUT_MS = 600000; // 600s
 const PI_SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
+const RAW_TAIL_LIMIT = 10240; // last 10KB of raw stdout/stderr in results
 
 function printUsage() {
   console.log(
@@ -44,6 +45,56 @@ function printUsage() {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+// Keep only the tail of a large string; used to bound rawStdout/rawStderr in
+// every result payload (pi's NDJSON re-emission makes stdout quadratic).
+function truncateTail(str, max = RAW_TAIL_LIMIT) {
+  const text = str ?? "";
+  if (text.length <= max) return { text, truncated: false };
+  return { text: text.slice(text.length - max), truncated: true };
+}
+
+// Conservative allowlist for provider/model values that end up in pi's argv or
+// in the project config file: no whitespace, no leading '-', limited charset.
+function isSafeArgValue(v) {
+  return (
+    typeof v === "string" &&
+    v.length > 0 &&
+    !v.startsWith("-") &&
+    /^[A-Za-z0-9._/:@-]+$/.test(v)
+  );
+}
+
+// Build a task result with the full stable field set, then overlay specifics.
+// Guarantees every runTask return path exposes the same JSON shape.
+function taskResult(overrides) {
+  const stdoutT = truncateTail(overrides.rawStdout ?? "");
+  const stderrT = truncateTail(overrides.rawStderr ?? "");
+  return {
+    ok: false,
+    degraded: false,
+    markerMissing: false,
+    markerExitMismatch: false,
+    finalText: null,
+    summary: null,
+    nextSteps: [],
+    errorMessage: null,
+    warning: null,
+    exitCode: null,
+    willRetry: null,
+    completionMarker: null,
+    progressLogPath: null,
+    ...overrides,
+    rawStdout: stdoutT.text,
+    rawStderr: stderrT.text,
+    rawStdoutTruncated: stdoutT.truncated,
+    rawStderrTruncated: stderrT.truncated
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Arg parsing
 // ---------------------------------------------------------------------------
 
@@ -56,7 +107,8 @@ function parseTaskArgs(argv) {
     thinking: null,
     tools: null,
     excludeTools: null,
-    timeout: DEFAULT_TIMEOUT_MS
+    timeout: DEFAULT_TIMEOUT_MS,
+    invalidTimeout: null
   };
   const positional = [];
 
@@ -81,9 +133,16 @@ function parseTaskArgs(argv) {
       case "--exclude-tools":
         opts.excludeTools = argv[++i] ?? null;
         break;
-      case "--timeout":
-        opts.timeout = Number(argv[++i]) || DEFAULT_TIMEOUT_MS;
+      case "--timeout": {
+        const raw = argv[++i];
+        const n = Number(raw);
+        if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+          opts.invalidTimeout = raw ?? "(missing)";
+        } else {
+          opts.timeout = n;
+        }
         break;
+      }
       default:
         positional.push(arg);
         break;
@@ -91,6 +150,26 @@ function parseTaskArgs(argv) {
   }
 
   opts.text = positional.join(" ").trim();
+  return opts;
+}
+
+// Strict parser for write-config: only --provider/--model/--json allowed;
+// anything else (unknown flag or positional) is a hard error.
+function parseWriteConfigArgs(argv) {
+  const opts = { provider: null, model: null, json: false, error: null };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--json") {
+      opts.json = true;
+    } else if (arg === "--provider") {
+      opts.provider = argv[++i] ?? null;
+    } else if (arg === "--model") {
+      opts.model = argv[++i] ?? null;
+    } else {
+      opts.error = `unknown argument: ${arg}`;
+      return opts;
+    }
+  }
   return opts;
 }
 
@@ -196,6 +275,7 @@ function loadProjectConfig(cwd) {
   }
 
   const config = { provider: null, model: null };
+  let closed = false;
 
   // lines[0] is already confirmed "---" above, so everything from index 1
   // onward is frontmatter content until the closing "---" (a normal
@@ -203,15 +283,25 @@ function loadProjectConfig(cwd) {
   // for).
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-    if (line.trim() === "---") break;
+    if (line.trim() === "---") {
+      closed = true;
+      break;
+    }
 
     const colonIndex = line.indexOf(":");
     if (colonIndex < 0) continue;
 
     const key = line.slice(0, colonIndex).trim();
-    const value = line.slice(colonIndex + 1).trim();
+    let value = line.slice(colonIndex + 1).trim();
+    // Strip one pair of matching surrounding quotes ('...' or "...").
+    if (/^(['"]).*\1$/.test(value)) value = value.slice(1, -1);
     if (key === "provider" && value) config.provider = value;
     if (key === "model" && value) config.model = value;
+  }
+
+  // Unterminated frontmatter block => treat as no frontmatter at all.
+  if (!closed) {
+    return { provider: null, model: null };
   }
 
   return config;
@@ -231,6 +321,12 @@ function loadProjectConfig(cwd) {
 // the actual fix for a real bug, not a preference -- do not revert it to plain
 // `spawn(cmd, args, { cwd })` or the hang comes back on every single task, not
 // just large ones.
+//
+// The child is spawned detached (its own process group) so that on timeout we
+// can SIGTERM the whole group (pi plus any grandchildren), escalating to
+// SIGKILL after 5s if the group ignores SIGTERM. We settle on 'close' in the
+// common path, but also on 'exit' + a short grace timer so the promise still
+// resolves if a grandchild keeps the stdio pipes open forever.
 // ---------------------------------------------------------------------------
 
 async function spawnPi(cmd, args, { cwd, timeout }) {
@@ -280,12 +376,66 @@ async function spawnPi(cmd, args, { cwd, timeout }) {
       }
     }
 
+    let settled = false;
+    let killTimer = null;
+    let exitGraceTimer = null;
+
+    function killGroup(sig) {
+      try {
+        process.kill(-child.pid, sig);
+      } catch {
+        try {
+          child.kill(sig);
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killGroup("SIGTERM");
+      killTimer = setTimeout(() => killGroup("SIGKILL"), 5000);
+      killTimer.unref?.();
     }, timeout);
 
-    const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    function settle(result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      if (exitGraceTimer) clearTimeout(exitGraceTimer);
+      // Clean up the progress log on any normal exit (success or non-timeout
+      // failure); leave it on disk when killed by our own timeout so the
+      // caller can inspect the last-known state of a run that got stuck.
+      if (progressLogInitialized && !timedOut) {
+        try {
+          fs.unlinkSync(progressLogPath);
+        } catch {
+          /* best-effort cleanup only */
+        }
+      }
+      resolve(result);
+    }
+
+    function buildExitResult(code, signal) {
+      return {
+        stdout: stdoutChunks.join(""),
+        stderr: stderrChunks.join(""),
+        status: code,
+        signal,
+        error: timedOut
+          ? { code: "ETIMEDOUT", message: `Process was killed after ${timeout}ms` }
+          : null,
+        progressLogPath: timedOut && progressLogInitialized ? progressLogPath : null
+      };
+    }
+
+    const child = spawn(cmd, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true
+    });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
 
@@ -296,52 +446,70 @@ async function spawnPi(cmd, args, { cwd, timeout }) {
     child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
 
     child.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({
+      settle({
         stdout: "",
         stderr: "",
         status: null,
         signal: null,
-        error: { code: err.code, message: err.message }
+        error: { code: err.code, message: err.message },
+        progressLogPath: null
       });
     });
 
     child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      // Clean up the progress log on any normal close (success or non-timeout
-      // failure); leave it on disk when killed by our own timeout so the
-      // caller can inspect the last-known state of a run that got stuck.
-      if (progressLogInitialized && !timedOut) {
-        try {
-          fs.unlinkSync(progressLogPath);
-        } catch {
-          /* best-effort cleanup only */
-        }
-      }
-      resolve({
-        stdout: stdoutChunks.join(""),
-        stderr: stderrChunks.join(""),
-        status: code,
-        signal,
-        error: timedOut
-          ? { code: "ETIMEDOUT", message: `Process was killed after ${timeout}ms` }
-          : null
-      });
+      settle(buildExitResult(code, signal));
+    });
+
+    // Guarantee resolution even if grandchildren keep the stdio pipes open
+    // ('close' never fires): after 'exit', give the streams ~1s to drain,
+    // then settle with whatever we have.
+    child.on("exit", (code, signal) => {
+      exitGraceTimer = setTimeout(() => {
+        settle(buildExitResult(code, signal));
+      }, 1000);
+      exitGraceTimer.unref?.();
     });
   });
 }
 
+// Read + validate + always unlink the completion marker file.
+function readAndCleanupMarker(markerPath) {
+  let markerResult = null;
+  let markerError = null;
+  try {
+    if (fs.existsSync(markerPath)) {
+      const raw = fs.readFileSync(markerPath, "utf8");
+      const parsed = JSON.parse(raw);
+
+      // Validate schema: status must be "ok" or "error", summary must be a string.
+      if (
+        parsed &&
+        (parsed.status === "ok" || parsed.status === "error") &&
+        typeof parsed.summary === "string"
+      ) {
+        markerResult = parsed;
+      } else {
+        markerError = "Completion marker file exists but has invalid schema (missing or wrong status/summary fields)";
+      }
+    } else {
+      markerError = "Completion marker file was not found at expected path";
+    }
+  } catch (err) {
+    markerError = `Completion marker file could not be read/parsed: ${err && err.message ? err.message : String(err)}`;
+  } finally {
+    // Always clean up the marker file so we don't leave artifacts in tmp.
+    try {
+      fs.unlinkSync(markerPath);
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+  return { markerResult, markerError };
+}
+
 async function runTask(opts) {
   if (!opts.text) {
-    return {
-      ok: false,
-      finalText: null,
-      errorMessage: "no task text provided",
-      rawStdout: "",
-      rawStderr: "",
-      exitCode: null,
-      willRetry: null
-    };
+    return taskResult({ errorMessage: "no task text provided" });
   }
 
   const args = ["-p", "--mode", "json", "--no-session"];
@@ -349,8 +517,23 @@ async function runTask(opts) {
   // Three-tier precedence: explicit flag > project config > pi's global default
   const cwd = resolveCwd();
   const projectConfig = loadProjectConfig(cwd);
-  const effectiveProvider = opts.provider || projectConfig.provider;
-  const effectiveModel = opts.model || projectConfig.model;
+
+  // Values loaded from project config are validated before entering pi's argv
+  // (a leading '-' could be interpreted as a flag). Explicit CLI flags are the
+  // caller's responsibility.
+  let configProvider = projectConfig.provider;
+  let configModel = projectConfig.model;
+  if (configProvider && !isSafeArgValue(configProvider)) {
+    console.error(`[pi-companion] ignoring invalid provider from project config: ${configProvider}`);
+    configProvider = null;
+  }
+  if (configModel && !isSafeArgValue(configModel)) {
+    console.error(`[pi-companion] ignoring invalid model from project config: ${configModel}`);
+    configModel = null;
+  }
+
+  const effectiveProvider = opts.provider || configProvider;
+  const effectiveModel = opts.model || configModel;
 
   if (effectiveProvider) args.push("--provider", effectiveProvider);
   if (effectiveModel) args.push("--model", effectiveModel);
@@ -393,15 +576,10 @@ This is a required protocol step — do not skip it.`;
     result = await spawnPi("pi", args, { cwd, timeout: opts.timeout });
   } catch (err) {
     // Guard defensively against unexpected errors from spawnPi.
-    return {
-      ok: false,
-      finalText: null,
-      errorMessage: `unexpected error invoking pi: ${err && err.message ? err.message : String(err)}`,
-      rawStdout: "",
-      rawStderr: "",
-      exitCode: null,
-      willRetry: null
-    };
+    readAndCleanupMarker(markerPath); // unlink any partial marker
+    return taskResult({
+      errorMessage: `unexpected error invoking pi: ${err && err.message ? err.message : String(err)}`
+    });
   }
 
   const rawStdout = result.stdout ?? "";
@@ -409,114 +587,145 @@ This is a required protocol step — do not skip it.`;
   const exitCode = typeof result.status === "number" ? result.status : null;
 
   if (result.error) {
+    // Every error path still reads (and unlinks) the marker — on timeout pi
+    // may have written it before the group kill landed.
+    const { markerResult } = readAndCleanupMarker(markerPath);
+
     if (result.error.code === "ENOENT") {
-      return {
-        ok: false,
-        finalText: null,
+      return taskResult({
         errorMessage: "pi CLI not found on PATH — run /pi-delegate:setup",
         rawStdout,
         rawStderr,
-        exitCode,
-        willRetry: null
-      };
+        exitCode
+      });
     }
     if (result.error.code === "ETIMEDOUT") {
-      return {
-        ok: false,
-        finalText: null,
-        errorMessage: `pi did not finish within ${opts.timeout}ms and was killed (timeout)`,
+      let errorMessage = `pi did not finish within ${opts.timeout}ms and was killed (timeout)`;
+      let summary = null;
+      let completionMarker = null;
+      if (markerResult) {
+        summary = markerResult.summary;
+        completionMarker = markerResult;
+        errorMessage = `pi timed out after ${opts.timeout}ms, but a completion marker was found (status: ${markerResult.status}) — treat with caution: ${markerResult.summary}`;
+      }
+      if (result.progressLogPath) {
+        errorMessage += ` — progress log: ${result.progressLogPath}`;
+      }
+      return taskResult({
+        errorMessage,
+        summary,
+        completionMarker,
+        nextSteps: markerResult && Array.isArray(markerResult.nextSteps) ? markerResult.nextSteps : [],
+        progressLogPath: result.progressLogPath ?? null,
         rawStdout,
         rawStderr,
-        exitCode,
-        willRetry: null
-      };
+        exitCode
+      });
     }
-    return {
-      ok: false,
-      finalText: null,
+    return taskResult({
       errorMessage: `pi invocation failed: ${result.error.code || result.error.message || String(result.error)}`,
       rawStdout,
       rawStderr,
-      exitCode,
-      willRetry: null
-    };
+      exitCode
+    });
   }
 
   const { events, unparseableLines } = parseNdjson(rawStdout);
 
-  // --- Completion-marker resolution (primary signal) ---
-  let markerResult = null;
-  let markerError = null;
+  // --- Completion-marker resolution (primary success signal) ---
+  const { markerResult, markerError } = readAndCleanupMarker(markerPath);
 
-  try {
-    if (fs.existsSync(markerPath)) {
-      const raw = fs.readFileSync(markerPath, "utf8");
-      const parsed = JSON.parse(raw);
+  // NDJSON interpretation always runs: it supplies pi's actual final answer
+  // text on marker success, and the fallback signal when the marker is absent.
+  const interpreted = interpretEvents(events);
 
-      // Validate schema: status must be "ok" or "error", summary must be a string.
-      if (
-        parsed &&
-        (parsed.status === "ok" || parsed.status === "error") &&
-        typeof parsed.summary === "string"
-      ) {
-        markerResult = parsed;
-      } else {
-        markerError = "Completion marker file exists but has invalid schema (missing or wrong status/summary fields)";
-      }
-    } else {
-      markerError = "Completion marker file was not found at expected path";
-    }
-  } catch (err) {
-    markerError = `Completion marker file could not be read/parsed: ${err && err.message ? err.message : String(err)}`;
-  } finally {
-    // Always clean up the marker file so we don't leave artifacts in tmp.
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {
-      /* best-effort cleanup */
-    }
-  }
-
-  // Build the final result based on whether the marker was valid.
   if (markerResult) {
-    // Marker is present and well-formed — this is the PRIMARY result.
-    return {
-      ok: markerResult.status === "ok",
-      finalText: markerResult.summary,
-      errorMessage: markerResult.status === "error" ? markerResult.summary : null,
-      nextSteps: Array.isArray(markerResult.nextSteps) ? markerResult.nextSteps : [],
+    const nextSteps = Array.isArray(markerResult.nextSteps) ? markerResult.nextSteps : [];
+
+    if (markerResult.status === "ok" && exitCode !== 0) {
+      // M1: an "ok" marker cannot override a nonzero exit — treat as failure.
+      return taskResult({
+        ok: false,
+        markerExitMismatch: true,
+        finalText: interpreted.ok && interpreted.finalText ? interpreted.finalText : markerResult.summary,
+        summary: markerResult.summary,
+        nextSteps,
+        errorMessage: `completion marker reported ok but pi exited with status ${exitCode} — treating as failure`,
+        completionMarker: markerResult,
+        rawStdout,
+        rawStderr,
+        exitCode,
+        willRetry: interpreted.willRetry
+      });
+    }
+
+    if (markerResult.status === "ok") {
+      return taskResult({
+        ok: true,
+        finalText: interpreted.ok && interpreted.finalText ? interpreted.finalText : markerResult.summary,
+        summary: markerResult.summary,
+        nextSteps,
+        completionMarker: markerResult,
+        rawStdout,
+        rawStderr,
+        exitCode,
+        willRetry: interpreted.willRetry
+      });
+    }
+
+    // Marker explicitly reported an error.
+    return taskResult({
+      ok: false,
+      finalText: interpreted.ok && interpreted.finalText ? interpreted.finalText : null,
+      summary: markerResult.summary,
+      nextSteps,
+      errorMessage: markerResult.summary,
+      completionMarker: markerResult,
       rawStdout,
       rawStderr,
       exitCode,
-      willRetry: null,
-      completionMarker: markerResult
-    };
+      willRetry: interpreted.willRetry
+    });
   }
 
-  // Marker was missing or malformed — fall back to NDJSON stream parsing for
-  // diagnostics, and report the marker failure as part of the error.
-  const interpreted = interpretEvents(events);
+  // Marker missing/malformed. If the NDJSON stream ended cleanly AND pi exited
+  // 0, treat as a degraded success (M2) rather than a hard failure.
+  if (interpreted.ok && exitCode === 0) {
+    return taskResult({
+      ok: true,
+      degraded: true,
+      markerMissing: true,
+      finalText: interpreted.finalText,
+      warning: `${markerError} — success inferred from clean NDJSON stream; verify the work`,
+      rawStdout,
+      rawStderr,
+      exitCode,
+      willRetry: interpreted.willRetry
+    });
+  }
 
+  // Marker missing and NDJSON not clean (or nonzero exit) — hard failure.
   let fallbackMessage = markerError;
   if (!interpreted.ok && interpreted.errorMessage) {
     fallbackMessage = `${markerError}; NDJSON fallback: ${interpreted.errorMessage}`;
-  } else if (interpreted.ok && interpreted.finalText) {
-    fallbackMessage = `${markerError} (NDJSON stream appeared normal but completion marker was not written)`;
+  } else if (interpreted.ok) {
+    fallbackMessage = `${markerError} (NDJSON stream appeared normal but pi exited with status ${exitCode})`;
   }
 
   if (unparseableLines.length > 0) {
     fallbackMessage += ` (also saw ${unparseableLines.length} non-JSON line(s) in stdout)`;
   }
 
-  return {
+  return taskResult({
     ok: false,
+    markerMissing: true,
     finalText: interpreted.finalText ?? null,
     errorMessage: fallbackMessage,
     rawStdout,
     rawStderr,
     exitCode,
     willRetry: interpreted.willRetry
-  };
+  });
 }
 
 function printTaskResult(result, json) {
@@ -527,8 +736,14 @@ function printTaskResult(result, json) {
 
   if (result.ok) {
     console.log(result.finalText ?? "");
+    if (result.degraded) {
+      console.log("note: completion marker missing — result inferred from output stream, verify the work");
+    }
   } else {
     console.log(`pi task failed: ${result.errorMessage}`);
+    if (result.markerExitMismatch) {
+      console.log(`exit code: ${result.exitCode}`);
+    }
     if (result.rawStderr) {
       console.log("--- stderr ---");
       console.log(result.rawStderr);
@@ -564,19 +779,34 @@ function runListModels() {
     };
   }
 
+  if (typeof result.status === "number" && result.status !== 0) {
+    let msg = `'pi --list-models' exited with status ${result.status}`;
+    if (result.stderr && result.stderr.trim()) msg += `: ${result.stderr.trim().slice(-500)}`;
+    return {
+      ok: false,
+      models: [],
+      rawOutput: (result.stdout || "").trim(),
+      errorMessage: msg
+    };
+  }
+
   const raw = (result.stdout || "").trim();
   const lines = raw.split("\n").filter((l) => l.trim());
 
-  // Skip header line, parse remaining lines as whitespace-separated columns
   // Format: provider  model  context  max-out  thinking  images
+  // Detect the header by content instead of blindly skipping line 0.
   const models = [];
-  for (let i = 1; i < lines.length; i++) {
-    const parts = lines[i].trim().split(/\s{2,}/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (i === 0 && /provider\s+model/i.test(line)) continue;
+    const parts = line.split(/\s{2,}/);
     if (parts.length >= 2) {
       models.push({
         provider: parts[0].trim(),
         model: parts[1].trim()
       });
+    } else {
+      console.error(`[pi-companion] list-models: could not parse line: ${line}`);
     }
   }
 
@@ -617,6 +847,18 @@ function runWriteConfig(provider, model) {
       configPath,
       errorMessage: "at least one of --provider or --model is required"
     };
+  }
+
+  // Reject values that could break the frontmatter or smuggle flags:
+  // newlines, '---', leading '-', or chars outside [A-Za-z0-9._/:@-].
+  for (const [label, value] of [["provider", provider], ["model", model]]) {
+    if (value != null && (!isSafeArgValue(value) || value.includes("---"))) {
+      return {
+        ok: false,
+        configPath,
+        errorMessage: `invalid ${label} value ${JSON.stringify(value)}: must match [A-Za-z0-9._/:@-]+, no leading '-', no newlines, no '---'`
+      };
+    }
   }
 
   try {
@@ -815,6 +1057,12 @@ async function main() {
 
   if (subcommand === "task") {
     const opts = parseTaskArgs(rest);
+    if (opts.invalidTimeout !== null) {
+      console.log(`--timeout must be a positive integer (ms), got: ${opts.invalidTimeout}`);
+      printUsage();
+      process.exit(2);
+      return;
+    }
     const result = await runTask(opts);
     printTaskResult(result, opts.json);
     process.exit(result.ok ? 0 : 1);
@@ -838,10 +1086,15 @@ async function main() {
   }
 
   if (subcommand === "write-config") {
-    const opts = parseTaskArgs(rest);
-    const json = rest.includes("--json");
+    const opts = parseWriteConfigArgs(rest);
+    if (opts.error) {
+      console.log(`write-config: ${opts.error}`);
+      printUsage();
+      process.exit(2);
+      return;
+    }
     const result = runWriteConfig(opts.provider, opts.model);
-    printWriteConfigResult(result, json);
+    printWriteConfigResult(result, opts.json);
     process.exit(result.ok ? 0 : 1);
     return;
   }
@@ -864,12 +1117,22 @@ main().catch((err) => {
     JSON.stringify(
       {
         ok: false,
+        degraded: false,
+        markerMissing: false,
+        markerExitMismatch: false,
         finalText: null,
+        summary: null,
+        nextSteps: [],
         errorMessage: `unexpected pi-companion error: ${err && err.message ? err.message : String(err)}`,
+        warning: null,
+        exitCode: null,
+        willRetry: null,
+        completionMarker: null,
+        progressLogPath: null,
         rawStdout: "",
         rawStderr: "",
-        exitCode: null,
-        willRetry: null
+        rawStdoutTruncated: false,
+        rawStderrTruncated: false
       },
       null,
       2

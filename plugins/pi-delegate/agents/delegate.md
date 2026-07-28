@@ -35,6 +35,8 @@ Then consult the `pi-result-handling` skill for how to present the result back.
 
 If the result is `ok: false` (pi not installed, timed out, or reported an internal error), surface the failure clearly per the `pi-result-handling` skill and point the user at `/pi-delegate:setup`. Do not fall back to doing the coding work yourself — that would defeat the purpose of delegating to pi.
 
+A result with `ok: true` and `degraded: true` is a success with a verification caveat, not a failure — report it as completed and pass through the warning.
+
 ## Response
 
 Return pi's result (the `finalText` on success, or the clear failure message on failure) as your final answer. Do not add unrelated commentary.
