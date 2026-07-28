@@ -63,9 +63,24 @@ affect mode detection:
 Anything unexpected is treated as OFF; unparseable options are ignored (fail
 open). The file is local to the project; it is not shipped with the plugin.
 Both hook scripts parse the state through a shared helper, `hooks/_state.py`
-(`get_state()` returning `(mode, options)`; `get_mode()` remains as a
-mode-only wrapper), so the two hooks can't drift out of sync on what counts
-as a valid state.
+(`get_state()` returning `(mode, options)`), so the two hooks can't drift out
+of sync on what counts as a valid state.
+
+If the state file exists but its first token is not one of `on`/`pi`/`wf`/`off`,
+`_state.py` prints a one-line warning to stderr and treats it as OFF
+(fail-open) — this does not fire for an absent file or an explicit `off`.
+
+A malformed `allowed-models` option (e.g. a stray token from a line like
+`on allowed-models=opus, haiku`, where the space breaks tokenization) causes
+the entire `allowed-models` restriction to be discarded, with a stderr
+warning — the parser never ends up stricter than intended; a malformed
+option always fails open to "no restriction," never to a narrower one.
+
+Model matching against `allowed-models` is a case-insensitive **family /
+substring match**: an allowlist entry like `sonnet` permits any requested
+model id containing `sonnet` (e.g. `claude-sonnet-5`). This is asymmetric by
+design — an allowlist entry of the full id `claude-sonnet-5` would not match
+a bare request of `sonnet`.
 
 > The state file lives at the project root, not inside `.claude/`, on purpose.
 > Claude Code specially guards writes to `.claude/`, which blocked the toggle
@@ -74,7 +89,7 @@ as a valid state.
 
 ## Behavior when ON (allowlist)
 
-The PreToolUse hook matches **all tools** (`matcher: "*"`) so MCP and future
+The PreToolUse hook matches **all tools** (`matcher: ".*"`) so MCP and future
 write tools actually reach the gate.
 
 **Allowed on the main thread** (read-only / meta / delegation only):
@@ -282,11 +297,34 @@ gating would otherwise allow:
   below — it catches a well-behaved agent's accidental off-list model choice,
   not an adversarial one.
 
-**An omitted model is always allowed.** Absence of a `model` field (or of a
-model option in a workflow script) means the agent inherits the session
-default — that is never denied, anywhere. No `allowed-models` option in the
-state file means no restriction at all: behavior is identical to a plain mode
-token.
+**An omitted model is allowed only when no `allowed-models` restriction is
+active.** No `allowed-models` option in the state file means no restriction
+at all: behavior is identical to a plain mode token, and an omitted model
+inherits the session default as before.
+
+**When an `allowed-models` restriction IS active, an omitted model is
+DENIED, not inherited:**
+
+- **Task/Agent.** A call with no `model` field at all is denied with
+  guidance to declare one of the allowed models — omission no longer falls
+  through to "inherit the session default." This applies to any
+  subagent_type gated in under `on`, the `Explore` scout under `wf`, and
+  `pi-delegate:delegate` under `pi` — including `Explore` scout spawns
+  under `wf` mode, which are held to the same rule as everything else (no
+  carve-out for read-only scouts).
+- **Workflow — best-effort lint.** If the script contains one or more
+  `agent(` calls, and the count of calls containing a `model:` option is
+  fewer than the count of `agent(` calls, the whole call is denied, naming
+  the mismatch. A script with **zero** `agent(` calls is never denied by
+  this check (nothing to lint). This is a text lint, not a parser: a
+  computed/obfuscated model value, or a `scriptPath` that can't be read,
+  remains fail-open, consistent with the existing lint limitations above.
+
+This closes a real gap: a project with `allowed-models=sonnet` set had a
+`Workflow` script whose `agent()` calls all omitted `model:`, so every
+delegated agent silently ran on the session default instead of the
+allowlisted model — the omission-inherits behavior masked a misconfigured
+workflow instead of surfacing it.
 
 > **BACKWARD COMPAT:** the mode-token-first state parsing shipped *together*
 > with this feature. An **older installed version of the hooks** reads the
@@ -298,11 +336,15 @@ token.
 ## Toggle exemption (how you can still turn it OFF while locked)
 
 The `/orchestrator-mode:mode` command flips the state by writing the
-`.orchestrator-mode.state` file with the normal **Write** tool. `Write` is
-denied when the mode is ON — except the PreToolUse hook makes one narrow
-exception: it allows a `Write` whose resolved `tool_input.file_path` equals this
-project's `.orchestrator-mode.state`. So you can always run
-`/orchestrator-mode:mode off` even while the main agent is otherwise read-only.
+`.orchestrator-mode.state` file with the normal **Write** tool. Rather than
+auto-approving this write, the hook lets a main-thread `Write` whose resolved
+`tool_input.file_path` equals this project's `.orchestrator-mode.state` fall
+through silently to the **normal Claude Code permission prompt** — it is not
+denied and not auto-allowed. Approve that prompt when it appears; that's how
+`/orchestrator-mode:mode off` still works even while the main agent is
+otherwise read-only. (Earlier versions of this hook auto-approved the write
+outright; it now defers to the standard prompt instead, so the toggle stays
+visible and user-confirmed rather than silent.)
 
 The exemption is deliberately narrow:
 
@@ -316,13 +358,16 @@ The exemption is deliberately narrow:
   targets `.orchestrator-mode.state` with `Write`, `Edit`, `MultiEdit`, or
   `NotebookEdit` is **denied**, and that check runs *before* the general
   "subagents have full access" bypass, so a stamped subagent can never reach
-  the exemption. A raw `Bash` write (e.g. `echo off > .orchestrator-mode.state`
-  from a subagent, which keeps full Bash access) remains possible — Bash
-  commands cannot be path-matched, the same limitation noted for embedded bash
-  under "Limitations" below. This check closes a real incident: a blocked
-  delegated agent once silently flipped the state file to `off` to unblock
-  itself. Subagents are told to report the blocker to the main thread instead
-  — and every deny message carries the same guidance.
+  the exemption. A raw `Bash` write or an `mcp__*` write (e.g.
+  `echo off > .orchestrator-mode.state` from a subagent, which otherwise keeps
+  full Bash access) is now also **denied**: any `Bash` command or `mcp__*`
+  tool call whose serialized `tool_input` contains the literal string
+  `.orchestrator-mode.state` is blocked, regardless of `agent_id` — see
+  "Security model" and "Limitations" below for the best-effort nature of that
+  check. This closes a real incident: a blocked delegated agent once silently
+  flipped the state file to `off` to unblock itself. Subagents are told to
+  report the blocker to the main thread instead — and every deny message
+  carries the same guidance.
 
 ## Robustness
 
@@ -339,6 +384,19 @@ permissive.
 
 Set `ORCHESTRATOR_DEBUG=true` for stderr tracing from the hook scripts.
 
+**Headless / missing `CLAUDE_PROJECT_DIR` fallback:** when the environment
+doesn't set `CLAUDE_PROJECT_DIR`, `state_file_path()` walks up from the
+current working directory looking for the nearest ancestor directory
+containing `.orchestrator-mode.state`, falling back to the starting cwd
+itself if none is found anywhere up to the filesystem root. This is separate
+from `project_dir()`, which still resolves relative tool-input paths (e.g. in
+`norm()`) against the cwd-based project root exactly as before and is
+unaffected by this walk-up. The asymmetry is intentional: with
+`CLAUDE_PROJECT_DIR` unset and a nested cwd, the *discovered* state file can
+resolve to an ancestor directory while relative tool-input paths in the same
+request still resolve against the nested cwd. Setting `CLAUDE_PROJECT_DIR`
+avoids the ambiguity entirely and is the recommended, unaffected path.
+
 ## Security model (read this)
 
 orchestrator-mode is a **cooperative guardrail**, not an adversarial sandbox.
@@ -348,11 +406,17 @@ keep a well-behaved main agent in an orchestrate-and-delegate posture. It is
 
 - A determined main agent can unlock itself by writing `off` to the state file.
   The toggle is **intentionally model-serviceable** (that is how
-  `/orchestrator-mode:mode off` works), so the same path can be used to disable
-  the lock. (Subagents, by contrast, cannot do this through the file-mutation
-  tools — `Write`/`Edit`/`MultiEdit`/`NotebookEdit` targeting the state file
-  are denied; a raw `Bash` write remains possible since shell commands cannot
-  be path-matched. See "Toggle exemption" above.)
+  `/orchestrator-mode:mode off` works, now via the normal permission prompt
+  rather than a silent auto-allow — see "Toggle exemption" above), so the same
+  path can be used to disable the lock. Subagents cannot do this through the
+  file-mutation tools — `Write`/`Edit`/`MultiEdit`/`NotebookEdit` targeting the
+  state file are denied — and a raw `Bash` or `mcp__*` call whose tool_input
+  mentions the state-file path is also denied, regardless of `agent_id`. This
+  is a **best-effort substring lint, not a parser**: it can be evaded by
+  obfuscating the path string (e.g. building it via shell variable
+  concatenation or command substitution so the literal string
+  `.orchestrator-mode.state` never appears in the scanned `tool_input`), so it
+  raises the bar but is not airtight against an adversarial model.
 - A main agent can route a denied write through a subagent via the Agent/Task
   tool — that is the **intended design**, not a bypass. Subagents have full
   access by design.
@@ -368,9 +432,14 @@ PreToolUse gate and is not subject to it; the only lever there is
 `disableSkillShellExecution` in settings. Because `Skill` and `SlashCommand` are
 allowlisted, command-embedded bash preprocessing still runs before the gate. The
 read-only lock constrains the model's **tool calls**, not harness preprocessing.
-The same root cause (shell commands can't be path-matched) means a subagent's
-raw `Bash` write to `.orchestrator-mode.state` is not caught by the
-state-file deny either — see "Toggle exemption" above.
+
+A subagent's raw `Bash` write to `.orchestrator-mode.state` (or an `mcp__*`
+tool call referencing it) IS now caught, by a best-effort substring lint on
+`tool_input` — see "Toggle exemption" and "Security model" above. That lint
+is content-based, not a shell parser: an obfuscated command (variable
+concatenation, command substitution, base64, etc.) that never contains the
+literal string `.orchestrator-mode.state` in its `tool_input` can still slip
+through undetected.
 
 **Teammate sessions**: agents spawned as separate teammate CLI sessions (e.g.
 via the experimental agent-teams feature) carry no `agent_id` in their hook

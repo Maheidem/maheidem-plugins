@@ -40,12 +40,14 @@ def log_debug(msg):
 
 REMINDER_ON = (
     "ORCHESTRATION MODE is ACTIVE for this project. You are READ-ONLY on the "
-    "main thread: only read/search/delegation tools are allowed here (Read, "
-    "Grep, Glob, Task/Agent, todos). Everything else -- Write, Edit, "
-    "NotebookEdit, Bash, and ALL MCP tools -- is blocked on the main thread. "
-    "Delegate ALL file edits, file creation, command execution, and MCP calls "
-    "to a subagent via the Agent/Task tool -- subagents have full write/execute "
-    "access. Use the main thread only to read, plan, and orchestrate. "
+    "main thread: only read/search/delegation/research tools are allowed here "
+    "(Read, Grep, Glob, Task/Agent, Workflow, WebFetch, WebSearch, Skill, "
+    "todos). Everything else -- Write, Edit, NotebookEdit, Bash, and ALL MCP "
+    "tools -- is blocked on the main thread. Delegate ALL file edits, file "
+    "creation, command execution, and MCP calls to a subagent via the "
+    "Agent/Task tool (or the Workflow tool for multi-agent orchestration) -- "
+    "subagents have full write/execute access. Use the main thread only to "
+    "read, plan, and orchestrate. "
     "(Run /orchestrator-mode:mode off to exit this mode.)")
 
 REMINDER_PI = (
@@ -100,9 +102,10 @@ def main():
     allowed_models = options.get("allowed-models")
     if allowed_models:
         reminder += (
-            " Model allowlist for delegated agents: %s. Explicit model "
-            "choices in agent()/Task/Agent calls must come from this list; "
-            "omitting the model (inheriting the session default) is allowed."
+            " Model allowlist for delegated agents: %s. Every "
+            "agent()/Task/Agent call MUST declare model: one of this list -- "
+            "omitting the model while this allowlist is active is NOT "
+            "allowed and will be denied."
             % ", ".join(allowed_models))
 
     out = {"hookSpecificOutput": {

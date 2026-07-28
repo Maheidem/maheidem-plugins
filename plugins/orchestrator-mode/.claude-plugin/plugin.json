@@ -1,6 +1,6 @@
 {
   "name": "orchestrator-mode",
-  "description": "Per-project orchestrator mode: the main conversation agent goes read-only via an allowlist (only read/meta/delegation tools; Write/Edit/Bash/MCP/everything else denied) while subagents keep full access. OFF by default, opt-in per project via .orchestrator-mode.state at the project root. Injects a delegation reminder into the main thread when active.",
+  "description": "Per-project orchestrator mode with four states (off/on/pi/wf): the main conversation agent goes read-only via an allowlist (only read/meta/delegation tools; Write/Edit/Bash/MCP/everything else denied) while subagents keep full access. 'pi' restricts Task/Agent to only the pi-delegate subagent (forcing code changes through the local pi CLI); 'wf' restricts Task/Agent to the built-in Explore scout and routes substantive delegation through the Workflow tool. Any mode can carry a per-project --allowed-models restriction on delegated agents/workflow scripts; when set, delegated calls must explicitly declare an allowed model -- omitting the model field is denied, not inherited. OFF by default, opt-in per project via .orchestrator-mode.state at the project root. Injects a mode-specific delegation reminder into the main thread when active.",
   "author": {
     "name": "maheidem",
     "email": "maheidem@users.noreply.github.com"
@@ -13,5 +13,5 @@
     "hooks"
   ],
   "repository": "https://github.com/maheidem/maheidem-plugins",
-  "version": "0.4.0"
+  "version": "0.5.0"
 }

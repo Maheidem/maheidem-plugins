@@ -33,14 +33,20 @@ Parse an optional `--allowed-models <m1,m2,...>` flag (also accept
 `--allowed-models=<m1,m2,...>`) AFTER the mode argument for `on`, `pi`, and
 `wf`. When present, lowercase the comma-separated list, strip whitespace, and
 constrain which models delegated agents and workflow scripts may explicitly
-request (omitting a model always inherits the session default). Ignore the
-flag for `off` and `status`.
+request. **When an `allowed-models` restriction is active, omitting the model
+is NOT allowed** for delegated Task/Agent calls or `Workflow` `agent()` calls —
+every delegated call must explicitly declare a model from the list, or it is
+denied. Ignore the flag for `off` and `status`.
 
 IMPORTANT: Do this work YOURSELF in the main thread using the Read and Write
 tools. Do NOT delegate the toggle to a subagent, even if an orchestration-mode
-reminder tells you to delegate writes. The PreToolUse hook specifically exempts
-writes to `.orchestrator-mode.state`, so writing this one file directly is
-allowed even while the lock is active. This is the only file you may write here.
+reminder tells you to delegate writes. Before writing, determine the ABSOLUTE
+project-root path (e.g. via the working directory or `CLAUDE_PROJECT_DIR` if
+visible) and use that absolute path when writing `.orchestrator-mode.state`,
+rather than a bare relative filename — this ensures the hook's path comparison
+is unambiguous regardless of your actual cwd at write time. Writing this file
+directly reaches the normal permission prompt even while the lock is active —
+approve it when Claude Code asks. This is the only file you may write here.
 
 Steps:
 

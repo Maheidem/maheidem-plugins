@@ -1,5 +1,5 @@
 {
-  "description": "orchestrator-mode hooks: read-only main agent (PreToolUse, allowlist deny-by-default) + delegation reminder (UserPromptSubmit). Both no-op unless this project's .orchestrator-mode.state (at project root) contains 'on'.",
+  "description": "orchestrator-mode hooks: read-only main agent (PreToolUse, allowlist deny-by-default) + delegation reminder (UserPromptSubmit). Both no-op unless this project's .orchestrator-mode.state (at project root) is set to one of the four states: off/on/pi/wf.",
   "hooks": {
     "PreToolUse": [
       {
@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/enforce-orchestrator.py\"",
-            "timeout": 5000
+            "timeout": 5
           }
         ]
       }
@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/inject-reminder.py\"",
-            "timeout": 5000
+            "timeout": 5
           }
         ]
       }
