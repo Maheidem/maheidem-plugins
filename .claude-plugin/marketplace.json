@@ -72,6 +72,17 @@
       },
       "source": "./plugins/orchestrator-mode",
       "category": "development"
+    },
+    {
+      "name": "shepherd",
+      "description": "Start a recurring 10-minute shepherd loop over a goal: invokes the built-in loop skill with a shepherd-role prompt (watch, act, unblock, understand problems) so the goal keeps running unattended. Fixed 10-minute cadence, session-only (backed by the loop skill's CronCreate scheduling, auto-expires per that tool's behavior).",
+      "version": "0.1.0",
+      "author": {
+        "name": "maheidem",
+        "email": "maheidem@users.noreply.github.com"
+      },
+      "source": "./plugins/shepherd",
+      "category": "productivity"
     }
   ]
 }
