@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
-use_stub pi-marker-ok
+use_stub pi-conv-send-happy
 scratch="$(make_scratch)"
 export CLAUDE_PROJECT_DIR="$scratch"
 

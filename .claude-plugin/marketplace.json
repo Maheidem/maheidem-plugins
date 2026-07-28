@@ -54,7 +54,7 @@
     {
       "name": "pi-delegate",
       "description": "Delegate coding work to the locally-installed pi CLI (pi.dev). One-shot tasks (RPC completion by default, legacy marker contract behind --marker) plus persistent, observable, steerable conversations (start/send/status/end/read/steer/interrupt) backed by pi's session files -- no daemon, every interaction a crash-safe file operation.",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"

@@ -19,7 +19,7 @@ weakness, not a pi-specific limitation. Before invoking the subagent, assess
   yourself first (you have full read access even under orchestrator-mode's `pi`
   state), break it into an ordered sequence of small, independently-verifiable
   steps, and dispatch **one `Agent` call per step**, checking each step's
-  result (now reliable, via the completion-marker contract in
+  result (now reliable, via the RPC completion path in
   `pi-cli-runtime`) before dispatching the next. Do not bundle the whole
   breakdown into a single oversized task and hand it to one `Agent` call.
 

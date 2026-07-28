@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Stub `pi --mode rpc`: on "prompt" it interleaves garbage lines before/among
+# the valid response sequence. The RPC parser (newlineFramed + try/catch JSON.parse)
+# must tolerate the noise and still complete the full flow.
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      # Garbage interleaved before any valid line
+      echo "this is not json"
+      echo '{"broken json'
+      echo '{"type":"unknown_event_kind","x":1}'
+      # Now the valid response sequence
+      echo '{"type":"response","command":"prompt","success":true}'
+      echo '{"type":"agent_start"}'
+      echo '{"type":"turn_start"}'
+      echo '{"type":"turn_end"}'
+      echo '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_last_assistant_text"'*)
+      # One more garbage line before the valid response
+      echo '{"type":"extension_ui_request","id":"fake-123"}'
+      echo '{"type":"response","command":"get_last_assistant_text","success":true,"data":{"text":"stub reply text"}}'
+      ;;
+    *'"type":"get_state"'*)
+      echo '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2}}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      echo '{"type":"response","command":"get_session_stats","success":true,"data":{"userMessages":1,"assistantMessages":1,"totalMessages":2}}'
+      ;;
+  esac
+done
+exit 0

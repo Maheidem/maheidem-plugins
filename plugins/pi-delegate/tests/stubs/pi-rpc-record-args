@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Stub `pi --mode rpc --session-id <name> ...`: records all CLI args (if
+# PI_STUB_ARGS_FILE is set), then answers a single prompt +
+# get_last_assistant_text roundtrip, matching pi's RPC envelope shapes.
+[ -n "${PI_STUB_ARGS_FILE:-}" ] && printf '%s\n' "$@" >> "$PI_STUB_ARGS_FILE"
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      echo '{"type":"response","command":"prompt","success":true}'
+      echo '{"type":"agent_start"}'
+      echo '{"type":"turn_start"}'
+      echo '{"type":"turn_end"}'
+      echo '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_last_assistant_text"'*)
+      echo '{"type":"response","command":"get_last_assistant_text","success":true,"data":{"text":"stub reply text"}}'
+      ;;
+    *'"type":"get_state"'*)
+      echo '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2}}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      echo '{"type":"response","command":"get_session_stats","success":true,"data":{"userMessages":1,"assistantMessages":1,"totalMessages":2}}'
+      ;;
+  esac
+done
+exit 0

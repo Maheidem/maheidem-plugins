@@ -1,0 +1,49 @@
+#!/usr/bin/env node
+// Stub `pi --mode rpc`: captures the "message" value from the prompt command
+// and echoes it back verbatim via get_last_assistant_text. Handles arbitrary
+// Unicode without mangling — bash parameter expansion would struggle with
+// embedded quotes, newlines, and multi-byte chars.
+
+let capturedMessage = null;
+
+process.stdin.setEncoding("utf8");
+
+for await (const line of process.stdin) {
+  const trimmed = line.trim();
+  if (!trimmed) continue;
+
+  let evt;
+  try {
+    evt = JSON.parse(trimmed);
+  } catch {
+    continue;
+  }
+
+  if (evt.type === "prompt" && evt.message !== undefined) {
+    capturedMessage = evt.message;
+    process.stdout.write(
+      '{"type":"response","command":"prompt","success":true}\n' +
+      '{"type":"agent_start"}\n' +
+      '{"type":"turn_start"}\n' +
+      '{"type":"turn_end"}\n' +
+      '{"type":"agent_settled"}\n'
+    );
+  } else if (evt.type === "get_last_assistant_text") {
+    process.stdout.write(
+      JSON.stringify({
+        type: "response",
+        command: "get_last_assistant_text",
+        success: true,
+        data: { text: capturedMessage ?? "" }
+      }) + "\n"
+    );
+  } else if (evt.type === "get_state") {
+    process.stdout.write(
+      '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2}}\n'
+    );
+  } else if (evt.type === "get_session_stats") {
+    process.stdout.write(
+      '{"type":"response","command":"get_session_stats","success":true,"data":{"userMessages":1,"assistantMessages":1,"totalMessages":2}}\n'
+    );
+  }
+}

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Stub `pi --mode rpc`: on "prompt" emits response + agent_start then exits 1
+# (no settle, no further reads). Tests that the companion detects a dead child.
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      echo '{"type":"response","command":"prompt","success":true}'
+      echo '{"type":"agent_start"}'
+      exit 1
+      ;;
+  esac
+done
+exit 0

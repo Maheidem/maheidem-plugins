@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-# Stub pi: writes a valid ok marker + clean NDJSON but exits 3 (marker/exit mismatch).
-marker="$(printf '%s\n' "$@" | grep -oE '[^ ]*pi-delegate-result-[0-9a-fA-F-]+\.json' | head -1)"
-echo '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"real final answer"}]}]}'
-if [ -n "$marker" ]; then
-  printf '{"status":"ok","summary":"stub done","nextSteps":[]}\n' > "$marker"
-fi
-exit 3

@@ -17,7 +17,7 @@ scratch="$(make_scratch)"
 export CLAUDE_PROJECT_DIR="$scratch"
 
 # ---------------------------------------------------------------------------
-# Test: run the RPC-default path (no --marker) and assert structured success.
+# Test: run the RPC-default path and assert structured success.
 # ---------------------------------------------------------------------------
 TASK_PROMPT="Reply with exactly the word PONG and nothing else."
 out_task="$scratch/task.json"
@@ -33,7 +33,7 @@ fi
 
 assert_json "task: exit code 0, ok:true" "$out_task" 'r.ok === true'
 assert_json "task: finalText contains PONG" "$out_task" '/PONG/i.test(r.finalText || "")'
-assert_json "task: completionMarker is null (RPC path)" "$out_task" 'r.completionMarker === null'
+assert_json "task: no marker-related keys" "$out_task" '!("completionMarker" in r) && !("markerMissing" in r) && !("degraded" in r)'
 
 _FINISHED=1
 finish

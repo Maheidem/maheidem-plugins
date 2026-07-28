@@ -18,20 +18,6 @@ When the helper returns pi's result:
   are completion-report metadata about the work; relay `nextSteps` if present,
   but don't substitute `summary` for the answer when `finalText` exists.
 
-## Degraded success
-
-When the result has `ok: true` **and** `degraded: true` (usually with
-`markerMissing: true`), pi's completion report was missing or malformed but
-the output stream showed a clean run. Present this as a success **with a
-caveat**: "completed, but the completion report was missing — verify the work
-before relying on it." Do not treat it as a failure, and do not present it as
-a clean success either; pass the caveat (and any `warning` field) through to
-the user.
-
-When `markerExitMismatch: true` (`ok: false`), pi's completion report claimed
-success but the process exited nonzero. Present it as a **failure** and call
-out the mismatch explicitly — the exit code wins.
-
 ## Conversation results (`conversation start|send|status|end`)
 
 These follow the same overall presentation rules above — relay `finalText`
@@ -45,10 +31,10 @@ verbatim, don't re-verify pi's work. Two things are specific to this path:
   itself failed or that something is broken. Don't retry automatically and
   don't fall back to `task`; the caller asked for the stateful conversation
   specifically.
-- **No completion-marker fields apply here.** `markerMissing`,
-  `markerExitMismatch`, `completionMarker`, and `progressLogPath` are always
-  empty/`false`/`null` on `conversation` results — don't mention them or
-  treat their absence as a problem.
+- **One result contract everywhere.** `task` and `conversation` results share
+  the same field set (`ok`, `finalText`, `summary`, `errorMessage`, `warning`,
+  `exitCode`, session fields, `steered`, `interrupted`, raw tails) — there are
+  no marker-era fields anymore; don't mention or look for them.
 
 ### `read` / `steer` / `interrupt` results
 
@@ -84,12 +70,9 @@ scope decisions. If a result contains a judgment the caller is likely to act on
 
 Failure includes any of:
 - pi not installed / not on PATH (`ENOENT`)
-- pi timed out (if the result includes `progressLogPath`, mention it — that
-  retained log shows how far pi got before the kill; if a `completionMarker`
-  was still captured, relay its summary with the "treat with caution" caveat
-  from the error message)
-- a result with `ok: false` (including `stopReason: "error"` from pi itself,
-  and `markerExitMismatch: true` runs)
+- pi timed out (mention the retained progress log path from `errorMessage` —
+  it shows how far pi got before the kill)
+- a result with `ok: false` (including `stopReason: "error"` from pi itself)
 
 When any of these happen:
 

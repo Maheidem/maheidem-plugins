@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
-use_stub pi-big-stdout
+use_stub pi-rpc-big-output
 scratch="$(make_scratch)"
 out="$scratch/result.json"
 export CLAUDE_PROJECT_DIR="$scratch"
 
-node "$COMPANION" task "do thing" --marker --json --timeout 30000 > "$out"
+node "$COMPANION" task "do thing" --json --timeout 30000 > "$out"
 rc=$?
 check "exit code 0" test "$rc" -eq 0
 

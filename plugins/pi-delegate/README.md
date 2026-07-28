@@ -55,16 +55,9 @@ subcommands: `task`, `setup`, `list-models`, `write-config`, and
 `remove-config`. `task` runs `pi` via an async `spawn` (accumulating stdout in
 JS memory rather than relying on a fixed OS/Node buffer, since `pi`'s NDJSON
 stream can otherwise exceed any static `maxBuffer` on large tasks; stdin is
-explicitly ignored so `pi` never blocks reading it), and uses a
-**completion-marker contract** as the success signal when running with `--marker`: every task
-automatically instructs `pi` to write a JSON report file (`/tmp/pi-delegate-result-<uuid>.json`)
-as its last action. The marker (cross-checked against pi's exit code — a
-marker that says "ok" but a nonzero exit is treated as failure) determines
-success/failure, while the NDJSON stream is always parsed too: it supplies
-`finalText` (pi's actual final answer) even on marker success, and when the
-marker is missing but the stream shows a clean run, the result is a
-**degraded success** (`ok: true, degraded: true` — completed, but verify).
-Timeouts kill pi's whole process group (SIGTERM, then SIGKILL after 5s) and
+explicitly ignored so `pi` never blocks reading it). The NDJSON stream is
+always parsed to supply `finalText` (pi's actual final answer). Timeouts kill
+pi's whole process group (SIGTERM, then SIGKILL after 5s) and
 surface a retained progress log path for diagnosis; `--timeout` must be a
 positive integer or the helper exits 2. `--json` output truncates
 `rawStdout`/`rawStderr` to their last 10KB (with truncation flags). See
@@ -72,10 +65,10 @@ positive integer or the helper exits 2. `--json` output truncates
 (including the per-project pin and completion-marker schema) and
 `skills/pi-result-handling/SKILL.md` for how results and failures are presented.
 
-Since 0.6.0 the one-shot `task` path also uses RPC completion by default
+Since 0.6.0 the one-shot `task` path uses RPC completion by default
 (measured ~40% faster than the legacy marker contract on the same workload —
-see docs/architecture.md §3 Phase 2 for the recorded numbers); pass `--marker`
-to use the legacy marker contract during the transition.
+see docs/architecture.md §3 Phase 2 for the recorded numbers); the legacy
+marker contract was removed entirely in 0.7.0.
 
 ## Conversations (stateful, multi-turn)
 

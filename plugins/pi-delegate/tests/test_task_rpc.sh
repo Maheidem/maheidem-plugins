@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Drives `pi-companion.mjs task` against RPC-style and marker-style stubs.
-# Covers: default RPC, explicit --marker, RPC timeout, and flag-sanity (RPC stub
-# with --marker must NOT succeed because the stub never writes a marker file).
+# Drives `pi-companion.mjs task` against RPC-style stubs.
+# Covers: default RPC, explicit --marker (now rejected), RPC timeout, and
+# flag-sanity (--marker is removed, must be rejected).
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 scratch="$(make_scratch)"
@@ -20,24 +20,10 @@ rc=$?
 check "rpc: exit code 0" test "$rc" -eq 0
 assert_json "rpc: ok:true" "$out_rpc" 'r.ok === true'
 assert_json "rpc: finalText non-empty" "$out_rpc" "r.finalText === \"stub reply text\""
-assert_json "rpc: completionMarker is null" "$out_rpc" 'r.completionMarker === null'
-assert_json "rpc: markerMissing false" "$out_rpc" 'r.markerMissing === false'
-assert_json "rpc: degraded false" "$out_rpc" 'r.degraded === false'
+assert_json "rpc: no marker-related keys" "$out_rpc" '!("completionMarker" in r) && !("markerMissing" in r) && !("degraded" in r)'
 
 # ---------------------------------------------------------------------------
-# 2. Marker fallback — pi-marker-ok installed as `pi`; same command plus --marker.
-#    The stub writes a valid marker file and emits NDJSON with agent_end.
-# ---------------------------------------------------------------------------
-use_stub pi-marker-ok
-out_marker="$scratch/marker.json"
-timeout 30 node "$COMPANION" task "$taskName" --json --timeout 15000 --marker > "$out_marker"
-rc=$?
-check "marker: exit code 0" test "$rc" -eq 0
-assert_json "marker: ok:true" "$out_marker" 'r.ok === true'
-assert_json "marker: completionMarker non-null (status ok)" "$out_marker" 'r.completionMarker !== null && r.completionMarker.status === "ok"'
-
-# ---------------------------------------------------------------------------
-# 3. RPC timeout — pi-conv-never-settles installed as `pi`; no --marker, short timeout.
+# 2. RPC timeout — pi-conv-never-settles installed as `pi`; no --marker, short timeout.
 #    Stub ignores SIGTERM, sleeps 60s. The companion must kill it (SIGTERM→SIGKILL)
 #    and return within ~12s with ok:false + timeout in errorMessage.
 # ---------------------------------------------------------------------------
@@ -54,20 +40,18 @@ assert_json "timeout: errorMessage mentions timeout" "$out_timeout" '/timeout|ti
 check "timeout: returned within 15s (got ${elapsed}s)" test "$elapsed" -le 15
 
 # ---------------------------------------------------------------------------
-# 4. Flag sanity — pi-conv-send-happy (RPC stub that never writes a marker file)
-#    used with --marker. Must NOT succeed as if RPC: because --marker routes to
-#    the marker path (runTask), which expects a marker file on disk. The stub
-#    does not write one, so the marker path should fail (markerMissing).
+# 3. Flag sanity — --marker is now removed; companion must reject it with exit 2
+#    and a clear message. No marker path exists anymore.
 # ---------------------------------------------------------------------------
 use_stub pi-conv-send-happy
 out_sanity="$scratch/sanity.json"
 rc=0
-timeout 30 node "$COMPANION" task "$taskName" --json --timeout 15000 --marker > "$out_sanity" || rc=$?
-check "sanity: exit nonzero (marker path, no marker written)" test "$rc" -ne 0
-assert_json "sanity: ok:false or markerMissing true" "$out_sanity" 'r.ok === false || r.markerMissing === true'
+timeout 30 node "$COMPANION" task "$taskName" --json --timeout 15000 --marker > "$out_sanity" 2>&1 || rc=$?
+check "removed flag: exit 2" test "$rc" -eq 2
+check "removed flag: stderr/stdout contains rejection message" grep -q -- "--marker was removed" "$out_sanity"
 
 # ---------------------------------------------------------------------------
-# 5. Error turn — pi-rpc-error-turn installed as `pi`; no --marker.
+# 4. Error turn — pi-rpc-error-turn installed as `pi`; no --marker.
 #    The stub simulates a backend-failure turn (agent_end with stopReason:error,
 #    auto_retry_end with success:false). Companion must surface ok:false +
 #    errorMessage containing "pi turn failed" + empty finalText.

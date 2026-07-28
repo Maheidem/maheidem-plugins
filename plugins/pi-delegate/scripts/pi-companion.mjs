@@ -6,14 +6,13 @@
 //   - Foreground only. `task` uses an async `spawn` (awaited to completion,
 //     never backgrounded) instead of `spawnSync`, specifically to avoid a
 //     fixed maxBuffer ceiling on captured stdout -- see the comment on
-//     spawnPi() below for why. `setup`/`list-models` still use `spawnSync`
+//     `spawnManaged()` below for why. `setup`/`list-models` still use `spawnSync`
 //     since their outputs are small and fixed-size.
 //   - No background/job-tracking subcommands. That is a v2 idea, not built here.
-//   - Completion-marker contract: every task invocation instructs pi to write
-//     a JSON completion-report file as its LAST action. The presence and
-//     well-formedness of that file is the PRIMARY success signal. The NDJSON
-//     stream supplies pi's actual final answer text, and can upgrade a
-//     missing-marker run to a degraded success when the stream ended cleanly.
+//   - One-shot RPC completion: every task invocation uses `rpcRoundtrip` with
+//     `prompt` + `get_last_assistant_text` commands over the `--mode rpc`
+//     protocol. Success is determined by stream settlement and a valid
+//     response envelope -- no marker file or degraded fallback path exists.
 //   - Never throw an uncaught exception as the primary output. All failure
 //     paths degrade to a structured `{ ok: false, ... }` object.
 
@@ -37,8 +36,7 @@ function printUsage() {
       '  node pi-companion.mjs task "<task text>" [--json] [--provider <name>] [--model <pattern>]',
       "                              [--thinking <off|minimal|low|medium|high|xhigh>]",
       "                              [--tools <t1,t2,...>] [--exclude-tools <t1,t2,...>]",
-      "                              [--timeout <ms>] [--marker]",
-      "  --marker            use the legacy marker-file completion contract (transitional)",
+      "                              [--timeout <ms>]",
       "  node pi-companion.mjs setup [--json]",
       "  node pi-companion.mjs list-models [--json]",
       '  node pi-companion.mjs write-config --provider <name> --model <name> [--json]',
@@ -86,18 +84,11 @@ function taskResult(overrides) {
   const stderrT = truncateTail(overrides.rawStderr ?? "");
   return {
     ok: false,
-    degraded: false,
-    markerMissing: false,
-    markerExitMismatch: false,
     finalText: null,
     summary: null,
-    nextSteps: [],
     errorMessage: null,
     warning: null,
     exitCode: null,
-    willRetry: null,
-    completionMarker: null,
-    progressLogPath: null,
     // Conversation-path fields (Phase 1). Always null/false on the `task`
     // path -- vestigial there until Phase 3 unifies the contract.
     sessionName: null,
@@ -131,8 +122,7 @@ function parseTaskArgs(argv) {
     tools: null,
     excludeTools: null,
     timeout: DEFAULT_TIMEOUT_MS,
-    invalidTimeout: null,
-    marker: false
+    invalidTimeout: null
   };
   const positional = [];
 
@@ -168,7 +158,7 @@ function parseTaskArgs(argv) {
         break;
       }
       case "--marker":
-        opts.marker = true;
+        opts.removedMarkerFlag = true;
         break;
       default:
         positional.push(arg);
@@ -282,81 +272,6 @@ function parseConversationArgs(verb, argv) {
   }
 
   return opts;
-}
-
-// ---------------------------------------------------------------------------
-// NDJSON parsing per the documented pi --mode json contract
-// ---------------------------------------------------------------------------
-
-function parseNdjson(stdout) {
-  const events = [];
-  const unparseableLines = [];
-  const lines = (stdout ?? "").split("\n");
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      events.push(JSON.parse(trimmed));
-    } catch {
-      unparseableLines.push(trimmed);
-    }
-  }
-
-  return { events, unparseableLines };
-}
-
-function extractTextFromMessage(message) {
-  if (!message || !Array.isArray(message.content)) return "";
-  return message.content
-    .filter((item) => item && item.type === "text" && typeof item.text === "string")
-    .map((item) => item.text)
-    .join("");
-}
-
-// Interpret a parsed NDJSON event stream into a result object.
-// Defensive: if agent_end is missing or truncated (e.g. process was killed
-// mid-stream), this is treated as a hard failure, not a silent success.
-function interpretEvents(events) {
-  const agentEndEvents = events.filter((e) => e && e.type === "agent_end");
-
-  if (agentEndEvents.length === 0) {
-    return {
-      ok: false,
-      finalText: null,
-      errorMessage: "pi output stream ended without an agent_end event (truncated or killed mid-stream)",
-      willRetry: null
-    };
-  }
-
-  const agentEnd = agentEndEvents[agentEndEvents.length - 1];
-  const messages = Array.isArray(agentEnd.messages) ? agentEnd.messages : [];
-  const lastMessage = messages[messages.length - 1] ?? null;
-
-  if (!lastMessage) {
-    return {
-      ok: false,
-      finalText: null,
-      errorMessage: "agent_end event had no messages in its transcript",
-      willRetry: agentEnd.willRetry ?? null
-    };
-  }
-
-  if (lastMessage.stopReason === "error") {
-    return {
-      ok: false,
-      finalText: null,
-      errorMessage: lastMessage.errorMessage ?? "pi reported stopReason:error with no errorMessage",
-      willRetry: agentEnd.willRetry ?? null
-    };
-  }
-
-  return {
-    ok: true,
-    finalText: extractTextFromMessage(lastMessage),
-    errorMessage: null,
-    willRetry: agentEnd.willRetry ?? null
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -578,13 +493,13 @@ function releaseLock(lockPath) {
 // ---------------------------------------------------------------------------
 
 // Shared group-kill + timeout-escalation + settle-on-close-or-exit-grace
-// machinery, extracted so both spawnPi (task path) and rpcRoundtrip
+// machinery, extracted so both the task path (spawnManaged) and rpcRoundtrip
 // (conversation path) get identical hygiene without duplicating it.
 // `onStdoutChunk(chunk, ctx)` is called for every raw stdout chunk; `ctx`
 // exposes `.child` (so a caller can write to stdin) and `.settleEarly(extra)`
 // to resolve before the child exits (used by rpcRoundtrip once its expected
 // responses have all arrived). If onStdoutChunk never calls settleEarly, the
-// promise resolves the same way spawnPi always has: on 'close', or on an
+// promise resolves the same way spawnManaged always has: on 'close', or on an
 // 'exit' + ~1s drain grace if 'close' never fires (open grandchild pipes).
 async function spawnManaged(cmd, args, { cwd, timeout, stdio, onStdoutChunk, onStderrChunk, onSpawn }) {
   return new Promise((resolve) => {
@@ -691,79 +606,6 @@ async function spawnManaged(cmd, args, { cwd, timeout, stdio, onStdoutChunk, onS
   });
 }
 
-async function spawnPi(cmd, args, { cwd, timeout }) {
-  let lastLoggedType = null;
-  let pendingLine = "";
-  let childPid = null;
-
-  const progressLogPath = path.join(os.tmpdir(), `pi-companion-progress-${process.pid}.log`);
-  let progressLogInitialized = false;
-
-  function ensureProgressLog() {
-    if (progressLogInitialized) return;
-    progressLogInitialized = true;
-    console.error(`[pi-companion] progress log: ${progressLogPath}`);
-  }
-
-  // Log only when the newest COMPLETE NDJSON line's "type" differs from the
-  // last one logged -- cheap and low-volume, not once-per-raw-chunk.
-  function trackProgress(textChunk) {
-    pendingLine += textChunk;
-    let newlineIndex;
-    while ((newlineIndex = pendingLine.indexOf("\n")) !== -1) {
-      const line = pendingLine.slice(0, newlineIndex).trim();
-      pendingLine = pendingLine.slice(newlineIndex + 1);
-      if (!line) continue;
-      let type;
-      try {
-        type = JSON.parse(line).type;
-      } catch {
-        continue;
-      }
-      if (type && type !== lastLoggedType) {
-        lastLoggedType = type;
-        ensureProgressLog();
-        try {
-          fs.appendFileSync(
-            progressLogPath,
-            `${new Date().toISOString()} pid=${childPid} event=${type}\n`
-          );
-        } catch {
-          /* best-effort only -- never let logging failure affect the task */
-        }
-      }
-    }
-  }
-
-  const result = await spawnManaged(cmd, args, {
-    cwd,
-    timeout,
-    stdio: ["ignore", "pipe", "pipe"],
-    onStdoutChunk: (chunk, ctx) => {
-      childPid = ctx.child.pid;
-      trackProgress(chunk);
-    }
-  });
-
-  const timedOut = result.error && result.error.code === "ETIMEDOUT";
-
-  // Clean up the progress log on any normal exit (success or non-timeout
-  // failure); leave it on disk when killed by our own timeout so the caller
-  // can inspect the last-known state of a run that got stuck.
-  if (progressLogInitialized && !timedOut) {
-    try {
-      fs.unlinkSync(progressLogPath);
-    } catch {
-      /* best-effort cleanup only */
-    }
-  }
-
-  return {
-    ...result,
-    progressLogPath: timedOut && progressLogInitialized ? progressLogPath : null
-  };
-}
-
 // Scans a completed RPC event stream for evidence the final turn actually
 // failed (LLM/backend error) even though the stream settled cleanly.
 // Returns an errorMessage string, or null if the turn looks healthy.
@@ -804,7 +646,7 @@ function detectErrorTurn(events) {
 //     block agent_settled -- we still auto-reply {"cancelled":true} to each,
 //     defensively, in case a future extension's dialog does block.
 //   - Strict LF framing: buffer raw chunks, split on "\n", carry any partial
-//     trailing fragment to the next chunk (same technique as spawnPi's
+//     trailing fragment to the next chunk (same technique as spawnManaged's
 //     trackProgress).
 // ---------------------------------------------------------------------------
 
@@ -922,7 +764,7 @@ async function rpcRoundtrip(sessionArgs, initialCommands, { cwd, timeout, onRead
         }
       };
       // Prime the pipe immediately: pi reads stdin at startup, and we must
-      // never leave it open-but-unfed (see spawnPi's stdio comment for the
+      // never leave it open-but-unfed (see spawnManaged's stdio comment for the
       // documented hang hazard this avoids).
       sendNext(ctx);
       if (onReady) onReady(ctx);
@@ -1664,42 +1506,7 @@ async function runConversationInterrupt(sessionName, messageText) {
   return writeToFifo(sessionName, "interrupt", messageText);
 }
 
-// Read + validate + always unlink the completion marker file.
-function readAndCleanupMarker(markerPath) {
-  let markerResult = null;
-  let markerError = null;
-  try {
-    if (fs.existsSync(markerPath)) {
-      const raw = fs.readFileSync(markerPath, "utf8");
-      const parsed = JSON.parse(raw);
-
-      // Validate schema: status must be "ok" or "error", summary must be a string.
-      if (
-        parsed &&
-        (parsed.status === "ok" || parsed.status === "error") &&
-        typeof parsed.summary === "string"
-      ) {
-        markerResult = parsed;
-      } else {
-        markerError = "Completion marker file exists but has invalid schema (missing or wrong status/summary fields)";
-      }
-    } else {
-      markerError = "Completion marker file was not found at expected path";
-    }
-  } catch (err) {
-    markerError = `Completion marker file could not be read/parsed: ${err && err.message ? err.message : String(err)}`;
-  } finally {
-    // Always clean up the marker file so we don't leave artifacts in tmp.
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {
-      /* best-effort cleanup */
-    }
-  }
-  return { markerResult, markerError };
-}
-
-// Phase 2 (ADR §3): one-shot RPC completion for the task verb. Replaces the marker contract as default; the legacy marker path remains behind --marker.
+// One-shot RPC completion for the task verb (sole contract since 0.7.0; the legacy marker path was removed in Phase 3, ADR §3).
 async function runTaskRpc(opts) {
   if (!opts.text) {
     return taskResult({ errorMessage: "no task text provided" });
@@ -1794,226 +1601,7 @@ async function runTaskRpc(opts) {
   });
 }
 
-async function runTask(opts) {
-  if (!opts.text) {
-    return taskResult({ errorMessage: "no task text provided" });
-  }
 
-  const args = ["-p", "--mode", "json", "--no-session"];
-
-  // Three-tier precedence: explicit flag > project config > pi's global default
-  const cwd = resolveCwd();
-  const projectConfig = loadProjectConfig(cwd);
-
-  // Values loaded from project config are validated before entering pi's argv
-  // (a leading '-' could be interpreted as a flag). Explicit CLI flags are the
-  // caller's responsibility.
-  let configProvider = projectConfig.provider;
-  let configModel = projectConfig.model;
-  if (configProvider && !isSafeArgValue(configProvider)) {
-    console.error(`[pi-companion] ignoring invalid provider from project config: ${configProvider}`);
-    configProvider = null;
-  }
-  if (configModel && !isSafeArgValue(configModel)) {
-    console.error(`[pi-companion] ignoring invalid model from project config: ${configModel}`);
-    configModel = null;
-  }
-
-  const effectiveProvider = opts.provider || configProvider;
-  const effectiveModel = opts.model || configModel;
-
-  if (effectiveProvider) args.push("--provider", effectiveProvider);
-  if (effectiveModel) args.push("--model", effectiveModel);
-  if (opts.thinking) args.push("--thinking", opts.thinking);
-  if (opts.tools) args.push("--tools", opts.tools);
-  if (opts.excludeTools) args.push("--exclude-tools", opts.excludeTools);
-
-  // --- Completion-marker setup ---
-  // Generate a unique, absolute marker file path for this invocation.
-  const markerPath = path.join(os.tmpdir(), `pi-delegate-result-${crypto.randomUUID()}.json`);
-
-  // Defensive: unlink if a stale file somehow already exists at this fresh path.
-  try {
-    fs.unlinkSync(markerPath);
-  } catch {
-    // Expected — path is freshly generated so this should be a no-op.
-  }
-
-  // Append the completion-marker instruction to the task text. This is
-  // injected automatically for every task so callers never have to remember.
-  const completionMarkerInstruction = `
-
---- COMPLETION MARKER (REQUIRED) ---
-As your ABSOLUTE LAST action before finishing, use a write-file tool to write a JSON completion report to this exact path: ${markerPath}
-
-The file MUST contain valid JSON with this exact schema:
-{
-  "status": "ok" | "error",
-  "summary": "one or two sentence description of what was done, or why it failed",
-  "nextSteps": ["optional", "array", "of", "recommended", "follow-ups"]
-}
-
-Use "status": "ok" if the task completed successfully, or "status": "error" if it failed.
-This is a required protocol step — do not skip it.`;
-
-  args.push(opts.text + completionMarkerInstruction);
-
-  let result;
-  try {
-    result = await spawnPi("pi", args, { cwd, timeout: opts.timeout });
-  } catch (err) {
-    // Guard defensively against unexpected errors from spawnPi.
-    readAndCleanupMarker(markerPath); // unlink any partial marker
-    return taskResult({
-      errorMessage: `unexpected error invoking pi: ${err && err.message ? err.message : String(err)}`
-    });
-  }
-
-  const rawStdout = result.stdout ?? "";
-  const rawStderr = result.stderr ?? "";
-  const exitCode = typeof result.status === "number" ? result.status : null;
-
-  if (result.error) {
-    // Every error path still reads (and unlinks) the marker — on timeout pi
-    // may have written it before the group kill landed.
-    const { markerResult } = readAndCleanupMarker(markerPath);
-
-    if (result.error.code === "ENOENT") {
-      return taskResult({
-        errorMessage: "pi CLI not found on PATH — run /pi-delegate:setup",
-        rawStdout,
-        rawStderr,
-        exitCode
-      });
-    }
-    if (result.error.code === "ETIMEDOUT") {
-      let errorMessage = `pi did not finish within ${opts.timeout}ms and was killed (timeout)`;
-      let summary = null;
-      let completionMarker = null;
-      if (markerResult) {
-        summary = markerResult.summary;
-        completionMarker = markerResult;
-        errorMessage = `pi timed out after ${opts.timeout}ms, but a completion marker was found (status: ${markerResult.status}) — treat with caution: ${markerResult.summary}`;
-      }
-      if (result.progressLogPath) {
-        errorMessage += ` — progress log: ${result.progressLogPath}`;
-      }
-      return taskResult({
-        errorMessage,
-        summary,
-        completionMarker,
-        nextSteps: markerResult && Array.isArray(markerResult.nextSteps) ? markerResult.nextSteps : [],
-        progressLogPath: result.progressLogPath ?? null,
-        rawStdout,
-        rawStderr,
-        exitCode
-      });
-    }
-    return taskResult({
-      errorMessage: `pi invocation failed: ${result.error.code || result.error.message || String(result.error)}`,
-      rawStdout,
-      rawStderr,
-      exitCode
-    });
-  }
-
-  const { events, unparseableLines } = parseNdjson(rawStdout);
-
-  // --- Completion-marker resolution (primary success signal) ---
-  const { markerResult, markerError } = readAndCleanupMarker(markerPath);
-
-  // NDJSON interpretation always runs: it supplies pi's actual final answer
-  // text on marker success, and the fallback signal when the marker is absent.
-  const interpreted = interpretEvents(events);
-
-  if (markerResult) {
-    const nextSteps = Array.isArray(markerResult.nextSteps) ? markerResult.nextSteps : [];
-
-    if (markerResult.status === "ok" && exitCode !== 0) {
-      // M1: an "ok" marker cannot override a nonzero exit — treat as failure.
-      return taskResult({
-        ok: false,
-        markerExitMismatch: true,
-        finalText: interpreted.ok && interpreted.finalText ? interpreted.finalText : markerResult.summary,
-        summary: markerResult.summary,
-        nextSteps,
-        errorMessage: `completion marker reported ok but pi exited with status ${exitCode} — treating as failure`,
-        completionMarker: markerResult,
-        rawStdout,
-        rawStderr,
-        exitCode,
-        willRetry: interpreted.willRetry
-      });
-    }
-
-    if (markerResult.status === "ok") {
-      return taskResult({
-        ok: true,
-        finalText: interpreted.ok && interpreted.finalText ? interpreted.finalText : markerResult.summary,
-        summary: markerResult.summary,
-        nextSteps,
-        completionMarker: markerResult,
-        rawStdout,
-        rawStderr,
-        exitCode,
-        willRetry: interpreted.willRetry
-      });
-    }
-
-    // Marker explicitly reported an error.
-    return taskResult({
-      ok: false,
-      finalText: interpreted.ok && interpreted.finalText ? interpreted.finalText : null,
-      summary: markerResult.summary,
-      nextSteps,
-      errorMessage: markerResult.summary,
-      completionMarker: markerResult,
-      rawStdout,
-      rawStderr,
-      exitCode,
-      willRetry: interpreted.willRetry
-    });
-  }
-
-  // Marker missing/malformed. If the NDJSON stream ended cleanly AND pi exited
-  // 0, treat as a degraded success (M2) rather than a hard failure.
-  if (interpreted.ok && exitCode === 0) {
-    return taskResult({
-      ok: true,
-      degraded: true,
-      markerMissing: true,
-      finalText: interpreted.finalText,
-      warning: `${markerError} — success inferred from clean NDJSON stream; verify the work`,
-      rawStdout,
-      rawStderr,
-      exitCode,
-      willRetry: interpreted.willRetry
-    });
-  }
-
-  // Marker missing and NDJSON not clean (or nonzero exit) — hard failure.
-  let fallbackMessage = markerError;
-  if (!interpreted.ok && interpreted.errorMessage) {
-    fallbackMessage = `${markerError}; NDJSON fallback: ${interpreted.errorMessage}`;
-  } else if (interpreted.ok) {
-    fallbackMessage = `${markerError} (NDJSON stream appeared normal but pi exited with status ${exitCode})`;
-  }
-
-  if (unparseableLines.length > 0) {
-    fallbackMessage += ` (also saw ${unparseableLines.length} non-JSON line(s) in stdout)`;
-  }
-
-  return taskResult({
-    ok: false,
-    markerMissing: true,
-    finalText: interpreted.finalText ?? null,
-    errorMessage: fallbackMessage,
-    rawStdout,
-    rawStderr,
-    exitCode,
-    willRetry: interpreted.willRetry
-  });
-}
 
 function printTaskResult(result, json) {
   if (json) {
@@ -2023,14 +1611,8 @@ function printTaskResult(result, json) {
 
   if (result.ok) {
     console.log(result.finalText ?? "");
-    if (result.degraded) {
-      console.log("note: completion marker missing — result inferred from output stream, verify the work");
-    }
   } else {
     console.log(`pi task failed: ${result.errorMessage}`);
-    if (result.markerExitMismatch) {
-      console.log(`exit code: ${result.exitCode}`);
-    }
     if (result.rawStderr) {
       console.log("--- stderr ---");
       console.log(result.rawStderr);
@@ -2350,7 +1932,12 @@ async function main() {
       process.exit(2);
       return;
     }
-    const result = await (opts.marker ? runTask(opts) : runTaskRpc(opts));
+    if (opts.removedMarkerFlag) {
+      console.error("error: --marker was removed in 0.7.0 -- the RPC completion path is now the only task contract");
+      printUsage();
+      process.exit(2);
+    }
+    const result = await runTaskRpc(opts);
     printTaskResult(result, opts.json);
     process.exit(result.ok ? 0 : 1);
     return;

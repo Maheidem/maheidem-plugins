@@ -104,6 +104,8 @@ Delete the marker-file machinery entirely (no fallback flag left) and unify the 
 across `task` and `conversation` in the skills layer, so callers see one consistent completion/
 result shape regardless of which verb they used.
 
+**Shipped 2026-07-28.** The marker machinery (instruction injection, marker file read/validate/cleanup, the `-p --mode json` spawner, NDJSON interpretation, progress-log side channel) and the `--marker` flag were deleted; `--marker` now exits 2 with a removal notice. The result contract is one shape across `task` and `conversation` (`ok`, `finalText`, `summary`, `errorMessage`, `warning`, `exitCode`, session fields, `steered`, `interrupted`, raw tails). An edge-case suite (instant child death, garbage stream lines, mid-stream death, `get_last_assistant_text` failure, unicode round-trip, empty input) guards the RPC-only runtime; child death fails fast (measured 0s, not timeout-bound).
+
 ### Phase 4 — DISSOLVED: steering via resident RPC (superseded 2026-07-28)
 The original Phase 4 proposed a resident RPC process a caller could `steer`, `follow_up`, or
 `abort` mid-run, gated behind an unresolved supervisor/reattach/UI-forwarding lifecycle design.

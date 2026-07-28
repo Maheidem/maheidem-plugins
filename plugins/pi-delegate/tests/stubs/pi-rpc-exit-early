@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub `pi --mode rpc`: ignores stdin entirely and exits 1 immediately.
+# Used to test that the companion survives a child that refuses to speak.
+exit 1

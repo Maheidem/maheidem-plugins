@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Stub `pi --mode rpc`: normal prompt flow through agent_settled, but
+# get_last_assistant_text responds with success:false and an error.
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      echo '{"type":"response","command":"prompt","success":true}'
+      echo '{"type":"agent_start"}'
+      echo '{"type":"turn_start"}'
+      echo '{"type":"turn_end"}'
+      echo '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_last_assistant_text"'*)
+      echo '{"type":"response","command":"get_last_assistant_text","success":false,"error":"no assistant text available"}'
+      ;;
+    *'"type":"get_state"'*)
+      echo '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2}}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      echo '{"type":"response","command":"get_session_stats","success":true,"data":{"userMessages":1,"assistantMessages":1,"totalMessages":2}}'
+      ;;
+  esac
+done
+exit 0
