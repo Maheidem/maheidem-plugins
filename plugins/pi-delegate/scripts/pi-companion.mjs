@@ -17,7 +17,7 @@
 //   - Never throw an uncaught exception as the primary output. All failure
 //     paths degrade to a structured `{ ok: false, ... }` object.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -27,6 +27,8 @@ import process from "node:process";
 const DEFAULT_TIMEOUT_MS = 600000; // 600s
 const PI_SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
 const RAW_TAIL_LIMIT = 10240; // last 10KB of raw stdout/stderr in results
+const STEER_MESSAGE_MAX_BYTES = 4096; // cap for steer/interrupt envelope message
+const FIFO_POLL_INTERVAL_MS = 200; // poll interval for the send-side control FIFO
 
 function printUsage() {
   console.log(
@@ -39,7 +41,16 @@ function printUsage() {
       "  node pi-companion.mjs setup [--json]",
       "  node pi-companion.mjs list-models [--json]",
       '  node pi-companion.mjs write-config --provider <name> --model <name> [--json]',
-      "  node pi-companion.mjs remove-config [--json]"
+      "  node pi-companion.mjs remove-config [--json]",
+      '  node pi-companion.mjs conversation start <name> [--message "<text>"] [--json]',
+      "                                              [--provider <name>] [--model <pattern>]",
+      "                                              [--thinking <level>] [--timeout <ms>]",
+      '  node pi-companion.mjs conversation send <name> "<message text>" [--json] [--timeout <ms>]',
+      "  node pi-companion.mjs conversation status <name> [--json]",
+      "  node pi-companion.mjs conversation end <name> [--json]",
+      '  node pi-companion.mjs conversation read <name> [--last <N>] [--json]',
+      '  node pi-companion.mjs conversation steer <name> "<message text>" [--json]',
+      '  node pi-companion.mjs conversation interrupt <name> "<message text>" [--json]'
     ].join("\n")
   );
 }
@@ -86,6 +97,17 @@ function taskResult(overrides) {
     willRetry: null,
     completionMarker: null,
     progressLogPath: null,
+    // Conversation-path fields (Phase 1). Always null/false on the `task`
+    // path -- vestigial there until Phase 3 unifies the contract.
+    sessionName: null,
+    sessionId: null,
+    turnCount: null,
+    lockHeldByPid: null,
+    // Steer/interrupt-path fields (Phase 4'). Always present/stable across
+    // every conversation verb, not just send -- same pattern as the
+    // conversation-field defaults above.
+    steered: [],
+    interrupted: false,
     ...overrides,
     rawStdout: stdoutT.text,
     rawStderr: stderrT.text,
@@ -170,6 +192,90 @@ function parseWriteConfigArgs(argv) {
       return opts;
     }
   }
+  return opts;
+}
+
+// Strict parser for `conversation <verb> <name> [...]`. Unknown flags are a
+// hard error (exit 2), matching write-config's posture.
+function parseConversationArgs(verb, argv) {
+  const opts = {
+    name: null,
+    message: null,
+    json: false,
+    provider: null,
+    model: null,
+    thinking: null,
+    timeout: DEFAULT_TIMEOUT_MS,
+    invalidTimeout: null,
+    last: null,
+    invalidLast: null,
+    error: null
+  };
+  const positional = [];
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--json":
+        opts.json = true;
+        break;
+      case "--message":
+        opts.message = argv[++i] ?? null;
+        break;
+      case "--provider":
+        opts.provider = argv[++i] ?? null;
+        break;
+      case "--model":
+        opts.model = argv[++i] ?? null;
+        break;
+      case "--thinking":
+        opts.thinking = argv[++i] ?? null;
+        break;
+      case "--timeout": {
+        const raw = argv[++i];
+        const n = Number(raw);
+        if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+          opts.invalidTimeout = raw ?? "(missing)";
+        } else {
+          opts.timeout = n;
+        }
+        break;
+      }
+      case "--last": {
+        const raw = argv[++i];
+        const n = Number(raw);
+        if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+          opts.invalidLast = raw ?? "(missing)";
+        } else {
+          opts.last = n;
+        }
+        break;
+      }
+      default:
+        positional.push(arg);
+        break;
+    }
+  }
+
+  if (positional.length === 0) {
+    opts.error = `conversation ${verb}: missing <name>`;
+    return opts;
+  }
+
+  opts.name = positional[0];
+
+  if (verb === "send" || verb === "steer" || verb === "interrupt") {
+    const text = positional.slice(1).join(" ").trim();
+    if (!text) {
+      opts.error = `conversation ${verb}: missing <message text>`;
+      return opts;
+    }
+    opts.message = text;
+  } else if (positional.length > 1) {
+    opts.error = `conversation ${verb}: unexpected extra argument(s): ${positional.slice(1).join(" ")}`;
+    return opts;
+  }
+
   return opts;
 }
 
@@ -308,6 +414,143 @@ function loadProjectConfig(cwd) {
 }
 
 // ---------------------------------------------------------------------------
+// Conversation support — session naming, cwd slug, per-conversation locks.
+// ---------------------------------------------------------------------------
+
+const MAX_SESSION_NAME_LENGTH = 128;
+
+// Session names flow into pi's --session-id argv, into lockfile paths, and
+// (for `end`) into a filesystem glob -- validate them as strictly as
+// provider/model values, plus a length cap.
+function sanitizeSessionName(name) {
+  if (!isSafeArgValue(name)) {
+    return { ok: false, error: `invalid conversation name ${JSON.stringify(name)}: must match [A-Za-z0-9._/:@-]+, no leading '-'` };
+  }
+  if (name.length > MAX_SESSION_NAME_LENGTH) {
+    return { ok: false, error: `conversation name too long (max ${MAX_SESSION_NAME_LENGTH} chars)` };
+  }
+  return { ok: true, name };
+}
+
+// Port of pi's dist/core/session-manager.js getDefaultSessionDirPath encoding:
+// `--${cwd with leading slash stripped, then / and : -> -}--`
+// pi resolves the cwd to its PHYSICAL path (fs.realpathSync) before deriving
+// the session slug -- on macOS /tmp, /var, etc. are symlinks into /private/...,
+// so a lexical path.resolve() here would compute a directory pi never uses.
+function resolvePhysicalCwd(cwd) {
+  const resolved = path.resolve(cwd);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function sessionSlugForCwd(cwd) {
+  const resolved = resolvePhysicalCwd(cwd);
+  const stripped = resolved.replace(/^[/\\]/, "");
+  const replaced = stripped.replace(/[/\\:]/g, "-");
+  return `--${replaced}--`;
+}
+
+function piSessionsDir(cwd) {
+  return path.join(os.homedir(), ".pi", "agent", "sessions", sessionSlugForCwd(cwd));
+}
+
+function lockDir() {
+  return path.join(os.tmpdir(), "pi-delegate-locks");
+}
+
+function lockPathFor(cwd, sessionName) {
+  return path.join(lockDir(), `${sessionSlugForCwd(cwd)}__${sessionName}.lock`);
+}
+
+// Turn-scoped control FIFO, colocated with the lockfile so a single
+// lockDir()/mkdirSync covers both -- and so the lockfile's PID is a ready-made
+// liveness oracle for steer/interrupt (existence of the FIFO path is NOT
+// liveness; see runConversationSteer).
+function fifoPathFor(cwd, sessionName) {
+  return `${lockPathFor(cwd, sessionName)}.fifo`;
+}
+
+// Shared by runConversationEnd and readConversation -- do not duplicate the
+// glob logic. Returns absolute paths, in readdirSync's (unspecified) order.
+function findSessionFiles(dir, sessionName) {
+  try {
+    const entries = fs.readdirSync(dir);
+    return entries
+      .filter((f) => f.endsWith(`_${sessionName}.jsonl`))
+      .map((f) => path.join(dir, f));
+  } catch (err) {
+    if (err && err.code === "ENOENT") return [];
+    throw err;
+  }
+}
+
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err && err.code === "ESRCH") return false;
+    if (err && err.code === "EPERM") return true; // alive, different user
+    return true; // unknown errno -- assume alive, fail loud rather than steal
+  }
+}
+
+// PID-liveness-only lock: dead lock owner => reclaim (one retry); alive
+// owner => fail loud, no wait, no wall-clock timeout (owner decision D-B).
+function acquireLock(lockPath) {
+  try {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  } catch {
+    /* best-effort -- openSync below will surface any real problem */
+  }
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      return { acquired: true, heldByPid: null };
+    } catch (err) {
+      if (!err || err.code !== "EEXIST") {
+        return { acquired: false, heldByPid: null, error: err && err.message ? err.message : String(err) };
+      }
+
+      let ownerPid = null;
+      try {
+        ownerPid = Number(fs.readFileSync(lockPath, "utf8").trim());
+      } catch {
+        ownerPid = null;
+      }
+
+      if (ownerPid && Number.isFinite(ownerPid) && !isPidAlive(ownerPid)) {
+        // Stale -- reclaim and retry once.
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          /* another caller may have already reclaimed it -- retry will tell */
+        }
+        continue;
+      }
+
+      return { acquired: false, heldByPid: ownerPid || null };
+    }
+  }
+
+  return { acquired: false, heldByPid: null, error: "lock contention after stale-reclaim retry" };
+}
+
+function releaseLock(lockPath) {
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    /* best-effort only */
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Async spawn wrapper — replaces spawnSync to avoid the 64 MB maxBuffer cap.
 // pi's --mode json NDJSON protocol re-emits the full accumulated message on
 // every text_delta event, so total stdout grows quadratically with response
@@ -329,53 +572,20 @@ function loadProjectConfig(cwd) {
 // resolves if a grandchild keeps the stdio pipes open forever.
 // ---------------------------------------------------------------------------
 
-async function spawnPi(cmd, args, { cwd, timeout }) {
+// Shared group-kill + timeout-escalation + settle-on-close-or-exit-grace
+// machinery, extracted so both spawnPi (task path) and rpcRoundtrip
+// (conversation path) get identical hygiene without duplicating it.
+// `onStdoutChunk(chunk, ctx)` is called for every raw stdout chunk; `ctx`
+// exposes `.child` (so a caller can write to stdin) and `.settleEarly(extra)`
+// to resolve before the child exits (used by rpcRoundtrip once its expected
+// responses have all arrived). If onStdoutChunk never calls settleEarly, the
+// promise resolves the same way spawnPi always has: on 'close', or on an
+// 'exit' + ~1s drain grace if 'close' never fires (open grandchild pipes).
+async function spawnManaged(cmd, args, { cwd, timeout, stdio, onStdoutChunk, onStderrChunk, onSpawn }) {
   return new Promise((resolve) => {
     const stdoutChunks = [];
     const stderrChunks = [];
     let timedOut = false;
-    let lastLoggedType = null;
-    let pendingLine = "";
-
-    const progressLogPath = path.join(os.tmpdir(), `pi-companion-progress-${process.pid}.log`);
-    let progressLogInitialized = false;
-
-    function ensureProgressLog() {
-      if (progressLogInitialized) return;
-      progressLogInitialized = true;
-      console.error(`[pi-companion] progress log: ${progressLogPath}`);
-    }
-
-    // Log only when the newest COMPLETE NDJSON line's "type" differs from the
-    // last one logged -- cheap and low-volume, not once-per-raw-chunk.
-    function trackProgress(textChunk) {
-      pendingLine += textChunk;
-      let newlineIndex;
-      while ((newlineIndex = pendingLine.indexOf("\n")) !== -1) {
-        const line = pendingLine.slice(0, newlineIndex).trim();
-        pendingLine = pendingLine.slice(newlineIndex + 1);
-        if (!line) continue;
-        let type;
-        try {
-          type = JSON.parse(line).type;
-        } catch {
-          continue;
-        }
-        if (type && type !== lastLoggedType) {
-          lastLoggedType = type;
-          ensureProgressLog();
-          try {
-            fs.appendFileSync(
-              progressLogPath,
-              `${new Date().toISOString()} pid=${child.pid} event=${type}\n`
-            );
-          } catch {
-            /* best-effort only -- never let logging failure affect the task */
-          }
-        }
-      }
-    }
-
     let settled = false;
     let killTimer = null;
     let exitGraceTimer = null;
@@ -405,20 +615,10 @@ async function spawnPi(cmd, args, { cwd, timeout }) {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
       if (exitGraceTimer) clearTimeout(exitGraceTimer);
-      // Clean up the progress log on any normal exit (success or non-timeout
-      // failure); leave it on disk when killed by our own timeout so the
-      // caller can inspect the last-known state of a run that got stuck.
-      if (progressLogInitialized && !timedOut) {
-        try {
-          fs.unlinkSync(progressLogPath);
-        } catch {
-          /* best-effort cleanup only */
-        }
-      }
       resolve(result);
     }
 
-    function buildExitResult(code, signal) {
+    function buildExitResult(code, signal, extra) {
       return {
         stdout: stdoutChunks.join(""),
         stderr: stderrChunks.join(""),
@@ -427,23 +627,38 @@ async function spawnPi(cmd, args, { cwd, timeout }) {
         error: timedOut
           ? { code: "ETIMEDOUT", message: `Process was killed after ${timeout}ms` }
           : null,
-        progressLogPath: timedOut && progressLogInitialized ? progressLogPath : null
+        ...extra
       };
     }
 
     const child = spawn(cmd, args, {
       cwd,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: stdio || ["ignore", "pipe", "pipe"],
       detached: true
     });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
 
+    const ctx = {
+      child,
+      settleEarly(extra) {
+        killGroup("SIGTERM");
+        killTimer = setTimeout(() => killGroup("SIGKILL"), 5000);
+        killTimer.unref?.();
+        settle(buildExitResult(null, null, { earlySettle: true, ...extra }));
+      }
+    };
+
+    if (onSpawn) onSpawn(ctx);
+
     child.stdout.on("data", (chunk) => {
       stdoutChunks.push(chunk);
-      trackProgress(chunk);
+      if (onStdoutChunk) onStdoutChunk(chunk, ctx);
     });
-    child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
+    child.stderr.on("data", (chunk) => {
+      stderrChunks.push(chunk);
+      if (onStderrChunk) onStderrChunk(chunk, ctx);
+    });
 
     child.on("error", (err) => {
       settle({
@@ -451,8 +666,7 @@ async function spawnPi(cmd, args, { cwd, timeout }) {
         stderr: "",
         status: null,
         signal: null,
-        error: { code: err.code, message: err.message },
-        progressLogPath: null
+        error: { code: err.code, message: err.message }
       });
     });
 
@@ -470,6 +684,939 @@ async function spawnPi(cmd, args, { cwd, timeout }) {
       exitGraceTimer.unref?.();
     });
   });
+}
+
+async function spawnPi(cmd, args, { cwd, timeout }) {
+  let lastLoggedType = null;
+  let pendingLine = "";
+  let childPid = null;
+
+  const progressLogPath = path.join(os.tmpdir(), `pi-companion-progress-${process.pid}.log`);
+  let progressLogInitialized = false;
+
+  function ensureProgressLog() {
+    if (progressLogInitialized) return;
+    progressLogInitialized = true;
+    console.error(`[pi-companion] progress log: ${progressLogPath}`);
+  }
+
+  // Log only when the newest COMPLETE NDJSON line's "type" differs from the
+  // last one logged -- cheap and low-volume, not once-per-raw-chunk.
+  function trackProgress(textChunk) {
+    pendingLine += textChunk;
+    let newlineIndex;
+    while ((newlineIndex = pendingLine.indexOf("\n")) !== -1) {
+      const line = pendingLine.slice(0, newlineIndex).trim();
+      pendingLine = pendingLine.slice(newlineIndex + 1);
+      if (!line) continue;
+      let type;
+      try {
+        type = JSON.parse(line).type;
+      } catch {
+        continue;
+      }
+      if (type && type !== lastLoggedType) {
+        lastLoggedType = type;
+        ensureProgressLog();
+        try {
+          fs.appendFileSync(
+            progressLogPath,
+            `${new Date().toISOString()} pid=${childPid} event=${type}\n`
+          );
+        } catch {
+          /* best-effort only -- never let logging failure affect the task */
+        }
+      }
+    }
+  }
+
+  const result = await spawnManaged(cmd, args, {
+    cwd,
+    timeout,
+    stdio: ["ignore", "pipe", "pipe"],
+    onStdoutChunk: (chunk, ctx) => {
+      childPid = ctx.child.pid;
+      trackProgress(chunk);
+    }
+  });
+
+  const timedOut = result.error && result.error.code === "ETIMEDOUT";
+
+  // Clean up the progress log on any normal exit (success or non-timeout
+  // failure); leave it on disk when killed by our own timeout so the caller
+  // can inspect the last-known state of a run that got stuck.
+  if (progressLogInitialized && !timedOut) {
+    try {
+      fs.unlinkSync(progressLogPath);
+    } catch {
+      /* best-effort cleanup only */
+    }
+  }
+
+  return {
+    ...result,
+    progressLogPath: timedOut && progressLogInitialized ? progressLogPath : null
+  };
+}
+
+// ---------------------------------------------------------------------------
+// RPC roundtrip — `pi --mode rpc --session-id <name>` conversation primitive.
+//
+// Protocol grounding (verified live against pi 0.82.1, see docs/architecture.md):
+//   - Command envelope: {"id"?, "type": "<verb>", ...}. `id` is optional --
+//     we correlate purely on the `command` field of the response, sent
+//     strictly sequentially (no pipelining), so a FIFO queue is sufficient.
+//   - Response envelope: {"type":"response","command":"<verb>","success":bool,
+//     "data"?, "error"?}.
+//   - extension_ui_request events fire continuously as UI noise and do NOT
+//     block agent_settled -- we still auto-reply {"cancelled":true} to each,
+//     defensively, in case a future extension's dialog does block.
+//   - Strict LF framing: buffer raw chunks, split on "\n", carry any partial
+//     trailing fragment to the next chunk (same technique as spawnPi's
+//     trackProgress).
+// ---------------------------------------------------------------------------
+
+function newlineFramed(buffer, chunk) {
+  const combined = buffer + chunk;
+  const lines = combined.split("\n");
+  const pending = lines.pop() ?? "";
+  return { lines: lines.map((l) => l.trim()).filter(Boolean), pending };
+}
+
+// Spawns `pi --mode rpc --session-id <name> [...sessionArgs]`, writes queued
+// `commands` one JSONL line at a time (only advancing once that command's
+// response arrives, or -- for "prompt" -- once agent_settled fires for the
+// current turn generation), auto-cancels any extension_ui_request, and
+// resolves once the queue drains and the final "prompt" (if any) has settled.
+//
+// The command list is a *mutable FIFO queue*, not a fixed array walked by a
+// cursor -- `ctx.inject(cmd)` (exposed via the optional `onReady` hook) lets a
+// caller push a command to the FRONT of the queue mid-flight, which is what
+// steer/interrupt need: interrupt injects {type:"abort"} then a fresh
+// {type:"prompt", message}, and must not resolve on the *aborted* turn's
+// agent_settled -- only on the one that follows the reprompt. This is tracked
+// with a `turnGeneration` counter, bumped each time a fresh prompt is injected
+// via interrupt, and a `settledGeneration` compared against it.
+async function rpcRoundtrip(sessionArgs, initialCommands, { cwd, timeout, onReady }) {
+  let pendingLine = "";
+  const events = [];
+  const responsesByCommand = new Map();
+  let settledFlag = false;
+  let stdinClosed = false;
+
+  const pendingCommands = [...initialCommands];
+  let awaitingResponseFor = null; // type of the command currently in flight
+  let awaitingSettle = false; // true once a prompt's response arrived, waiting on agent_settled
+  let awaitingAbortSettle = false; // true once abort was written, waiting on the ABORTED turn's agent_settled
+  let turnGeneration = 0;
+  let settledGeneration = -1;
+  const steered = [];
+  let interrupted = false;
+  let interruptPendingReprompt = null; // holds the {message} to send once the aborted turn settles
+
+  function maybeClose(ctx) {
+    if (
+      pendingCommands.length === 0 &&
+      awaitingResponseFor === null &&
+      !awaitingSettle &&
+      !awaitingAbortSettle &&
+      !stdinClosed
+    ) {
+      stdinClosed = true;
+      try {
+        ctx.child.stdin.end();
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+
+  function sendNext(ctx) {
+    if (awaitingResponseFor !== null || awaitingSettle) return;
+    if (pendingCommands.length === 0) {
+      maybeClose(ctx);
+      return;
+    }
+    const cmd = pendingCommands.shift();
+    awaitingResponseFor = cmd.type;
+    try {
+      ctx.child.stdin.write(JSON.stringify(cmd) + "\n");
+    } catch {
+      /* if this fails the roundtrip will time out and surface as a failure */
+    }
+  }
+
+  // Pushes `cmd` to the FRONT of the queue and, if stdin is currently idle,
+  // sends it immediately; otherwise sendNext() picks it up once the in-flight
+  // command resolves.
+  function inject(ctx, cmd) {
+    pendingCommands.unshift(cmd);
+    if (awaitingResponseFor === null && !awaitingSettle) {
+      sendNext(ctx);
+    }
+  }
+
+  const result = await spawnManaged("pi", ["--mode", "rpc", ...sessionArgs], {
+    cwd,
+    timeout,
+    stdio: ["pipe", "pipe", "pipe"],
+    onSpawn: (ctx) => {
+      ctx.inject = (cmd) => inject(ctx, cmd);
+      // steer: fire-and-forget envelope, does not touch awaitingSettle/
+      // turnGeneration -- it doesn't end the current turn.
+      ctx.injectSteer = (message) => {
+        try {
+          ctx.child.stdin.write(JSON.stringify({ type: "steer", message }) + "\n");
+          steered.push(message);
+        } catch {
+          /* best-effort -- caller already returned ok:true/queued to its own caller */
+        }
+      };
+      // interrupt: write {type:"abort"} directly (bypassing the normal queue
+      // -- it must cut in immediately even mid-turn, not wait for the current
+      // hold on awaitingSettle). The reprompt is deferred until the ABORTED
+      // turn's own agent_settled is observed (see that handler below); only
+      // then is turnGeneration bumped and the new prompt sent -- this is the
+      // ordering that keeps the aborted turn's agent_settled from being
+      // mistaken for the new turn's completion.
+      ctx.injectInterrupt = (message) => {
+        interrupted = true;
+        interruptPendingReprompt = { message };
+        awaitingAbortSettle = true;
+        try {
+          ctx.child.stdin.write(JSON.stringify({ type: "abort" }) + "\n");
+        } catch {
+          /* best-effort -- roundtrip will time out and surface as a failure */
+        }
+      };
+      // Prime the pipe immediately: pi reads stdin at startup, and we must
+      // never leave it open-but-unfed (see spawnPi's stdio comment for the
+      // documented hang hazard this avoids).
+      sendNext(ctx);
+      if (onReady) onReady(ctx);
+    },
+    onStdoutChunk: (chunk, ctx) => {
+      const framed = newlineFramed(pendingLine, chunk);
+      pendingLine = framed.pending;
+      for (const line of framed.lines) {
+        let evt;
+        try {
+          evt = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        events.push(evt);
+
+        if (evt.type === "extension_ui_request" && evt.id) {
+          try {
+            ctx.child.stdin.write(JSON.stringify({ type: "extension_ui_response", id: evt.id, cancelled: true }) + "\n");
+          } catch {
+            /* best-effort */
+          }
+          continue;
+        }
+
+        // response(abort) is written out-of-band by injectInterrupt (not via
+        // the normal queue), so it never matches awaitingResponseFor -- it's
+        // simply recorded in responsesByCommand above and otherwise ignored;
+        // the reprompt is triggered by the aborted turn's agent_settled below.
+        if (evt.type === "response" && evt.command) {
+          responsesByCommand.set(evt.command, evt);
+          if (evt.command === awaitingResponseFor) {
+            const wasPrompt = evt.command === "prompt";
+            awaitingResponseFor = null;
+
+            if (wasPrompt) {
+              // Response(prompt) only confirms enqueue, not completion --
+              // hold until agent_settled fires for this turn generation.
+              awaitingSettle = true;
+            } else {
+              sendNext(ctx);
+            }
+          }
+        }
+
+        if (evt.type === "agent_settled") {
+          settledGeneration = turnGeneration;
+          settledFlag = true;
+          if (awaitingAbortSettle) {
+            // This settle belongs to the ABORTED turn. Consume it here,
+            // THEN bump turnGeneration and send the reprompt -- so the new
+            // turn's own (later) agent_settled is the only one that can
+            // match the bumped generation.
+            awaitingAbortSettle = false;
+            awaitingSettle = false;
+            const reprompt = interruptPendingReprompt;
+            interruptPendingReprompt = null;
+            turnGeneration++;
+            if (reprompt) inject(ctx, { type: "prompt", message: reprompt.message });
+          } else if (awaitingSettle) {
+            awaitingSettle = false;
+            sendNext(ctx);
+          }
+        }
+      }
+
+      maybeClose(ctx);
+      if (
+        stdinClosed &&
+        pendingCommands.length === 0 &&
+        awaitingResponseFor === null &&
+        !awaitingSettle &&
+        !awaitingAbortSettle
+      ) {
+        ctx.settleEarly({ settled: settledFlag });
+      }
+    }
+  });
+
+  return {
+    ok: !result.error,
+    events,
+    responsesByCommand,
+    settled: settledFlag,
+    settledGeneration,
+    steered,
+    interrupted,
+    rawStdout: result.stdout ?? "",
+    rawStderr: result.stderr ?? "",
+    exitCode: typeof result.status === "number" ? result.status : null,
+    error: result.error ?? null
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Conversation subcommands: start | send | status | end
+// ---------------------------------------------------------------------------
+
+function buildSessionArgs(opts, projectConfig) {
+  const args = [];
+  let configProvider = projectConfig.provider;
+  let configModel = projectConfig.model;
+  if (configProvider && !isSafeArgValue(configProvider)) configProvider = null;
+  if (configModel && !isSafeArgValue(configModel)) configModel = null;
+
+  const effectiveProvider = opts.provider || configProvider;
+  const effectiveModel = opts.model || configModel;
+
+  if (effectiveProvider) args.push("--provider", effectiveProvider);
+  if (effectiveModel) args.push("--model", effectiveModel);
+  if (opts.thinking) args.push("--thinking", opts.thinking);
+  return args;
+}
+
+// FIFO control-channel lifecycle for a `send` invocation. Creates the FIFO,
+// opens the read end non-blocking (r+ trick -- see module notes below), polls
+// it on a timer, and dispatches complete JSON lines to the roundtrip's
+// ctx.injectSteer/ctx.injectInterrupt. Returns a `stop()` cleanup that MUST be
+// called from the same `finally` that releases the lock, unconditionally
+// (every exit path, including the timeout/group-kill path) -- do not gate it
+// on a "clean settle" boolean.
+function startFifoRelay(fifoPath, ctx) {
+  try {
+    fs.unlinkSync(fifoPath);
+  } catch {
+    /* clear any stale leftover from a crash -- expected to usually be a no-op */
+  }
+
+  try {
+    execFileSync("mkfifo", [fifoPath]);
+  } catch (err) {
+    // Can't create the control channel -- steer/interrupt simply won't be
+    // available for this turn; the turn itself proceeds normally.
+    console.error(`[pi-companion] failed to create control fifo at ${fifoPath}: ${err && err.message ? err.message : String(err)}`);
+    return { stop() {} };
+  }
+
+  let fd = null;
+  try {
+    // Opening read-write (O_RDWR) never blocks waiting for a writer, unlike a
+    // plain read-only open on a FIFO -- the standard trick to avoid the
+    // reader-blocks-until-writer-opens problem. This fd stays open across the
+    // whole turn regardless of whether steer/interrupt writers ever connect.
+    //
+    // O_NONBLOCK is load-bearing here, not optional: it governs *reads* on
+    // this fd, not just the open() call. Without it, fs.readSync() below
+    // blocks synchronously -- and since Node is single-threaded, a blocking
+    // read freezes the ENTIRE event loop (including the roundtrip's own
+    // --timeout, which is just a setTimeout that never gets a chance to
+    // fire) the moment the poll timer's first tick finds no data waiting.
+    // That happens on every real turn slower than one poll interval, i.e.
+    // effectively always -- confirmed empirically: fs.openSync(fifoPath,
+    // "r+") plus a blocking fs.readSync() hung for minutes on an idle FIFO
+    // with no O_NONBLOCK set.
+    fd = fs.openSync(fifoPath, fs.constants.O_RDWR | fs.constants.O_NONBLOCK);
+  } catch (err) {
+    console.error(`[pi-companion] failed to open control fifo at ${fifoPath}: ${err && err.message ? err.message : String(err)}`);
+    try {
+      fs.unlinkSync(fifoPath);
+    } catch {
+      /* best-effort */
+    }
+    return { stop() {} };
+  }
+
+  let buffer = "";
+  const readBuf = Buffer.alloc(65536);
+
+  function poll() {
+    for (;;) {
+      let n;
+      try {
+        n = fs.readSync(fd, readBuf, 0, readBuf.length, null);
+      } catch (err) {
+        // EAGAIN: no data ready right now -- expected, not an error.
+        if (err && (err.code === "EAGAIN" || err.code === "EWOULDBLOCK")) break;
+        // Any other error (e.g. fd went bad): stop trying this poll cycle.
+        break;
+      }
+      if (!n) break;
+      buffer += readBuf.toString("utf8", 0, n);
+      let idx;
+      while ((idx = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        let envelope;
+        try {
+          envelope = JSON.parse(line);
+        } catch {
+          continue; // malformed control line -- ignore, don't crash the turn
+        }
+        if (!envelope || typeof envelope.message !== "string") continue;
+        if (envelope.kind === "steer") {
+          ctx.injectSteer(envelope.message);
+        } else if (envelope.kind === "interrupt") {
+          ctx.injectInterrupt(envelope.message);
+        }
+      }
+    }
+  }
+
+  const timer = setInterval(poll, FIFO_POLL_INTERVAL_MS);
+  timer.unref?.();
+
+  return {
+    stop() {
+      clearInterval(timer);
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* best-effort */
+      }
+      try {
+        fs.unlinkSync(fifoPath);
+      } catch {
+        /* best-effort */
+      }
+    }
+  };
+}
+
+async function runConversationSend(sessionName, messageText, opts) {
+  const cwd = resolveCwd();
+  const lockPath = lockPathFor(cwd, sessionName);
+  const lock = acquireLock(lockPath);
+  if (!lock.acquired) {
+    return taskResult({
+      sessionName,
+      lockHeldByPid: lock.heldByPid,
+      errorMessage: lock.heldByPid
+        ? `conversation "${sessionName}" is busy (held by pid ${lock.heldByPid}) -- another process is mid-turn`
+        : `failed to acquire conversation lock: ${lock.error || "unknown error"}`
+    });
+  }
+
+  const fifoPath = fifoPathFor(cwd, sessionName);
+  let fifoRelay = { stop() {} };
+
+  try {
+    const projectConfig = loadProjectConfig(cwd);
+    const sessionArgs = ["--session-id", sessionName, ...buildSessionArgs(opts, projectConfig)];
+    const roundtrip = await rpcRoundtrip(
+      sessionArgs,
+      [
+        { type: "prompt", message: messageText },
+        { type: "get_last_assistant_text" },
+        { type: "get_state" },
+        { type: "get_session_stats" }
+      ],
+      {
+        cwd,
+        timeout: opts.timeout,
+        onReady: (ctx) => {
+          fifoRelay = startFifoRelay(fifoPath, ctx);
+        }
+      }
+    );
+
+    if (roundtrip.error) {
+      const code = roundtrip.error.code;
+      return taskResult({
+        sessionName,
+        steered: roundtrip.steered,
+        interrupted: roundtrip.interrupted,
+        errorMessage:
+          code === "ENOENT"
+            ? "pi CLI not found on PATH — run /pi-delegate:setup"
+            : code === "ETIMEDOUT"
+              ? `pi did not settle within ${opts.timeout}ms and was killed (timeout)`
+              : `pi rpc invocation failed: ${code || roundtrip.error.message || String(roundtrip.error)}`,
+        rawStdout: roundtrip.rawStdout,
+        rawStderr: roundtrip.rawStderr,
+        exitCode: roundtrip.exitCode
+      });
+    }
+
+    const textResponse = roundtrip.responsesByCommand.get("get_last_assistant_text");
+    if (!roundtrip.settled || !textResponse) {
+      return taskResult({
+        sessionName,
+        steered: roundtrip.steered,
+        interrupted: roundtrip.interrupted,
+        errorMessage: "pi rpc stream ended without agent_settled + get_last_assistant_text response",
+        rawStdout: roundtrip.rawStdout,
+        rawStderr: roundtrip.rawStderr,
+        exitCode: roundtrip.exitCode
+      });
+    }
+
+    if (textResponse.success === false) {
+      return taskResult({
+        sessionName,
+        steered: roundtrip.steered,
+        interrupted: roundtrip.interrupted,
+        errorMessage: textResponse.error || "get_last_assistant_text reported failure",
+        rawStdout: roundtrip.rawStdout,
+        rawStderr: roundtrip.rawStderr,
+        exitCode: roundtrip.exitCode
+      });
+    }
+
+    const stateResponse = roundtrip.responsesByCommand.get("get_state");
+    const statsResponse = roundtrip.responsesByCommand.get("get_session_stats");
+    const stateData = (stateResponse && stateResponse.data) || {};
+    const statsData = (statsResponse && statsResponse.data) || {};
+
+    return taskResult({
+      ok: true,
+      sessionName,
+      sessionId: stateData.sessionId ?? null,
+      turnCount: statsData.userMessages ?? null,
+      steered: roundtrip.steered,
+      interrupted: roundtrip.interrupted,
+      finalText: (textResponse.data && textResponse.data.text) || "",
+      rawStdout: roundtrip.rawStdout,
+      rawStderr: roundtrip.rawStderr,
+      exitCode: roundtrip.exitCode
+    });
+  } finally {
+    // FIFO cleanup is unconditional, alongside the lock release, on every
+    // exit path -- including the timeout/group-kill path (spawnManaged's own
+    // timeout already fires killGroup independently of this).
+    fifoRelay.stop();
+    releaseLock(lockPath);
+  }
+}
+
+async function runConversationStart(sessionName, opts) {
+  if (!opts.message) {
+    // No first message: just validate/create the session with a cheap
+    // get_state roundtrip (also acquires + releases the lock).
+    const cwd = resolveCwd();
+    const lockPath = lockPathFor(cwd, sessionName);
+    const lock = acquireLock(lockPath);
+    if (!lock.acquired) {
+      return taskResult({
+        sessionName,
+        lockHeldByPid: lock.heldByPid,
+        errorMessage: lock.heldByPid
+          ? `conversation "${sessionName}" is busy (held by pid ${lock.heldByPid})`
+          : `failed to acquire conversation lock: ${lock.error || "unknown error"}`
+      });
+    }
+    try {
+      const projectConfig = loadProjectConfig(cwd);
+      const sessionArgs = ["--session-id", sessionName, ...buildSessionArgs(opts, projectConfig)];
+      const roundtrip = await rpcRoundtrip(sessionArgs, [{ type: "get_state" }], { cwd, timeout: opts.timeout });
+      if (roundtrip.error) {
+        return taskResult({
+          sessionName,
+          errorMessage: `failed to start conversation: ${roundtrip.error.code || roundtrip.error.message}`,
+          rawStdout: roundtrip.rawStdout,
+          rawStderr: roundtrip.rawStderr,
+          exitCode: roundtrip.exitCode
+        });
+      }
+      const stateResponse = roundtrip.responsesByCommand.get("get_state");
+      const sessionId = stateResponse && stateResponse.data ? stateResponse.data.sessionId : null;
+      return taskResult({
+        ok: true,
+        sessionName,
+        sessionId,
+        rawStdout: roundtrip.rawStdout,
+        rawStderr: roundtrip.rawStderr,
+        exitCode: roundtrip.exitCode
+      });
+    } finally {
+      releaseLock(lockPath);
+    }
+  }
+
+  // With a first message, `start` is just `send` against a fresh/reused name.
+  return runConversationSend(sessionName, opts.message, opts);
+}
+
+async function runConversationStatus(sessionName, opts) {
+  // Read-only: deliberately does NOT acquire the lock (see architecture.md
+  // D-B follow-up) -- safe to run concurrently with an in-flight send.
+  const cwd = resolveCwd();
+  const sessionArgs = ["--session-id", sessionName];
+  const roundtrip = await rpcRoundtrip(
+    sessionArgs,
+    [{ type: "get_state" }, { type: "get_session_stats" }],
+    { cwd, timeout: opts.timeout }
+  );
+
+  if (roundtrip.error) {
+    return taskResult({
+      sessionName,
+      errorMessage: `failed to query conversation status: ${roundtrip.error.code || roundtrip.error.message}`,
+      rawStdout: roundtrip.rawStdout,
+      rawStderr: roundtrip.rawStderr,
+      exitCode: roundtrip.exitCode
+    });
+  }
+
+  const stateResponse = roundtrip.responsesByCommand.get("get_state");
+  const statsResponse = roundtrip.responsesByCommand.get("get_session_stats");
+  const stateData = (stateResponse && stateResponse.data) || {};
+  const statsData = (statsResponse && statsResponse.data) || {};
+
+  return taskResult({
+    ok: true,
+    sessionName,
+    sessionId: stateData.sessionId ?? null,
+    // pi's get_session_stats has no `turnCount` field -- one user message
+    // per turn in this protocol, so userMessages is the correct mapping.
+    // (messageCount from get_state counts user+assistant together and is a
+    // different metric -- do not fall back to it.)
+    turnCount: statsData.userMessages ?? null,
+    summary: JSON.stringify({ state: stateData, stats: statsData }),
+    rawStdout: roundtrip.rawStdout,
+    rawStderr: roundtrip.rawStderr,
+    exitCode: roundtrip.exitCode
+  });
+}
+
+async function runConversationEnd(sessionName, opts) {
+  const cwd = resolveCwd();
+  const lockPath = lockPathFor(cwd, sessionName);
+  const lock = acquireLock(lockPath);
+  if (!lock.acquired) {
+    return taskResult({
+      sessionName,
+      lockHeldByPid: lock.heldByPid,
+      errorMessage: lock.heldByPid
+        ? `conversation "${sessionName}" is busy (held by pid ${lock.heldByPid}) -- cannot end it right now`
+        : `failed to acquire conversation lock: ${lock.error || "unknown error"}`
+    });
+  }
+
+  const deletedFiles = [];
+  try {
+    const dir = piSessionsDir(cwd);
+    let matches;
+    try {
+      matches = findSessionFiles(dir, sessionName);
+    } catch (err) {
+      return taskResult({
+        sessionName,
+        errorMessage: `failed to list session directory: ${err && err.message ? err.message : String(err)}`
+      });
+    }
+
+    // Delete EVERY matching file, not just the first -- more than one file
+    // can match after a crash/stale-lock-reclaim recovery (a killed `send`
+    // can leave pi starting a fresh timestamped file rather than resuming a
+    // partially-flushed one). Silently dropping orphans is the bug; surface
+    // all of them in the summary instead.
+    for (const fullPath of matches) {
+      try {
+        fs.unlinkSync(fullPath);
+        deletedFiles.push(fullPath);
+      } catch (err) {
+        if (!err || err.code !== "ENOENT") {
+          return taskResult({
+            sessionName,
+            errorMessage: `failed to remove session file ${fullPath}: ${err && err.message ? err.message : String(err)}`
+          });
+        }
+      }
+    }
+  } finally {
+    // `end`'s lock release IS the cleanup step (deleting the lockfile), not a
+    // generic finally-then-unlink -- release exactly once here.
+    releaseLock(lockPath);
+  }
+
+  return taskResult({
+    ok: true,
+    sessionName,
+    summary: deletedFiles.length
+      ? `removed session file(s): ${deletedFiles.join(", ")}`
+      : "no session file found (already ended, or never started)"
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Conversation subcommand: read — render a session jsonl tail, lock-free.
+// ---------------------------------------------------------------------------
+
+function gistText(text, max = 80) {
+  const t = (text ?? "").replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+function gistJson(value, max = 80) {
+  let s;
+  try {
+    s = JSON.stringify(value);
+  } catch {
+    s = String(value);
+  }
+  return gistText(s, max);
+}
+
+// Render one parsed jsonl line into { timestamp, role, gist } or null if the
+// line doesn't carry a renderable message. Never throws -- a tool call with
+// no result yet (mid-turn state) renders as "(pending)", not an exception.
+function renderEntry(parsed) {
+  const message = parsed && parsed.message;
+  if (!message || !message.role) return null;
+
+  const ts = typeof message.timestamp === "number" ? message.timestamp : null;
+  const role = message.role;
+  const content = Array.isArray(message.content) ? message.content : [];
+
+  const parts = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    if (item.type === "text" && typeof item.text === "string") {
+      parts.push(gistText(item.text));
+    } else if (item.type === "toolCall") {
+      const name = item.name ?? item.toolName ?? "unknown";
+      parts.push(`[tool:${name} ${gistJson(item.arguments ?? item.args ?? {})}]`);
+    } else if (item.type === "toolResult") {
+      const hasOutput = item.output !== undefined || item.result !== undefined || item.content !== undefined;
+      parts.push(hasOutput ? `-> ${gistJson(item.output ?? item.result ?? item.content)}` : "-> (pending)");
+    }
+  }
+
+  return {
+    timestamp: ts,
+    role,
+    gist: parts.join(" ") || "(no content)"
+  };
+}
+
+// Shared by --json and text-mode output. Builds { entries, truncatedLines }
+// from raw jsonl lines. Renders STRICTLY in file order -- never sort by
+// timestamp; steer-injected messages are stamped at enqueue time but
+// positioned in the file at their actual delivery point, so file order is the
+// only order that reflects what really happened.
+function renderSessionEntries(rawLines) {
+  const entries = [];
+  let truncatedLines = 0;
+
+  for (const line of rawLines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      truncatedLines++;
+      continue;
+    }
+    const rendered = renderEntry(parsed);
+    if (!rendered) continue;
+    entries.push({ ...rendered, raw: parsed });
+  }
+
+  return { entries, truncatedLines };
+}
+
+function formatEntryLine(entry) {
+  const hhmmss = entry.timestamp != null ? new Date(entry.timestamp).toTimeString().slice(0, 8) : "??:??:??";
+  return `${hhmmss} ${entry.role}: ${entry.gist}`;
+}
+
+async function readConversation(sessionName, opts) {
+  const cwd = resolveCwd();
+  const dir = piSessionsDir(cwd);
+
+  let matches;
+  try {
+    matches = findSessionFiles(dir, sessionName);
+  } catch (err) {
+    return taskResult({
+      sessionName,
+      errorMessage: `failed to list session directory: ${err && err.message ? err.message : String(err)}`
+    });
+  }
+
+  if (matches.length === 0) {
+    return taskResult({
+      sessionName,
+      errorMessage: `no session found for "${sessionName}"`
+    });
+  }
+
+  let chosen = matches[0];
+  let warning = null;
+  if (matches.length > 1) {
+    // Ambiguous -- pick the most recently modified, don't silently take
+    // readdirSync's unspecified [0] ordering.
+    let bestMtime = -Infinity;
+    for (const f of matches) {
+      let mtimeMs;
+      try {
+        mtimeMs = fs.statSync(f).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (mtimeMs > bestMtime) {
+        bestMtime = mtimeMs;
+        chosen = f;
+      }
+    }
+    warning = `${matches.length} session files matched "${sessionName}"; using the most recently modified: ${chosen}`;
+  }
+
+  let raw;
+  try {
+    raw = fs.readFileSync(chosen, "utf8");
+  } catch (err) {
+    return taskResult({
+      sessionName,
+      errorMessage: `failed to read session file ${chosen}: ${err && err.message ? err.message : String(err)}`
+    });
+  }
+
+  const { entries, truncatedLines } = renderSessionEntries(raw.split("\n"));
+  const sliced = opts.last != null ? entries.slice(-opts.last) : entries;
+
+  if (opts.json) {
+    return taskResult({
+      ok: true,
+      sessionName,
+      warning,
+      summary: JSON.stringify({
+        entries: sliced.map((e) => ({ timestamp: e.timestamp, role: e.role, gist: e.gist, raw: e.raw })),
+        truncatedLines,
+        sessionFile: chosen
+      })
+    });
+  }
+
+  const text = sliced.map(formatEntryLine).join("\n");
+  return taskResult({
+    ok: true,
+    sessionName,
+    warning,
+    finalText: text,
+    summary: `${sliced.length} entr${sliced.length === 1 ? "y" : "ies"} from ${chosen}${truncatedLines ? ` (${truncatedLines} unparseable line(s) skipped)` : ""}`
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Conversation subcommands: steer | interrupt — write into the turn-scoped
+// control FIFO created by an in-flight `send`. Both are pure client-side
+// writers: they validate, check liveness, write one envelope line, and return
+// immediately (ok:true, queued:true) without waiting for delivery or settle.
+// ---------------------------------------------------------------------------
+
+function validateSteerMessage(message) {
+  const trimmed = (message ?? "").trim();
+  if (!trimmed) return { ok: false, error: "message must not be empty" };
+  if (Buffer.byteLength(trimmed, "utf8") > STEER_MESSAGE_MAX_BYTES) {
+    return { ok: false, error: `message exceeds ${STEER_MESSAGE_MAX_BYTES} byte limit` };
+  }
+  return { ok: true, message: trimmed };
+}
+
+// Liveness check shared by steer/interrupt: existence of the FIFO path is NOT
+// liveness -- a crashed `send` can leave an orphaned FIFO with no reader. The
+// lockfile's PID (the same file acquireLock/isPidAlive already parse) is the
+// actual liveness oracle.
+function isConversationLive(lockPath) {
+  let ownerPid = null;
+  try {
+    ownerPid = Number(fs.readFileSync(lockPath, "utf8").trim());
+  } catch {
+    return false; // no lockfile -- idle
+  }
+  return Number.isFinite(ownerPid) && ownerPid > 0 && isPidAlive(ownerPid);
+}
+
+async function writeToFifo(sessionName, kind, messageText) {
+  const cwd = resolveCwd();
+  const lockPath = lockPathFor(cwd, sessionName);
+  const fifoPath = fifoPathFor(cwd, sessionName);
+
+  const validated = validateSteerMessage(messageText);
+  if (!validated.ok) {
+    return taskResult({ sessionName, errorMessage: validated.error });
+  }
+
+  if (!isConversationLive(lockPath)) {
+    return taskResult({ sessionName, errorMessage: "conversation is idle — use send" });
+  }
+
+  let fd;
+  try {
+    // Non-blocking open of the write end: if there's no reader present
+    // (send closed its read end between our liveness check and here -- a
+    // real TOCTOU race), this throws ENXIO. Treat that the same as idle,
+    // rather than letting an unhandled exception through -- a deliberate
+    // second layer beyond the lockfile-PID check above, not redundant with it.
+    fd = fs.openSync(fifoPath, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
+  } catch (err) {
+    if (err && err.code === "ENXIO") {
+      return taskResult({ sessionName, errorMessage: "conversation is idle — use send" });
+    }
+    return taskResult({ sessionName, errorMessage: `failed to open control channel: ${err && err.message ? err.message : String(err)}` });
+  }
+
+  try {
+    fs.writeSync(fd, JSON.stringify({ kind, message: validated.message }) + "\n");
+  } catch (err) {
+    return taskResult({ sessionName, errorMessage: `failed to write to control channel: ${err && err.message ? err.message : String(err)}` });
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  return taskResult({
+    ok: true,
+    sessionName,
+    queued: true,
+    summary: `${kind} queued`,
+    steered: kind === "steer" ? [validated.message] : [],
+    interrupted: kind === "interrupt"
+  });
+}
+
+async function runConversationSteer(sessionName, messageText) {
+  return writeToFifo(sessionName, "steer", messageText);
+}
+
+async function runConversationInterrupt(sessionName, messageText) {
+  return writeToFifo(sessionName, "interrupt", messageText);
 }
 
 // Read + validate + always unlink the completion marker file.
@@ -1099,6 +2246,58 @@ async function main() {
     return;
   }
 
+  if (subcommand === "conversation") {
+    const [verb, ...verbRest] = rest;
+    const knownVerbs = ["start", "send", "status", "end", "read", "steer", "interrupt"];
+    if (!knownVerbs.includes(verb)) {
+      console.log(`conversation: unknown or missing verb (expected ${knownVerbs.join("|")}), got: ${verb ?? "(none)"}`);
+      printUsage();
+      process.exit(2);
+      return;
+    }
+
+    const opts = parseConversationArgs(verb, verbRest);
+    if (opts.invalidTimeout !== null) {
+      console.log(`--timeout must be a positive integer (ms), got: ${opts.invalidTimeout}`);
+      printUsage();
+      process.exit(2);
+      return;
+    }
+    if (opts.invalidLast !== null) {
+      console.log(`--last must be a positive integer, got: ${opts.invalidLast}`);
+      printUsage();
+      process.exit(2);
+      return;
+    }
+    if (opts.error) {
+      console.log(`conversation ${verb}: ${opts.error}`);
+      printUsage();
+      process.exit(2);
+      return;
+    }
+
+    const sanitized = sanitizeSessionName(opts.name);
+    if (!sanitized.ok) {
+      console.log(`conversation ${verb}: ${sanitized.error}`);
+      printUsage();
+      process.exit(2);
+      return;
+    }
+
+    let result;
+    if (verb === "start") result = await runConversationStart(sanitized.name, opts);
+    else if (verb === "send") result = await runConversationSend(sanitized.name, opts.message, opts);
+    else if (verb === "status") result = await runConversationStatus(sanitized.name, opts);
+    else if (verb === "read") result = await readConversation(sanitized.name, opts);
+    else if (verb === "steer") result = await runConversationSteer(sanitized.name, opts.message);
+    else if (verb === "interrupt") result = await runConversationInterrupt(sanitized.name, opts.message);
+    else result = await runConversationEnd(sanitized.name, opts);
+
+    printTaskResult(result, opts.json);
+    process.exit(result.ok ? 0 : 1);
+    return;
+  }
+
   if (subcommand === "remove-config") {
     const json = rest.includes("--json");
     const result = runRemoveConfig();
@@ -1112,28 +2311,14 @@ async function main() {
 }
 
 main().catch((err) => {
-  // Last-resort guard: degrade to clean JSON on stdout, never a raw stack trace.
+  // Last-resort guard: degrade to clean JSON on stdout, never a raw stack
+  // trace. Routed through taskResult() (not a hand-written literal) so this
+  // fallback shape can never drift from the one stable contract.
   console.log(
     JSON.stringify(
-      {
-        ok: false,
-        degraded: false,
-        markerMissing: false,
-        markerExitMismatch: false,
-        finalText: null,
-        summary: null,
-        nextSteps: [],
-        errorMessage: `unexpected pi-companion error: ${err && err.message ? err.message : String(err)}`,
-        warning: null,
-        exitCode: null,
-        willRetry: null,
-        completionMarker: null,
-        progressLogPath: null,
-        rawStdout: "",
-        rawStderr: "",
-        rawStdoutTruncated: false,
-        rawStderrTruncated: false
-      },
+      taskResult({
+        errorMessage: `unexpected pi-companion error: ${err && err.message ? err.message : String(err)}`
+      }),
       null,
       2
     )

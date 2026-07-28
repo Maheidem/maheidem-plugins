@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Stub: emits an extension_ui_request before settling, and gates finishing the
+# turn on actually receiving the {"cancelled":true} reply on stdin -- proves
+# rpcRoundtrip's auto-cancel write happens and doesn't hang the roundtrip.
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      echo '{"type":"extension_ui_request","id":"dlg-1","method":"confirm"}'
+      while IFS= read -r reply; do
+        case "$reply" in
+          *'"id":"dlg-1"'*'"cancelled":true'*) break ;;
+        esac
+      done
+      echo '{"type":"response","command":"prompt","success":true}'
+      echo '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_last_assistant_text"'*)
+      echo '{"type":"response","command":"get_last_assistant_text","success":true,"data":{"text":"dialog-ok"}}'
+      ;;
+    *'"type":"get_state"'*)
+      echo '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-dialog-session","sessionFile":"/tmp/stub/dialog.jsonl"}}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      echo '{"type":"response","command":"get_session_stats","success":true,"data":{"userMessages":1,"assistantMessages":1,"totalMessages":2}}'
+      ;;
+  esac
+done
+exit 0

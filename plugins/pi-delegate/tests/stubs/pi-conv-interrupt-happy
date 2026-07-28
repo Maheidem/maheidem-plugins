@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Stub `pi --mode rpc --session-id <name>`: emits TWO agent_settled events --
+# one for the pre-abort (aborted) turn, one for the post-reprompt turn -- with
+# DIFFERENT get_last_assistant_text answers, so the test can assert the final
+# transcript corresponds to the SECOND settle. A naive rpcRoundtrip that
+# latches onto the first agent_settled would answer with the WRONG (aborted
+# turn's) text and fail this test.
+prompt_count=0
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      prompt_count=$((prompt_count + 1))
+      echo '{"type":"response","command":"prompt","success":true}'
+      if [ "$prompt_count" -eq 1 ]; then
+        # First turn: hold here (don't settle yet) to give the concurrently
+        # invoked `conversation interrupt` real time to land on the FIFO and
+        # write {"type":"abort"} to our stdin before we'd otherwise finish.
+        sleep 1.5
+      else
+        # Second turn (the reprompt): settle for real, right away.
+        echo '{"type":"agent_settled"}'
+      fi
+      ;;
+    *'"type":"abort"'*)
+      # The FIRST turn's own settle -- fired only once abort is observed, so
+      # the companion's `awaitingAbortSettle` branch (not the normal one)
+      # consumes it and bumps turnGeneration before sending the reprompt.
+      echo '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_last_assistant_text"'*)
+      if [ "$prompt_count" -ge 2 ]; then
+        echo '{"type":"response","command":"get_last_assistant_text","success":true,"data":{"text":"DELTA reprompt reply"}}'
+      else
+        echo '{"type":"response","command":"get_last_assistant_text","success":true,"data":{"text":"original pre-abort reply"}}'
+      fi
+      ;;
+    *'"type":"get_state"'*)
+      echo '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-interrupt-session","sessionFile":"/tmp/stub/interrupt.jsonl"}}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      echo '{"type":"response","command":"get_session_stats","success":true,"data":{"userMessages":2,"assistantMessages":2,"totalMessages":4}}'
+      ;;
+  esac
+done
+exit 0

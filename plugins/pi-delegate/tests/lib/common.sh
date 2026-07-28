@@ -23,7 +23,32 @@ cleanup_scratch() {
   fi
   return 0
 }
-trap cleanup_scratch EXIT
+
+# ---------------------------------------------------------------------------
+# Chained EXIT-trap registry. Bash keeps only the LAST `trap ... EXIT`
+# registered, so any test that does `trap its_own_cleanup EXIT` silently
+# overwrites this file's trap (and vice versa), leaking scratch/pi dirs.
+# Callers (this file and individual test_*.sh) register cleanup functions
+# with add_cleanup instead of calling `trap` directly; they all run on exit,
+# in reverse registration order, each wrapped so one failing cleanup can't
+# stop the rest from running.
+# ---------------------------------------------------------------------------
+_CLEANUP_FNS=()
+
+add_cleanup() {
+  _CLEANUP_FNS+=("$1")
+}
+
+_run_all_cleanups() {
+  local idx fn
+  for ((idx = ${#_CLEANUP_FNS[@]} - 1; idx >= 0; idx--)); do
+    fn="${_CLEANUP_FNS[$idx]}"
+    "$fn" || true
+  done
+}
+trap _run_all_cleanups EXIT
+
+add_cleanup cleanup_scratch
 
 # make_scratch -> prints a fresh temp dir path (registered for cleanup)
 make_scratch() {
@@ -92,3 +117,52 @@ finish() {
   echo "  passes=$PASSES fails=$FAILS"
   [ "$FAILS" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Conversation-verb helpers -- mirror pi-companion.mjs's
+# sessionSlugForCwd/piSessionsDir/lockPathFor exactly (see scripts/pi-companion.mjs).
+# Real pi lands sessions under $HOME/.pi/agent/sessions/, so these still touch
+# the real homedir -- but always inside a throwaway make_scratch cwd slug, never
+# the real project's session history. Registered for cleanup.
+# ---------------------------------------------------------------------------
+
+# pi_session_slug <cwd> -> prints "--<cwd with leading slash stripped, / and : -> ->--"
+pi_session_slug() {
+  local resolved slug
+  # -P: physical path (resolves symlinks), matching pi's fs.realpathSync --
+  # on macOS /tmp and /var are symlinks into /private/..., so a logical
+  # `pwd` here would predict a directory pi never actually uses.
+  resolved="$(cd "$1" && pwd -P)"
+  slug="${resolved#/}"
+  slug="${slug//\//-}"
+  slug="${slug//:/-}"
+  echo "--${slug}--"
+}
+
+# pi_sessions_dir <cwd> -> prints the on-disk session directory for that cwd
+pi_sessions_dir() {
+  local dir
+  dir="$HOME/.pi/agent/sessions/$(pi_session_slug "$1")"
+  echo "$dir" >> "$_SCRATCH_REGISTRY.pi_dirs"
+  echo "$dir"
+}
+
+# pi_lock_path <cwd> <session-name> -> prints the lockfile path pi-companion would use
+pi_lock_path() {
+  echo "${TMPDIR:-/tmp}/pi-delegate-locks/$(pi_session_slug "$1")__$2.lock"
+}
+
+# Clean up any real ~/.pi/agent/sessions/<slug> dirs this run created, on top
+# of the normal make_scratch cleanup.
+cleanup_pi_dirs() {
+  if [ -f "${_SCRATCH_REGISTRY}.pi_dirs" ]; then
+    while IFS= read -r d; do
+      case "$d" in
+        "$HOME/.pi/agent/sessions/"*) rm -rf "$d" ;;
+      esac
+    done < "${_SCRATCH_REGISTRY}.pi_dirs"
+    rm -f "${_SCRATCH_REGISTRY}.pi_dirs"
+  fi
+  return 0
+}
+add_cleanup cleanup_pi_dirs

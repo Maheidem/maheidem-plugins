@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stub: acks the prompt but never emits agent_settled, and ignores SIGTERM --
+# proves the SIGTERM->SIGKILL escalation path on a conversation-send timeout.
+trap '' TERM
+IFS= read -r line
+case "$line" in
+  *'"type":"prompt"'*) echo '{"type":"response","command":"prompt","success":true}' ;;
+esac
+sleep 60

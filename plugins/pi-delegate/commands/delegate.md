@@ -23,6 +23,24 @@ weakness, not a pi-specific limitation. Before invoking the subagent, assess
   `pi-cli-runtime`) before dispatching the next. Do not bundle the whole
   breakdown into a single oversized task and hand it to one `Agent` call.
 
+If `$ARGUMENTS` describes ongoing, stateful back-and-forth with pi (continuing
+a named conversation, sending a follow-up in the same session) rather than a
+one-shot task, tell the `delegate` subagent to use the `conversation`
+verbs instead of `task` — see the "Continuing a conversation" section in
+`agents/delegate.md` and the `pi-cli-runtime` skill. This doesn't change the
+task-sizing/decomposition guidance below, which still applies to `task` work.
+
+If `$ARGUMENTS` asks to check in on, nudge, or interrupt a conversation that
+may already be running in the background (e.g. "see what pi has said so far
+in `<name>`", "tell pi to also check the tests while it's working", "stop
+that and have it focus on X instead"), tell the subagent to use `conversation
+read` / `conversation steer` / `conversation interrupt` respectively — see
+`agents/delegate.md`'s corresponding section. A long-running `send` is
+typically kicked off in the background (`run_in_background`) so the main
+thread stays free to issue `read`/`steer`/`interrupt` calls against it while
+it's still outstanding; the eventual task-notification for the backgrounded
+`send` is the completion signal, not a `status` poll loop.
+
 ## Invocation
 
 For each step (one step = one `Agent` call): invoke the `delegate` subagent via

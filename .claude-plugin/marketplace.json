@@ -54,7 +54,7 @@
     {
       "name": "pi-delegate",
       "description": "Forward a coding task to the locally-installed pi CLI (pi.dev's pi-coding-agent) so Claude Code can offload work to a local model instead of doing it itself. Foreground-only subprocess wrapper (pi-companion.mjs) around `pi -p --mode json --no-session`, using an async spawn with unbounded stdout accumulation (no maxBuffer ceiling) and stdin explicitly ignored. Success/failure detection uses a completion-marker contract: every task instructs pi to write a schema-validated JSON report as its last action, which is the primary signal (NDJSON stream parsing is a fallback for when the marker is missing/malformed). Supports a per-project provider/model pin (`.claude/pi-delegate.local.md`) settable via /pi-delegate:setup's picker, with explicit-flag > project-pin > pi-global-default precedence. Ships /pi-delegate:delegate and /pi-delegate:setup commands and a Bash-only forwarding subagent. Composes one-directionally with orchestrator-mode's 'pi' state, which allowlists this plugin's subagent as the only delegation target -- but works completely standalone without it.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"

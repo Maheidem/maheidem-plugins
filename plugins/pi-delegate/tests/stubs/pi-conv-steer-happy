@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Stub `pi --mode rpc --session-id <name>`: on receiving the prompt, sleeps
+# briefly (simulating an in-flight turn) before settling -- giving a
+# concurrently-invoked `conversation steer` real time to land on the FIFO
+# and be relayed onto this stub's stdin as {"type":"steer",...} (which this
+# stub just ignores, since `send`'s own result.steered array is populated
+# client-side by the companion the moment it writes to our stdin -- it does
+# not depend on us echoing anything back).
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      echo '{"type":"response","command":"prompt","success":true}'
+      sleep 1.5
+      echo '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_last_assistant_text"'*)
+      echo '{"type":"response","command":"get_last_assistant_text","success":true,"data":{"text":"stub reply after steer"}}'
+      ;;
+    *'"type":"get_state"'*)
+      echo '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-steer-session","sessionFile":"/tmp/stub/steer.jsonl"}}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      echo '{"type":"response","command":"get_session_stats","success":true,"data":{"userMessages":1,"assistantMessages":1,"totalMessages":2}}'
+      ;;
+  esac
+done
+exit 0

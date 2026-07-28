@@ -222,3 +222,147 @@ primary source of `finalText` and the safety net when the marker is absent.
 
 The subagent should not re-parse pi's stdout itself; it only needs to run the
 helper with `--json` and act on the structured result it returns.
+
+## Conversation runtime (`conversation start|send|status|end`)
+
+This is the stateful counterpart to `task`. `task` is stateless and
+one-shot (`--no-session`); `conversation` gives you a **named, resumable**
+pi session backed by pi's own on-disk session file
+(`~/.pi/agent/sessions/<cwd-slug>/<timestamp>_<name>.jsonl`), driven over
+`pi --mode rpc --session-id <name>`. Use `conversation` only when the
+caller's request is explicitly an ongoing back-and-forth, not for
+independent one-off asks — those stay on `task`.
+
+```
+node pi-companion.mjs conversation start <name> [--message "<text>"] [--json]
+                                              [--provider <name>] [--model <pattern>]
+                                              [--thinking <level>] [--timeout <ms>]
+node pi-companion.mjs conversation send <name> "<message text>" [--json] [--timeout <ms>]
+node pi-companion.mjs conversation status <name> [--json]
+node pi-companion.mjs conversation end <name> [--json]
+```
+
+- **`start <name>`** — creates (or reuses, if `<name>` already exists) a
+  session identified by `<name>`, optionally sending an initial `--message`.
+  `--provider`/`--model`/`--thinking` follow the same three-tier precedence
+  and `isSafeArgValue` validation as `task`.
+- **`send <name> "<message>"`** — the main workhorse. Spawns pi fresh for
+  this one turn (`--session-id <name>`), writes the prompt, waits for the
+  turn to fully settle, asks pi for its last assistant text, then lets the
+  child exit. Nothing stays resident between calls — continuity lives
+  entirely in pi's session file on disk, not in a live process.
+- **`status <name>`** — read-only session state/stats (model, message
+  count, session id, etc.). Does not require or take the conversation lock,
+  so it's safe to run even while a `send` is in flight.
+- **`end <name>`** — deletes the session file and the conversation's
+  lockfile. Use when the conversation is done.
+
+### Naming convention
+
+`<name>` is a caller-chosen string, not a generated UUID — pick something
+namespaced and meaningful to the task (e.g. `refactor-auth`, not `session1`).
+Names are scoped per project working directory, not globally: two different
+projects can reuse the same conversation name without colliding, but two
+unrelated conversations in the *same* project sharing a name is a real
+collision — reusing a name resumes whatever session already has that name in
+this project (or creates it, if new). Prefer conversation names that are
+unlikely to be reused for a different purpose within the same project.
+
+### Locking
+
+Every `start`, `send`, and `end` call acquires a per-conversation, per-project
+lockfile before touching the session, and releases it when done. Locking
+policy is **PID-liveness only**: a lock held by a process that's still alive
+fails loud immediately (no wait, no retry, no wall-clock timeout); a lock left
+behind by a dead process is detected and reclaimed automatically. There is no
+"steal a live lock" path.
+
+If a call fails due to lock contention, the result carries `lockHeldByPid`
+set to the PID that holds it — see `pi-result-handling` for how to present
+that to the user. `status` never takes the lock, so it can always report
+state even while another call is mid-turn.
+
+### Reading, steering, and interrupting a live conversation
+
+Three more verbs, alongside `start`/`send`/`status`/`end`:
+
+```
+node pi-companion.mjs conversation read <name> [--last N] [--json]
+node pi-companion.mjs conversation steer <name> "<message>" [--json]
+node pi-companion.mjs conversation interrupt <name> "<message>" [--json]
+```
+
+**`read <name> [--last N]`** — renders the session's jsonl transcript.
+Lock-free, like `status`: it only reads the file off disk, so it works
+whether or not a `send` is currently mid-turn for that name, and never
+contends with one.
+
+- Resolves the session file the same way `end` does (glob for
+  `*_<name>.jsonl` in the project's session dir); if more than one file
+  matches, picks the most recently modified one and adds a `warning` noting
+  the ambiguity rather than silently guessing.
+- Parses the jsonl tolerantly — an unparseable/torn trailing line (the file
+  can be mid-flush during a live turn) is skipped and counted, not thrown on.
+- **Renders strictly in file order, never re-sorted by timestamp.** A
+  steered message is timestamped at the moment it was enqueued but lands in
+  the file at its actual delivery point, later in the stream — sorting by
+  timestamp would show it out of the order it actually took effect in. This
+  is the single most load-bearing rendering rule; do not "fix" the order.
+- Each entry renders as `HH:MM:SS role: gist` (role/content come from
+  `message.role`/`message.content` — the jsonl's own `entry.type` is always
+  `"message"` and is not a role marker). Tool calls render as
+  `[tool:NAME args-gist]`, with a gist of the tool result appended when
+  present. A tool call with **no result yet** (mid-turn) renders as
+  `(pending)`, not an error — this is expected while a turn is in flight, not
+  a stall signal.
+- `--json` returns full structured entries (`{timestamp, role, gist, raw}`)
+  instead of the gisted text form; `--last N` slices to the last N entries
+  either way, applied after the full parse.
+
+**`steer <name> "<message>"`** — injects a message into a `send` that is
+currently mid-turn for that conversation name, without waiting for delivery.
+Returns immediately (`ok:true, queued:true`). The message is only actually
+delivered to the model at the next turn boundary — after any in-flight tool
+call finishes — not instantly; don't expect it to interrupt a running tool.
+If no `send` is in flight for that name (no live FIFO/lock), it returns
+`ok:false` with `"conversation is idle — use send"` rather than silently
+succeeding into a pipe nobody reads.
+
+**`interrupt <name> "<message>"`** — aborts the in-flight turn (~150ms,
+confirmed against real pi) and immediately starts a new turn with the given
+message on the same running `send`. The eventual `send` result's `finalText`
+reflects the **new** turn, not the aborted one. Same idle behavior as `steer`
+when nothing is running for that name.
+
+Both `steer` and `interrupt` validate the message (non-empty, bounded size)
+and check the owning `send`'s liveness via its lockfile PID before writing —
+existence of a FIFO file alone is not treated as liveness (a crashed `send`
+can leave one behind with no reader).
+
+### Result contract (extends `task`'s shape)
+
+`conversation` calls reuse the exact same JSON result shape as `task`
+(`ok`, `finalText`, `errorMessage`, `exitCode`, `rawStdout`/`rawStderr`,
+etc.), plus these additional fields, which are always present but only
+populated on the conversation path:
+
+- `sessionName` — the conversation name passed in.
+- `sessionId` — pi's own reported session id, once known (a direct
+  passthrough of `get_state.data.sessionId`, which is literally the
+  `--session-id` value used, not a derived UUID).
+- `turnCount` — number of user turns so far, mapped from
+  `get_session_stats.data.userMessages` when available (there is no
+  `turnCount` field in pi's own RPC responses — this is derived, not
+  passed through).
+- `lockHeldByPid` — set only when a call failed due to lock contention,
+  otherwise `null`.
+- `steered` — array of messages relayed into that turn via `steer` (only
+  populated on `send`'s result; empty otherwise).
+- `interrupted` — `true` if that `send` call had its turn interrupted and
+  restarted via `interrupt`; `false` otherwise.
+
+The marker-family fields (`markerMissing`, `markerExitMismatch`,
+`completionMarker`, `progressLogPath`) are always `false`/empty/`null` on
+this path — there is no completion-marker contract here, only
+`agent_settled` + `get_last_assistant_text`. Don't read anything into those
+fields for `conversation` results.

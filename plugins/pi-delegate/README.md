@@ -72,6 +72,44 @@ positive integer or the helper exits 2. `--json` output truncates
 (including the per-project pin and completion-marker schema) and
 `skills/pi-result-handling/SKILL.md` for how results and failures are presented.
 
+## Conversations (stateful, multi-turn)
+
+Alongside the stateless `task` path, `pi-companion.mjs` supports a
+`conversation start|send|status|end` verb family for ongoing, multi-turn
+work with pi under a caller-chosen conversation name. Each `send` is still a
+single spawn-to-exit process (`pi --mode rpc --session-id <name>`) — nothing
+stays resident between calls — but continuity is preserved via pi's own
+on-disk session file, so a later `send` can pick up where the last one left
+off. A per-conversation lockfile (PID-liveness only: dead-holder locks are
+reclaimed automatically, live-holder locks fail loud with no wait/retry)
+prevents two callers from racing the same conversation; `status` is
+read-only and doesn't take the lock. Mid-turn steering (interjecting into a
+turn already in progress) is supported — see `read`/`steer`/`interrupt`
+below.
+
+Use `task` for independent one-off asks; use `conversation` only when the
+request is explicitly an ongoing back-and-forth under a named session. See
+`skills/pi-cli-runtime/SKILL.md`'s "Conversation runtime" section for the
+full contract (naming convention, locking, result fields) and
+`skills/pi-result-handling/SKILL.md` for how lock-contention failures should
+be presented.
+
+`conversation` also has three verbs for peeking at and steering a session
+while a `send` is in flight: `read <name> [--last N]` renders the session's
+jsonl transcript in strict file order (lock-free, safe to run mid-turn),
+`steer <name> "<msg>"` injects a message into a running turn (delivered at
+the next turn boundary, not instantly), and `interrupt <name> "<msg>"` aborts
+the current turn and starts a new one with the given message on the same
+running `send`. Both `steer` and `interrupt` require a `send` already running
+for that name — otherwise they return `ok:false`, "conversation is idle — use
+send" — and are backed by a FIFO that only lives for the duration of the
+owning `send` call, not a resident process. The typical pattern is a
+backgrounded `send` (`run_in_background`) with `read`/`steer`/`interrupt`
+issued from separate calls while it's outstanding; the task notification for
+the backgrounded `send` is the completion signal. See
+`skills/pi-cli-runtime/SKILL.md`'s "Reading, steering, and interrupting a
+live conversation" section for the full contract.
+
 ## Relationship to orchestrator-mode
 
 This plugin has **zero knowledge of `orchestrator-mode`** and works
@@ -95,3 +133,7 @@ against stubbed `pi` executables; nonzero exit on any failure.
 Foreground, one-shot task execution only. Background/async pi execution
 (job tracking, `status`/`result`/`cancel` subcommands) is out of scope for
 this version — not built, may be revisited later.
+
+## Docs
+
+See [`docs/architecture.md`](./docs/architecture.md) for the post-RPC architecture decision record (target design, 4-phase roadmap, owner decisions).

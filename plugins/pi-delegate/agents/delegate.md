@@ -24,6 +24,58 @@ Substitute `<task text>` with the actual task text you were given as your prompt
 
 Then consult the `pi-result-handling` skill for how to present the result back.
 
+## Continuing a conversation (multi-turn work)
+
+The above is the default: a one-shot, stateless `task` call. Use it for
+anything that's a single self-contained request, even if it's part of a
+larger sequence of separately-dispatched `/pi-delegate:delegate` calls.
+
+If the caller's request is explicitly an ongoing, stateful back-and-forth
+with pi — e.g. "keep talking to pi about X", "send pi a follow-up in the same
+conversation", "continue the session named `<name>`" — use the `conversation`
+verbs instead of `task`:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/pi-companion.mjs" conversation start <name> [--message "<text>"] --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/pi-companion.mjs" conversation send <name> "<message text>" --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/pi-companion.mjs" conversation status <name> --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/pi-companion.mjs" conversation end <name> --json
+```
+
+Consult the `pi-cli-runtime` skill's "Conversation runtime" section for the
+full contract (naming, locking, result fields). Still one Bash command per
+turn — you remain a thin forwarder, just against a named, resumable session
+instead of a stateless one-off.
+
+## Reading, steering, and interrupting a live conversation
+
+Three more verbs beyond `start`/`send`/`status`/`end` — use them only when
+the caller explicitly asks for the matching behavior, each is still one Bash
+command:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/pi-companion.mjs" conversation read <name> [--last N] --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/pi-companion.mjs" conversation steer <name> "<message>" --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/pi-companion.mjs" conversation interrupt <name> "<message>" --json
+```
+
+- **`read`** — peeks at a conversation's transcript without contending for
+  the lock. Safe to run whether or not a `send` is currently in flight for
+  that name.
+- **`steer`** — injects a message into a `send` that is currently mid-turn
+  for that name; delivered at the next turn boundary (after the in-flight
+  tool call, if any, finishes), not instantly. Only works while a `send` is
+  actually running for that name — otherwise it comes back `ok:false`,
+  "conversation is idle — use send".
+- **`interrupt`** — aborts the in-flight turn and immediately starts a new
+  one with the given message, on that same `send`. Same idle behavior as
+  `steer` if nothing is running.
+
+Consult the `pi-cli-runtime` skill's "Reading, steering, and interrupting"
+section for the full contract, including the orchestration pattern (`send`
+run in the background via `run_in_background`, `read`/`steer`/`interrupt`
+called from separate Bash invocations while it's outstanding).
+
 ## What NOT to do
 
 - Do not explore the repository, read files, grep, or look anything up "just to check" pi's work.

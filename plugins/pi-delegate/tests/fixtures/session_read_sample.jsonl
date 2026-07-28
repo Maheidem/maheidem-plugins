@@ -1,0 +1,7 @@
+{"message":{"role":"user","timestamp":1000,"content":[{"type":"text","text":"hello, remember the word BANANA"}]}}
+{"message":{"role":"assistant","timestamp":2000,"content":[{"type":"text","text":"got it, I will remember BANANA"}]}}
+{"message":{"role":"assistant","timestamp":3000,"content":[{"type":"toolCall","name":"bash","arguments":{"cmd":"ls"}}]}}
+{"message":{"role":"tool","timestamp":3500,"content":[{"type":"toolResult","output":"file1\nfile2"}]}}
+this line is not valid json at all
+{"message":{"role":"assistant","timestamp":4000,"content":[{"type":"toolCall","name":"bash","arguments":{"cmd":"sleep 5"}}]}}
+{"message":{"role":"user","timestamp":2500,"content":[{"type":"text","text":"steer: focus on the word GAMMA instead"}]}}
