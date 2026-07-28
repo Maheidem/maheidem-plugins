@@ -70,6 +70,16 @@ verbatim, don't re-verify pi's work. Two things are specific to this path:
   the user there's no live turn to steer/interrupt and that a `send` needs
   to be started (or is still starting up) first, not that something broke.
 
+## Evidence vs. judgment
+
+pi's reports mix two different things: **evidence** (command output, diffs, exit
+codes, file paths) and **judgment** (claims like "done", "verified",
+"pre-existing", "unrelated", "harmless"). Present the evidence upward verbatim;
+present the judgments as *pi's unaudited assessment*, never as established fact.
+The orchestrator — not pi, and not this skill — owns attribution, severity, and
+scope decisions. If a result contains a judgment the caller is likely to act on
+(e.g. "these failures are pre-existing"), flag it explicitly as unverified.
+
 ## On failure
 
 Failure includes any of:

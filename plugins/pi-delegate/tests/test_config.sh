@@ -12,7 +12,7 @@ run_task_with_fixture() {
     cp "$TESTS_DIR/fixtures/$fixture" "$scratch/.claude/pi-delegate.local.md"
   fi
   CLAUDE_PROJECT_DIR="$scratch" PI_ARGS_OUT="$argsout" \
-    node "$COMPANION" task "do thing" --json --timeout 30000 > "$scratch/result.json" 2> "$scratch/stderr.txt"
+    node "$COMPANION" task "do thing" --marker --json --timeout 30000 > "$scratch/result.json" 2> "$scratch/stderr.txt"
   echo "$scratch"
 }
 
@@ -43,7 +43,7 @@ node "$COMPANION" write-config --provider zai --model glm-4.5-air --json > "$scr
 assert_json "write-config ok" "$scratch/wc.json" 'r.ok === true'
 check "config file written" test -f "$scratch/.claude/pi-delegate.local.md"
 args="$scratch/args.txt"
-PI_ARGS_OUT="$args" node "$COMPANION" task "do thing" --json --timeout 30000 > "$scratch/task.json"
+PI_ARGS_OUT="$args" node "$COMPANION" task "do thing" --marker --json --timeout 30000 > "$scratch/task.json"
 check "round-trip: provider picked up by task" grep -qx -- 'zai' "$args"
 check "round-trip: model picked up by task" grep -qx -- 'glm-4.5-air' "$args"
 

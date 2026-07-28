@@ -10,7 +10,7 @@ markers_before="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'pi-delegate-result-*
 
 start=$SECONDS
 rc=0
-node "$COMPANION" task "do thing" --json --timeout 2000 > "$out" 2> "$scratch/stderr.txt" || rc=$?
+node "$COMPANION" task "do thing" --marker --json --timeout 2000 > "$out" 2> "$scratch/stderr.txt" || rc=$?
 elapsed=$((SECONDS - start))
 
 check "nonzero exit" test "$rc" -ne 0

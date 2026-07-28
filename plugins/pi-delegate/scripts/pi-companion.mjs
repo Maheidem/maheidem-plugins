@@ -37,7 +37,8 @@ function printUsage() {
       '  node pi-companion.mjs task "<task text>" [--json] [--provider <name>] [--model <pattern>]',
       "                              [--thinking <off|minimal|low|medium|high|xhigh>]",
       "                              [--tools <t1,t2,...>] [--exclude-tools <t1,t2,...>]",
-      "                              [--timeout <ms>]",
+      "                              [--timeout <ms>] [--marker]",
+      "  --marker            use the legacy marker-file completion contract (transitional)",
       "  node pi-companion.mjs setup [--json]",
       "  node pi-companion.mjs list-models [--json]",
       '  node pi-companion.mjs write-config --provider <name> --model <name> [--json]',
@@ -130,7 +131,8 @@ function parseTaskArgs(argv) {
     tools: null,
     excludeTools: null,
     timeout: DEFAULT_TIMEOUT_MS,
-    invalidTimeout: null
+    invalidTimeout: null,
+    marker: false
   };
   const positional = [];
 
@@ -165,6 +167,9 @@ function parseTaskArgs(argv) {
         }
         break;
       }
+      case "--marker":
+        opts.marker = true;
+        break;
       default:
         positional.push(arg);
         break;
@@ -759,6 +764,33 @@ async function spawnPi(cmd, args, { cwd, timeout }) {
   };
 }
 
+// Scans a completed RPC event stream for evidence the final turn actually
+// failed (LLM/backend error) even though the stream settled cleanly.
+// Returns an errorMessage string, or null if the turn looks healthy.
+function detectErrorTurn(events) {
+  let retryFailure = null;
+  let lastStopReason = null;
+  for (const evt of events) {
+    if (evt && evt.type === "auto_retry_end" && evt.success === false) {
+      retryFailure = evt.finalError || "auto-retry exhausted with a provider error";
+    }
+    if (evt && evt.type === "agent_end" && Array.isArray(evt.messages)) {
+      for (const m of evt.messages) {
+        if (m && m.role === "assistant" && m.stopReason) lastStopReason = m.stopReason;
+      }
+    }
+  }
+  if (lastStopReason === "error") {
+    return retryFailure
+      ? `pi turn failed: ${retryFailure}`
+      : "pi turn ended with stopReason \"error\"";
+  }
+  if (retryFailure && lastStopReason === null) {
+    return `pi turn failed: ${retryFailure}`;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // RPC roundtrip — `pi --mode rpc --session-id <name>` conversation primitive.
 //
@@ -1197,6 +1229,19 @@ async function runConversationSend(sessionName, messageText, opts) {
     const statsResponse = roundtrip.responsesByCommand.get("get_session_stats");
     const stateData = (stateResponse && stateResponse.data) || {};
     const statsData = (statsResponse && statsResponse.data) || {};
+
+    const turnError = detectErrorTurn(roundtrip.events);
+    if (turnError) {
+      return taskResult({
+        sessionName,
+        steered: roundtrip.steered,
+        interrupted: roundtrip.interrupted,
+        errorMessage: turnError,
+        rawStdout: roundtrip.rawStdout,
+        rawStderr: roundtrip.rawStderr,
+        exitCode: roundtrip.exitCode
+      });
+    }
 
     return taskResult({
       ok: true,
@@ -1652,6 +1697,101 @@ function readAndCleanupMarker(markerPath) {
     }
   }
   return { markerResult, markerError };
+}
+
+// Phase 2 (ADR §3): one-shot RPC completion for the task verb. Replaces the marker contract as default; the legacy marker path remains behind --marker.
+async function runTaskRpc(opts) {
+  if (!opts.text) {
+    return taskResult({ errorMessage: "no task text provided" });
+  }
+
+  const cwd = resolveCwd();
+  const projectConfig = loadProjectConfig(cwd);
+
+  // Values loaded from project config are validated before entering pi's argv
+  // (a leading '-' could be interpreted as a flag). Explicit CLI flags are the
+  // caller's responsibility.
+  let configProvider = projectConfig.provider;
+  let configModel = projectConfig.model;
+  if (configProvider && !isSafeArgValue(configProvider)) {
+    console.error(`[pi-companion] ignoring invalid provider from project config: ${configProvider}`);
+    configProvider = null;
+  }
+  if (configModel && !isSafeArgValue(configModel)) {
+    console.error(`[pi-companion] ignoring invalid model from project config: ${configModel}`);
+    configModel = null;
+  }
+
+  const effectiveProvider = opts.provider || configProvider;
+  const effectiveModel = opts.model || configModel;
+
+  const args = ["--no-session"];
+  if (effectiveProvider) args.push("--provider", effectiveProvider);
+  if (effectiveModel) args.push("--model", effectiveModel);
+  if (opts.thinking) args.push("--thinking", opts.thinking);
+  if (opts.tools) args.push("--tools", opts.tools);
+  if (opts.excludeTools) args.push("--exclude-tools", opts.excludeTools);
+
+  const roundtrip = await rpcRoundtrip(
+    args,
+    [
+      { type: "prompt", message: opts.text },
+      { type: "get_last_assistant_text" }
+    ],
+    { cwd, timeout: opts.timeout }
+  );
+
+  if (roundtrip.error) {
+    const code = roundtrip.error.code;
+    return taskResult({
+      errorMessage:
+        code === "ENOENT"
+          ? "pi CLI not found on PATH — run /pi-delegate:setup"
+          : code === "ETIMEDOUT"
+            ? `pi did not settle within ${opts.timeout}ms and was killed (timeout)`
+            : `pi rpc invocation failed: ${code || roundtrip.error.message || String(roundtrip.error)}`,
+      rawStdout: roundtrip.rawStdout,
+      rawStderr: roundtrip.rawStderr,
+      exitCode: roundtrip.exitCode
+    });
+  }
+
+  const textResponse = roundtrip.responsesByCommand.get("get_last_assistant_text");
+  if (!roundtrip.settled || !textResponse) {
+    return taskResult({
+      errorMessage: "pi rpc stream ended without agent_settled + get_last_assistant_text response",
+      rawStdout: roundtrip.rawStdout,
+      rawStderr: roundtrip.rawStderr,
+      exitCode: roundtrip.exitCode
+    });
+  }
+
+  if (textResponse.success === false) {
+    return taskResult({
+      errorMessage: textResponse.error || "get_last_assistant_text reported failure",
+      rawStdout: roundtrip.rawStdout,
+      rawStderr: roundtrip.rawStderr,
+      exitCode: roundtrip.exitCode
+    });
+  }
+
+  const turnError = detectErrorTurn(roundtrip.events);
+  if (turnError) {
+    return taskResult({
+      errorMessage: turnError,
+      rawStdout: roundtrip.rawStdout,
+      rawStderr: roundtrip.rawStderr,
+      exitCode: roundtrip.exitCode
+    });
+  }
+
+  return taskResult({
+    ok: true,
+    finalText: (textResponse.data && textResponse.data.text) || "",
+    rawStdout: roundtrip.rawStdout,
+    rawStderr: roundtrip.rawStderr,
+    exitCode: roundtrip.exitCode
+  });
 }
 
 async function runTask(opts) {
@@ -2210,7 +2350,7 @@ async function main() {
       process.exit(2);
       return;
     }
-    const result = await runTask(opts);
+    const result = await (opts.marker ? runTask(opts) : runTaskRpc(opts));
     printTaskResult(result, opts.json);
     process.exit(result.ok ? 0 : 1);
     return;

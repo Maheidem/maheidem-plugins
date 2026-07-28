@@ -90,6 +90,15 @@ benchmark numbers — but latency numbers (spawn-to-`agent_settled` roundtrip, p
 must still be recorded for the record, following the same measurement pattern already used for
 Phase-1 RPC verification (see §4).
 
+**Shipped 2026-07-28.** The `task` verb now defaults to the RPC completion path (`runTaskRpc`: `--no-session` one-shot, prompt -> `agent_settled` -> `get_last_assistant_text`); the legacy marker contract remains available behind the `--marker` flag and its test suites now exercise it explicitly via that flag. Latency recorded per D-C, same PONG prompt on the local model, 3 runs per path:
+
+| Path | Runs (s) | Min | Median |
+|------|----------|-----|--------|
+| RPC default | 1.311, 1.198, 1.189 | 1.189 | 1.198 |
+| Marker (`--marker`) | 2.053, 2.036, 2.007 | 2.007 | 2.036 |
+
+The RPC path is ~40% faster on this workload in addition to being structurally sounder -- reinforcing, not merely permitting, Phase 3's scheduled marker deletion.
+
 ### Phase 3 — Marker deletion + contract unification
 Delete the marker-file machinery entirely (no fallback flag left) and unify the result contract
 across `task` and `conversation` in the skills layer, so callers see one consistent completion/
@@ -212,8 +221,7 @@ base that dissolved Phase 4 and produced the Phase 4' design:
   drops any additional files left behind after crash/stale-lock-reclaim recovery (unverified live
   but plausible, and the code could not have handled it either way). Fixed by extracting a shared
   `findSessionFiles` helper (also used by `read`) and switching `end` to `entries.filter(...)`,
-  deleting every match and reporting the full list in the summary. The e2e test's "session file
-  gone after end" assertion remains vacuous as written (it can pass on "zero files ever matched" as
-  easily as on "deletion happened") — a before/after file-count pair and a stub test planting two
-  matching files are still open test-debt, not yet added; tracked as follow-up, not claimed done
-  here.
+  deleting every match and reporting the full list in the summary. The e2e test's "session file gone after end" assertion was subsequently made non-vacuous (a
+ before-count >= 1 check now precedes the after-count == 0 check), and a stub test planting two
+ matching files (`test_conversation_end_multifile.sh`) was added — both landed and verified green
+ in the v0.5.0 release build, closing the test-debt noted here.

@@ -158,11 +158,26 @@ Field meanings:
   matching `*Truncated` flag set when truncation occurred. Full stdout is
   never emitted in `--json` output.
 
-### Completion-marker contract (primary signal)
+## Task completion: RPC default (since 0.6.0)
+
+The `task` verb now completes via the RPC path by default (`pi --mode rpc
+--no-session`): prompt → `agent_settled` → `get_last_assistant_text`, with no
+marker file involved. On this path `completionMarker` is always `null` and the
+marker-family fields (`markerMissing`, `markerExitMismatch`, `degraded`) stay at
+their defaults. The legacy marker contract described below remains available
+behind the `--marker` flag (transitional; scheduled for removal in Phase 3 —
+see docs/architecture.md §3). Both RPC paths (`task` default and `conversation
+send`) additionally guard against silently-failed turns: if the event stream
+shows a final `stopReason:"error"` or an exhausted auto-retry
+(`auto_retry_end` with `success:false`), the result is `ok:false` with
+`errorMessage` prefixed `pi turn failed:` — even though the stream settles
+cleanly and `get_last_assistant_text` succeeds with empty text.
+
+### Completion-marker contract (legacy `--marker` path)
 
 Every `task` invocation automatically appends a completion-marker instruction
 to the task text, telling `pi` to write a JSON report file as its ABSOLUTE
-LAST action. The helper treats this file as the PRIMARY success signal:
+LAST action. On the `--marker` path the helper treats this file as the success signal:
 
 - **Path**: A unique, per-invocation path under `os.tmpdir()`:
   `/tmp/pi-delegate-result-<uuid>.json` (generated via `crypto.randomUUID()`
@@ -217,8 +232,8 @@ The interpretation:
 5. Otherwise the stream is "clean" — the helper's `finalText` is the
    concatenation of that message's `{"type":"text"}` content items.
 
-The completion marker remains the primary *success* signal; the stream is the
-primary source of `finalText` and the safety net when the marker is absent.
+On the `--marker` path the completion marker is the *success* signal; the stream
+supplies finalText and the safety net when the marker is absent.
 
 The subagent should not re-parse pi's stdout itself; it only needs to run the
 helper with `--json` and act on the structured result it returns.

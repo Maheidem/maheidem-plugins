@@ -55,3 +55,22 @@ $ARGUMENTS
 Report each step's result back to the user verbatim as it completes — do not
 paraphrase, summarize, or add commentary before or after it. If a step fails,
 stop and report the failure rather than continuing to the next step.
+
+## The Delegation Contract
+
+Delegate execution, never judgment:
+
+1. **Spec to near-determinism.** Give pi exact content, exact anchor lines, exact
+   commands — a template to fill, not a problem to solve. If a step needs design,
+   do the design yourself and delegate the transcription.
+2. **One atomic step per delegation.** Verify each result against the actual files
+   before dispatching the next. Never batch dependent steps into one prompt.
+3. **Ask for evidence, not conclusions.** Request command output, diffs, exit
+   codes, file paths — raw material. Never ask pi to attribute causes, judge
+   whether a failure is pre-existing, assess severity, or decide scope.
+   Attribution and judgment stay with the orchestrator.
+4. **Audit every claim independently.** pi saying "done", "verified", or
+   "pre-existing" is a report, not a fact. Check it against evidence you hold or
+   can read yourself; treat unverifiable claims as unknowns.
+5. **Bound everything.** Any command that could block gets a hard `timeout`.
+   A hang is a finding to diagnose, not a wait.

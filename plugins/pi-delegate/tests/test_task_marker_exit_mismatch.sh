@@ -7,7 +7,7 @@ out="$scratch/result.json"
 export CLAUDE_PROJECT_DIR="$scratch"
 
 rc=0
-node "$COMPANION" task "do thing" --json --timeout 30000 > "$out" || rc=$?
+node "$COMPANION" task "do thing" --marker --json --timeout 30000 > "$out" || rc=$?
 check "nonzero exit" test "$rc" -ne 0
 
 assert_json "ok:false" "$out" 'r.ok === false'
