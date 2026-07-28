@@ -10,6 +10,12 @@ unattended, instead of you having to babysit it turn by turn.
 /shepherd:shepherd <goal to shepherd>
 ```
 
+```
+/shepherd:shepherd-docs <goal to shepherd>
+```
+
+The second form runs the same loop but additionally keeps project documentation current as it goes.
+
 If no goal is given, the command asks you for one before starting.
 
 ## What it does
@@ -26,6 +32,15 @@ to make sure this thing keeps on running.
 
 It does not self-pace the interval — every tick is 10 minutes, on purpose,
 regardless of how long the goal is expected to take.
+
+## The doc-keeping variant
+
+`/shepherd:shepherd-docs` uses the same fixed 10-minute loop, but its shepherd
+prompt additionally instructs the loop to take notes and keep all project
+documentation up to date as it works — roadmap, issues, to-dos, and
+discoveries — spawning a workflow or subagent for the doc updates when needed.
+Use it when the goal is long-running enough that documentation drift is a real
+risk.
 
 ## Relationship to the `loop` skill
 

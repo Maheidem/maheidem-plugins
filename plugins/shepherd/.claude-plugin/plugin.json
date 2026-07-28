@@ -1,6 +1,6 @@
 {
   "name": "shepherd",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Start a recurring 10-minute shepherd loop over a goal: invokes the built-in loop skill with a shepherd-role prompt (watch, act, unblock, understand problems) so the goal keeps running unattended. Fixed 10-minute cadence, session-only (backed by the loop skill's CronCreate scheduling, auto-expires per that tool's behavior).",
   "author": {
     "name": "maheidem",
