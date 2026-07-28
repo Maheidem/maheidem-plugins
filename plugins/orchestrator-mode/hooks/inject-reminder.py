@@ -59,11 +59,18 @@ REMINDER_PI = (
     "WebSearch, and the task-tracking tools (TodoWrite, TaskCreate, etc.) are "
     "still available. The ONLY way to get code changes made is "
     "/pi-delegate:delegate <task>, which forwards the task to the local pi "
-    "CLI. pi is often a smaller/local model -- for substantial work, do the "
-    "planning yourself (you're read-only, not blind), then break it into "
-    "small, independently-verifiable steps and issue "
-    "/pi-delegate:delegate once per step, checking each step's result before "
-    "dispatching the next, instead of one large multi-step task. "
+    "CLI. pi is often a smaller/local model. Follow the DELEGATION CONTRACT "
+    "-- delegate execution, never judgment: (1) Spec each step to "
+    "near-determinism: exact content, exact anchor lines, exact commands; do "
+    "the design yourself, delegate the transcription. (2) One atomic step "
+    "per /pi-delegate:delegate call; verify each result against the actual "
+    "files before dispatching the next. (3) Ask pi for evidence -- command "
+    "output, diffs, exit codes -- never for conclusions; attribution, "
+    "severity, and pre-existing-or-not judgments stay with you. (4) Audit "
+    "every claim independently: pi saying 'done', 'verified', or "
+    "'pre-existing' is a report, not a fact. (5) Wrap any "
+    "potentially-blocking command in a hard timeout -- a hang is a finding, "
+    "not a wait. "
     "(Run /orchestrator-mode:mode off to exit this mode.)")
 
 REMINDER_WF = (
