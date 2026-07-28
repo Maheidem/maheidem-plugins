@@ -184,6 +184,18 @@ run_case "D3/malformed allowlist + omitted model allowed" enforce-orchestrator.p
   "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"foo\"},\"cwd\":\"$TMP/proj\"}" \
   0 "__EMPTY__" "malformed allowed-models"
 
+# 29. mode wf, CronCreate allowed (scheduling/loop meta-tool, added 2026-07-28)
+new_proj "wf"
+run_case "wf/CronCreate allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"CronCreate\",\"tool_input\":{\"schedule\":\"* * * * *\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
+# 30. mode on, Monitor allowed (read-only/introspection tool)
+new_proj "on"
+run_case "on/Monitor allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"Monitor\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
 echo
 echo "test_enforce.sh: $pass/$total passed"
 [ "$fail" -eq 0 ]

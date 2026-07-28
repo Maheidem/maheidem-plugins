@@ -109,7 +109,8 @@ ReportFindings,
 Artifact,
 Monitor, CronList, LSP,
 ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool,
-PushNotification, ScheduleWakeup
+PushNotification, ScheduleWakeup,
+CronCreate, CronDelete
 ```
 
 `Monitor` through `ScheduleWakeup` were added in a 2026-07-09 audit of every
@@ -121,14 +122,17 @@ read infra (not any one server) so this isn't a server-specific carve-out.
 added in 0.2.3: `Workflow` is pure delegation (same category as Task/Agent),
 research isn't a mutation, `ReportFindings` is typed non-mutating review
 output, and `Artifact` publishes default-private deliverables.
+`CronCreate`/`CronDelete` were added on 2026-07-28, alongside the rest of the
+scheduling/loop meta-tools above: they schedule or cancel a cron job, not a
+repo/state mutation, same category as the already-allowlisted `ScheduleWakeup`.
 
 **Denied on the main thread** — everything else, including:
 
 - `Write`, `Edit`, `MultiEdit`, `NotebookEdit` (file mutation)
 - `Bash` (command execution)
 - **ALL `mcp__*` tools** (every MCP server tool is blocked on main)
-- `CronCreate`, `CronDelete`, `EnterWorktree`, `ExitWorktree`,
-  `RemoteTrigger` (external side effects or state mutation)
+- `EnterWorktree`, `ExitWorktree`, `RemoteTrigger` (external side effects or
+  state mutation)
 - any unknown / future tool not on the allowlist
 
 Every deny message ends with explicit guidance for delegated agents: do NOT
@@ -181,7 +185,8 @@ ExitPlanMode, EnterPlanMode,
 ToolSearch,
 Monitor, CronList, LSP,
 ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool,
-PushNotification, ScheduleWakeup
+PushNotification, ScheduleWakeup,
+CronCreate, CronDelete
 ```
 
 `SendMessage` is safe here because Task/Agent is already gated to allow
@@ -236,7 +241,8 @@ ReportFindings,
 Artifact,
 Monitor, CronList, LSP,
 ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool,
-PushNotification, ScheduleWakeup
+PushNotification, ScheduleWakeup,
+CronCreate, CronDelete
 ```
 
 **Task/Agent** gets special handling instead of a flat allow/deny: it is

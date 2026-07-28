@@ -183,6 +183,8 @@ MAIN_ALLOWLIST = {
     "Monitor", "CronList", "LSP",
     "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
     "PushNotification", "ScheduleWakeup",
+    # scheduling/loop meta-tools -- added 2026-07-28
+    "CronCreate", "CronDelete",
 }
 
 # The ONLY subagent_type Task/Agent may target while mode == "pi". Source of
@@ -242,6 +244,8 @@ PI_MODE_ALLOWLIST = {
     "Monitor", "CronList", "LSP",
     "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
     "PushNotification", "ScheduleWakeup",
+    # scheduling/loop meta-tools -- added 2026-07-28
+    "CronCreate", "CronDelete",
 }
 
 # RESOLVED (was an open question as of 0.2.2): `Workflow` was added to
@@ -275,6 +279,8 @@ WF_MODE_ALLOWLIST = {
     "Monitor", "CronList", "LSP",
     "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
     "PushNotification", "ScheduleWakeup",
+    # scheduling/loop meta-tools -- added 2026-07-28
+    "CronCreate", "CronDelete",
 }
 
 
