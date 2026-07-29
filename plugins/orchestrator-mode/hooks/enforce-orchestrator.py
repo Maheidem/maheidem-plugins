@@ -14,11 +14,11 @@ options after the mode token (e.g. "wf allowed-models=opus,sonnet,haiku").
   told to delegate the work to a subagent via the Agent/Task tool. Subagents
   (payload carries `agent_id`) keep FULL access.
 - PI: like ON, but there is no general delegation escape hatch -- Task/Agent
-  is allowed ONLY when it targets the exact pi-delegate subagent (see
-  PI_DELEGATE_SUBAGENT_TYPE below). Workflow is NOT allowlisted under PI (it
-  can itself spawn arbitrary subagents, which would bypass the pi-delegate-
-  only restriction). Everything else that would be denied under ON is denied
-  under PI too, with a pi-specific reason.
+  is denied outright (ADR-003: the pi-delegate subagent no longer exists).
+  Code changes go through the pi-delegate MCP tools directly (allowlisted by
+  tool-name prefix, see handle_pi_mode). Workflow is NOT allowlisted under PI
+  either (it can spawn arbitrary subagents). Everything else that would be
+  denied under ON is denied under PI too, with a pi-specific reason.
 - WF: like ON, but the general Task/Agent delegation escape hatch is closed
   down to just the built-in read-only `Explore` scout (see
   WF_EXPLORE_SUBAGENT_TYPE below) -- all other substantive delegation must go
@@ -75,10 +75,11 @@ nothing / let normal flow proceed"):
                        WF_EXPLORE_SUBAGENT_TYPE, else DENY (fail-CLOSED, same
                        rationale as the pi branch below).
                     -> tool in WF_MODE_ALLOWLIST -> silent no-op; else deny.
-  9. mode == "pi"  -> Task/Agent -> allow ONLY subagent_type ==
-                       PI_DELEGATE_SUBAGENT_TYPE, else DENY (fail-CLOSED --
-                       see the comment on that branch for why this is the one
-                       intentional exception to fail-open).
+  9. mode == "pi"  -> Task/Agent -> DENY outright (ADR-003: no subagent
+                       target exists anymore; code changes go through the
+                       pi-delegate MCP tools instead).
+                    -> mcp__pi-delegate__* / mcp__plugin_pi-delegate_* ->
+                       silent no-op.
                     -> tool in PI_MODE_ALLOWLIST -> silent no-op; else deny.
 
 MODEL ALLOWLIST (composes with steps 7/8/9): when the active mode carries an
@@ -161,8 +162,8 @@ MAIN_ALLOWLIST = {
     "Task", "Agent", "SendMessage",
     # Workflow: deterministic multi-agent orchestration -- pure delegation,
     # same category as Task/Agent. NOT added to PI_MODE_ALLOWLIST: it can
-    # itself spawn arbitrary subagents, which would bypass the pi-delegate-
-    # only restriction mode=pi exists to enforce.
+    # itself spawn arbitrary subagents, which would reopen the general
+    # delegation escape hatch mode=pi exists to keep closed.
     "Workflow",
     "TodoWrite",
     "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop", "TaskOutput",
@@ -187,13 +188,11 @@ MAIN_ALLOWLIST = {
     "CronCreate", "CronDelete",
 }
 
-# The ONLY subagent_type Task/Agent may target while mode == "pi". Source of
-# truth for this string: plugins/pi-delegate/agents/delegate.md (the `name:`
-# frontmatter field there, qualified as "<plugin-name>:<agent-name>"). This is
-# the sole, one-directional coupling between orchestrator-mode and
-# pi-delegate -- no cross-plugin import, just this string constant. If
-# pi-delegate's agent is ever renamed, update this constant to match.
-PI_DELEGATE_SUBAGENT_TYPE = "pi-delegate:delegate"
+# ADR-003: the pi-delegate subagent no longer exists -- Task/Agent has no
+# allowed target under mode == "pi" and is denied outright (see
+# handle_pi_mode below). The coupling to pi-delegate is now the
+# mcp__pi-delegate__ / mcp__plugin_pi-delegate_ tool-name prefix, checked
+# directly in handle_pi_mode -- no subagent_type constant needed here.
 
 # The ONLY subagent_type Task/Agent may target while mode == "wf". This is the
 # built-in, read-only "scout" agent type shipped with Claude Code itself (not
@@ -202,23 +201,20 @@ PI_DELEGATE_SUBAGENT_TYPE = "pi-delegate:delegate"
 WF_EXPLORE_SUBAGENT_TYPE = "Explore"
 
 # Tools allowed on the main thread while mode == "pi": MAIN_ALLOWLIST minus
-# Task/Agent (handled separately below, restricted to the pi-delegate
-# subagent only) and minus Workflow/ReportFindings/Artifact (Workflow is
-# deliberately excluded -- see the RESOLVED note below; the other two simply
-# predate this list). WebFetch/WebSearch appear in BOTH lists: they were once
-# a pi-only carve-out, but MAIN_ALLOWLIST gained them in 0.2.3 for parity, so
-# no deviation between the modes remains on research tools.
+# Task/Agent (handled separately below, denied outright under mode == "pi"
+# as of ADR-003 -- no subagent target exists anymore) and minus
+# Workflow/ReportFindings/Artifact (Workflow is deliberately excluded -- see
+# the RESOLVED note below; the other two simply predate this list).
+# WebFetch/WebSearch appear in BOTH lists: they were once a pi-only carve-out,
+# but MAIN_ALLOWLIST gained them in 0.2.3 for parity, so no deviation between
+# the modes remains on research tools.
 #
-# SendMessage is included deliberately: under mode == "pi", Task/Agent is
-# already gated (see handle_pi_mode below) to allow spawning ONLY the
-# pi-delegate subagent -- no other subagent type can ever be created in a
-# pi-mode session. That means any teammate SendMessage could possibly target
-# is necessarily a pi-delegate teammate, so allowing SendMessage unconditionally
-# here does not reopen the general delegation escape hatch; it only restores
-# the ability to check in on / resume the one subagent pi mode already
-# sanctions. Without this, a backgrounded pi-delegate dispatch is unreachable
-# once launched (TaskOutput/TaskGet fetch results, but SendMessage is what's
-# needed to continue/resume a named teammate).
+# SendMessage is included so a teammate created before mode was switched to
+# "pi" (or under a different mode) remains reachable for check-in/resume;
+# with Task/Agent denied outright under mode == "pi", no NEW subagent can be
+# spawned in a pi-mode session, so this does not reopen the general
+# delegation escape hatch. TaskOutput/TaskGet fetch results; SendMessage is
+# what's needed to continue/resume an already-running teammate.
 PI_MODE_ALLOWLIST = {
     "Read", "Grep", "Glob", "LS",
     "WebFetch", "WebSearch", "SendMessage",
@@ -500,34 +496,11 @@ def handle_wf_mode(tool, tool_input, allowed_models, data):
 
 
 def handle_pi_mode(tool, tool_input, allowed_models):
-    # Task/Agent: allow ONLY the exact pi-delegate subagent. This is a
-    # deliberate FAIL-CLOSED exception to the fail-open policy elsewhere in
-    # this file -- missing/empty/wrong subagent_type is DENIED, not passed
-    # through. Do not "fix" this back to permissive: fail-open here would
-    # reopen the general delegation escape hatch that mode=pi exists to close.
-    if tool in ("Task", "Agent"):
-        subagent_type = (tool_input or {}).get("subagent_type")
-        if subagent_type == PI_DELEGATE_SUBAGENT_TYPE:
-            # Otherwise allowed -> compose the model-allowlist check.
-            # (Workflow needs no equivalent under pi: it is denied outright.)
-            check_task_model(tool_input, allowed_models)
-            noop("mode=pi: %s -> pi-delegate subagent -> silent no-op" % tool)
-        reason = (
-            "orchestrator-mode is set to PI for this project: the main agent "
-            "cannot delegate to any subagent except pi-delegate. '%s' with "
-            "subagent_type=%r is blocked. Use /pi-delegate:delegate <task> to "
-            "get code changes made. To exit this mode, run "
-            "/orchestrator-mode:mode off." % (tool, subagent_type)) + DELEGATE_GUIDANCE
-        log_debug(
-            "mode=pi: %s subagent_type=%r not pi-delegate -> DENY (fail-closed)"
-            % (tool, subagent_type))
-        deny(reason)
-
-    # D5-D (pi-delegate ADR-002): the pi-delegate MCP server's tools ARE the
-    # sanctioned "changes go through pi" path, so they are allowlisted by
-    # prefix under PI mode. D2's state-file scan (step 3 in main()) already
-    # ran before any mode branch, so a pi-delegate MCP call whose input
-    # mentions the state file is still denied there.
+    # D5-D (pi-delegate ADR-002) / ADR-003: the pi-delegate MCP server's
+    # tools ARE the sanctioned "changes go through pi" path, so they are
+    # allowlisted by prefix under PI mode. D2's state-file scan (step 3 in
+    # main()) already ran before any mode branch, so a pi-delegate MCP call
+    # whose input mentions the state file is still denied there.
     # Claude Code exposes plugin-bundled MCP servers under
     # "mcp__plugin_<plugin>_<server>__<tool>" at runtime (observed live:
     # mcp__plugin_pi-delegate_pi-delegate__pi_task); the bare
@@ -539,12 +512,17 @@ def handle_pi_mode(tool, tool_input, allowed_models):
     if tool in PI_MODE_ALLOWLIST:
         noop("allowlisted tool %s -> silent no-op (mode=pi)" % tool)
 
+    # ADR-003: the pi-delegate subagent no longer exists. Task/Agent has no
+    # valid target left under mode=pi and falls straight through to this
+    # generic deny -- same fail-closed boundary as before, simpler code.
     reason = (
         "orchestrator-mode is set to PI for this project: the main agent "
         "cannot write, edit, or execute commands directly, and cannot "
-        "delegate to any subagent except pi-delegate. '%s' is blocked. The "
-        "only way to get code changes made is /pi-delegate:delegate <task>. "
-        "To exit this mode, run /orchestrator-mode:mode off." % tool) + DELEGATE_GUIDANCE
+        "delegate to any subagent. '%s' is blocked. Code changes go through "
+        "the pi-delegate MCP tools (mcp__pi-delegate__pi_task, "
+        "pi_conversation_send/steer/interrupt/read/status/end) directly, or "
+        "via /pi-delegate:delegate <task> for task decomposition. To exit "
+        "this mode, run /orchestrator-mode:mode off." % tool) + DELEGATE_GUIDANCE
     log_debug("mode=pi, not allowlisted -> DENY %s" % tool)
     deny(reason)
 

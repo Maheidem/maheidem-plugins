@@ -54,13 +54,13 @@ run_case "wf/Workflow allowed" enforce-orchestrator.py \
   "{\"tool_name\":\"Workflow\",\"tool_input\":{\"script\":\"agent('x', model: \\\"sonnet\\\")\"},\"cwd\":\"$TMP/proj\"}" \
   0 "__EMPTY__" ""
 
-# 9. mode pi, Task pi-delegate allowed
+# 9. mode pi, Task denied outright (no subagent target exists anymore)
 new_proj "pi"
-run_case "pi/Task pi-delegate allowed" enforce-orchestrator.py \
+run_case "pi/Task denied outright" enforce-orchestrator.py \
   "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"pi-delegate:delegate\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
+  0 "cannot delegate to any subagent" ""
 
-# 10. mode pi, Task non-pi-delegate denied
+# 10. mode pi, Task with any other subagent_type also denied
 new_proj "pi"
 run_case "pi/Task non-pi-delegate denied" enforce-orchestrator.py \
   "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"Explore\"},\"cwd\":\"$TMP/proj\"}" \

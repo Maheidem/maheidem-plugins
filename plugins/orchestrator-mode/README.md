@@ -8,11 +8,12 @@ Per-project "orchestrator" mode for Claude Code, with four states: `off`,
   thread, and **everything else is denied** (deny-by-default). **Subagents
   keep full access**, reached via the Agent/Task tool.
 - **`pi`**: the same read-only restriction, PLUS the general delegation escape
-  hatch is closed. Task/Agent is only allowed when it targets the exact
-  `pi-delegate:delegate` subagent (shipped by the separate `pi-delegate`
-  plugin) — any other subagent_type is denied. The only way to get code
-  changes made is `/pi-delegate:delegate <task>`, which forwards the task to
-  the local `pi` CLI. WebFetch/WebSearch stay allowlisted, same as under `on`
+  hatch is closed. Task/Agent is **denied outright** — no subagent target
+  exists for this mode. Code changes go through the pi-delegate MCP tools
+  directly (`mcp__pi-delegate__pi_task` etc., shipped by the separate
+  `pi-delegate` plugin, allowlisted by tool-name prefix) or via
+  `/pi-delegate:delegate <task>`, which forwards the task to the local `pi`
+  CLI. WebFetch/WebSearch stay allowlisted, same as under `on`
   (both modes have included them since 0.2.3).
 - **`wf`** (workflow): the same read-only restriction, PLUS the general
   delegation escape hatch is closed down to just the built-in read-only
@@ -189,31 +190,29 @@ PushNotification, ScheduleWakeup,
 CronCreate, CronDelete
 ```
 
-`SendMessage` is safe here because Task/Agent is already gated to allow
-spawning only the `pi-delegate:delegate` subagent (see below) — no other
-subagent type can exist in a pi-mode session, so any `SendMessage` target is
-necessarily a pi-delegate teammate. Without it, a backgrounded pi-delegate
-dispatch is unreachable once launched.
+`SendMessage` is included so a teammate created before mode was switched to
+`pi` (or under a different mode) remains reachable for check-in/resume; since
+Task/Agent is denied outright under `pi`, no new subagent can be spawned in a
+pi-mode session. Without `SendMessage`, a backgrounded teammate would be
+unreachable once launched.
 
-**Task/Agent** gets special handling instead of a flat allow/deny: it is
-allowed **only** when `tool_input.subagent_type` exactly equals
-`"pi-delegate:delegate"` (the `PI_DELEGATE_SUBAGENT_TYPE` constant in
-`hooks/enforce-orchestrator.py`, sourced from the `name:` frontmatter of
-`plugins/pi-delegate/agents/delegate.md`). Any other subagent_type — including
-missing/empty — is **denied**. This is the one place in the hook that is
-**fail-closed** rather than fail-open: an unrecognized or missing
-subagent_type does not pass through, it is blocked. That's intentional — the
-whole point of `pi` mode is that there is no general delegation escape hatch,
-so ambiguity must resolve to deny, not allow.
+**Task/Agent** is **denied outright** under `pi` (ADR-003, pi-delegate
+0.9.0): the `pi-delegate:delegate` subagent this used to carve out no longer
+exists, so Task/Agent has no valid target and falls through to the mode's
+generic deny in `handle_pi_mode` (`hooks/enforce-orchestrator.py`). That's
+intentional — the whole point of `pi` mode is that there is no general
+delegation escape hatch, and code changes now go through the pi-delegate MCP
+tools directly instead of a subagent hop.
 
 This is the **only coupling** between `orchestrator-mode` and `pi-delegate`:
-one string constant, checked one-directionally. `orchestrator-mode` knows the
-name of `pi-delegate`'s subagent; `pi-delegate` has zero knowledge of
-`orchestrator-mode` and works completely standalone.
+a tool-name prefix (`mcp__pi-delegate__` / `mcp__plugin_pi-delegate_`),
+checked one-directionally in `handle_pi_mode`. `orchestrator-mode` knows the
+prefix `pi-delegate`'s MCP tools are exposed under; `pi-delegate` has zero
+knowledge of `orchestrator-mode` and works completely standalone.
 
 **Denied under `pi`** — same as `on` (Write, Edit, MultiEdit, NotebookEdit,
-Bash, all `mcp__*`), plus Task/Agent to any subagent other than
-`pi-delegate:delegate`. The `Workflow` question is resolved (see the
+Bash, all `mcp__*` except the pi-delegate prefix), plus Task/Agent to any
+subagent, full stop. The `Workflow` question is resolved (see the
 `# RESOLVED (was an open question as of 0.2.2)` comment in
 `hooks/enforce-orchestrator.py`): `Workflow` was added to `MAIN_ALLOWLIST` in
 0.2.3 but deliberately NOT to `PI_MODE_ALLOWLIST` — it can spawn arbitrary
@@ -291,8 +290,9 @@ gating would otherwise allow:
 - **Task/Agent — deterministic.** If the call's `tool_input.model` field is
   present and not in the list, the call is denied, naming the offending model
   and the allowed set. This composes with the per-mode Task/Agent gating: it
-  runs for any subagent_type under `on`, for the `Explore` scout under `wf`,
-  and for `pi-delegate:delegate` under `pi`.
+  runs for any subagent_type under `on` and for the `Explore` scout under
+  `wf`. Under `pi`, Task/Agent is denied outright so this check never
+  applies there.
 - **Workflow — best-effort lint.** The workflow script text
   (`tool_input.script`, or the file at `tool_input.scriptPath`; an unreadable
   file fails open silently) is regex-scanned for quoted `model: "..."` option
@@ -314,10 +314,10 @@ DENIED, not inherited:**
 - **Task/Agent.** A call with no `model` field at all is denied with
   guidance to declare one of the allowed models — omission no longer falls
   through to "inherit the session default." This applies to any
-  subagent_type gated in under `on`, the `Explore` scout under `wf`, and
-  `pi-delegate:delegate` under `pi` — including `Explore` scout spawns
-  under `wf` mode, which are held to the same rule as everything else (no
-  carve-out for read-only scouts).
+  subagent_type gated in under `on` and to the `Explore` scout under `wf`,
+  which is held to the same rule as everything else (no carve-out for
+  read-only scouts). Under `pi`, Task/Agent is denied outright so this rule
+  never applies there.
 - **Workflow — best-effort lint.** If the script contains one or more
   `agent(` calls, and the count of calls containing a `model:` option is
   fewer than the count of `agent(` calls, the whole call is denied, naming

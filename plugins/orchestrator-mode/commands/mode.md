@@ -14,8 +14,9 @@ allowlist for delegated agents).
   read/meta/delegation tools is permitted; everything else, including all MCP
   tools, is denied) and must delegate writes/execution to subagents.
 - `pi` means the same read-only restriction PLUS the general delegation escape
-  hatch is closed: Task/Agent is only allowed when it targets the exact
-  `pi-delegate:delegate` subagent. The only way to get code changes made is
+  hatch is closed: Task/Agent is denied outright (no subagent target exists
+  for this mode). Code changes go through the pi-delegate MCP tools directly
+  (`mcp__pi-delegate__pi_task` etc., allowlisted by tool-name prefix) or via
   `/pi-delegate:delegate <task>`, which forwards the task to the local `pi`
   CLI. WebFetch/WebSearch remain available (research isn't a mutation).
 - `wf` means the same read-only restriction PLUS the general delegation escape
@@ -56,8 +57,8 @@ Steps:
    `orchestrator-mode is OFF for this project.` If the token is `on`, report:
    `orchestrator-mode is ON for this project (main agent read-only; subagents
    may write).` If the token is `pi`, report: `orchestrator-mode is
-   set to PI for this project (main agent read-only; only
-   /pi-delegate:delegate can make code changes).` If the token is
+   set to PI for this project (main agent read-only; code changes go through
+   the pi-delegate MCP tools or /pi-delegate:delegate).` If the token is
    `wf`, report: `orchestrator-mode is set to WF for this project (main agent
    read-only; orchestrate via the Workflow tool; Task/Agent limited to the
    Explore scout).` If the line also contains an `allowed-models=<list>`
@@ -83,9 +84,10 @@ Steps:
    single line `pi allowed-models=<list>` (single space, lowercased list).
    Then report: `orchestrator-mode set to PI for
    this project. The main agent is now READ-ONLY and cannot delegate to any
-   subagent except pi-delegate -- use /pi-delegate:delegate <task> to get code
-   changes made. Run /orchestrator-mode:mode off to exit.` If an allowlist
-   was set, append: ` Delegated-agent model allowlist: <list>.`
+   subagent -- code changes go through the pi-delegate MCP tools directly or
+   via /pi-delegate:delegate <task>. Run /orchestrator-mode:mode off to
+   exit.` If an allowlist was set, append: ` Delegated-agent model allowlist:
+   <list>.`
 
 5. **wf** -> Use the Write tool to write the file `.orchestrator-mode.state`
    with the single line `wf` -- or, if `--allowed-models` was given, the

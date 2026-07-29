@@ -9,8 +9,8 @@ Four-state, read from `.orchestrator-mode.state` at the project root via
 - ON: inject REMINDER_ON, telling the agent it is read-only and must delegate
   all writes / execution to subagents.
 - PI: inject REMINDER_PI, telling the agent it cannot delegate to ANY
-  subagent except pi-delegate, and naming /pi-delegate:delegate as the only
-  way to get code changes made.
+  subagent, and naming the pi-delegate MCP tools / /pi-delegate:delegate as
+  the way to get code changes made.
 - WF: inject REMINDER_WF, telling the agent it is read-only and must
   orchestrate via the Workflow tool, with Task/Agent restricted to the
   built-in Explore scout.
@@ -52,26 +52,27 @@ REMINDER_ON = (
 
 REMINDER_PI = (
     "ORCHESTRATION MODE is set to PI for this project. You are READ-ONLY on "
-    "the main thread AND you cannot delegate to any subagent except "
-    "pi-delegate: Write, Edit, NotebookEdit, Bash, all MCP tools except the "
-    "pi-delegate server's own (mcp__pi-delegate__* is allowed), and "
-    "Task/Agent to any subagent_type other than exactly "
-    "'pi-delegate:delegate' are all blocked. Read, Grep, Glob, LS, WebFetch, "
-    "WebSearch, and the task-tracking tools (TodoWrite, TaskCreate, etc.) are "
-    "still available. The ONLY way to get code changes made is "
-    "/pi-delegate:delegate <task>, which forwards the task to the local pi "
-    "CLI. pi is often a smaller/local model. Follow the DELEGATION CONTRACT "
-    "-- delegate execution, never judgment: (1) Spec each step to "
-    "near-determinism: exact content, exact anchor lines, exact commands; do "
-    "the design yourself, delegate the transcription. (2) One atomic step "
-    "per /pi-delegate:delegate call; verify each result against the actual "
-    "files before dispatching the next. (3) Ask pi for evidence -- command "
+    "the main thread: Write, Edit, NotebookEdit, Bash, all MCP tools except "
+    "the pi-delegate server's own (mcp__pi-delegate__* is allowed), and "
+    "Task/Agent to any subagent are all blocked. Read, Grep, Glob, LS, "
+    "WebFetch, WebSearch, and the task-tracking tools (TodoWrite, "
+    "TaskCreate, etc.) are still available. Code changes go through pi "
+    "only: use the pi-delegate MCP tools (mcp__pi-delegate__pi_task, "
+    "pi_conversation_send / steer / interrupt / read / status / end, "
+    "pi_respond) or /pi-delegate:delegate <task>; both run the local pi "
+    "CLI. pi is often a smaller/local model. Follow the DELEGATION "
+    "CONTRACT -- delegate execution, never judgment: (1) Delegate the GOAL "
+    "not the diff, scoped tightly: name files/surface and what's off-limits, "
+    "state invariants, give an acceptance check, say whether approach is "
+    "pi's call; go fully literal only when nothing is left to decide. (2) "
+    "One atomic step per call; verify each result against the actual files "
+    "before dispatching the next. (3) Ask pi for evidence -- command "
     "output, diffs, exit codes -- never for conclusions; attribution, "
     "severity, and pre-existing-or-not judgments stay with you. (4) Audit "
     "every claim independently: pi saying 'done', 'verified', or "
-    "'pre-existing' is a report, not a fact. (5) Wrap any "
-    "potentially-blocking command in a hard timeout -- a hang is a finding, "
-    "not a wait. "
+    "'pre-existing' is a report, not a fact. (5) Wrap any potentially-"
+    "blocking command in a hard timeout -- a hang is a finding, not a "
+    "wait. "
     "(Run /orchestrator-mode:mode off to exit this mode.)")
 
 REMINDER_WF = (
