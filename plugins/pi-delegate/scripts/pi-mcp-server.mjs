@@ -4,6 +4,7 @@
 // JSON-RPC 2.0 over stdio, strict-LF framing. Zero dependencies.
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   runTaskRpc, runSetup, runConversationStatus, runConversationEnd,
   readConversation, detectErrorTurn, taskResult, resolveCwd,
@@ -13,7 +14,7 @@ import {
 
 // MCP spec revision this server implements (ADR-002 §6: pinned in one constant).
 const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_INFO = { name: "pi-delegate", version: "0.9.1" };
+const SERVER_INFO = { name: "pi-delegate", version: "0.10.0" };
 const DEFAULT_TIMEOUT_MS = 600000;
 
 const TOOLS = [
@@ -37,7 +38,34 @@ const TOOLS = [
       "or pi_conversation_interrupt on later turns to adjust course as pi's approach becomes clear. If " +
       "pi isn't already familiar with this codebase, say so and grant it permission to explore first. " +
       "State scope explicitly at the top (bug-fix-scope vs feature-design-scope vs refactor-scope) " +
-      "whenever it isn't obvious. Go fully literal only when nothing is left to decide.",
+      "whenever it isn't obvious. Go fully literal only when nothing is left to decide. For long-running " +
+      "turns you don't want to block on, use pi_conversation_send_async instead.",
+    inputSchema: {
+      type: "object",
+      required: ["name", "message"],
+      properties: {
+        name: { type: "string", description: "Conversation name (caller-chosen, project-scoped)." },
+        message: { type: "string" },
+        timeout_ms: { type: "integer", minimum: 1 }
+      }
+    }
+  },
+  {
+    name: "pi_conversation_send_async",
+    description:
+      "Poll-based async variant of pi_conversation_send: dispatches the prompt and returns immediately " +
+      "(does not block on the turn settling), instead of holding the tool call open for up to timeout_ms. " +
+      "Response is either {ok:true, dispatched:true, sessionName, turnId, dispatchedAt} or " +
+      "{ok:false, dispatched:false, sessionName, errorMessage} for an immediate rejection (bad name, " +
+      "prompt not acknowledged, or the conversation is busy with another turn -- busy is NOT queued, retry " +
+      "later or use pi_conversation_steer/pi_conversation_interrupt on the in-flight turn instead). " +
+      "Remember the returned turnId, then poll pi_conversation_status: the turn is done once " +
+      "channel.lastTurnId === turnId and channel.turnInFlight === false. If channel.alive is false, or " +
+      "neither channel.currentTurnId nor channel.lastTurnId match your turnId, the turn was lost (channel " +
+      "reaped/killed, or the server restarted) -- fall back to pi_conversation_read to see what, if " +
+      "anything, completed. Once status confirms completion, call pi_conversation_read for the final " +
+      "answer (this tool does not return finalText itself). Same delegation guidance as " +
+      "pi_conversation_send applies to the message content.",
     inputSchema: {
       type: "object",
       required: ["name", "message"],
@@ -126,6 +154,14 @@ function reply(id, result) {
 function replyErr(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
+// Fire-and-forget JSON-RPC notification (no id, no reply expected) -- distinct
+// from serverRequest, which frames a request awaiting a client reply.
+function sendNotification(method, params) {
+  send({ jsonrpc: "2.0", method, params });
+}
+// requestId (msg.id of the in-flight tools/call) -> channel, so
+// notifications/cancelled can stop further progress emission for that turn.
+const activeSendRequests = new Map();
 
 async function handleToolCall(msg) {
   const params = msg.params || {};
@@ -145,7 +181,16 @@ async function handleToolCall(msg) {
   } else if (name === "pi_setup") {
     result = await runSetup();
   } else if (name === "pi_conversation_send") {
+    const progressToken = params._meta && params._meta.progressToken !== undefined ? params._meta.progressToken : null;
     result = await channelSend(
+      typeof args.name === "string" ? args.name : "",
+      typeof args.message === "string" ? args.message : "",
+      Number.isInteger(args.timeout_ms) && args.timeout_ms > 0 ? args.timeout_ms : DEFAULT_TIMEOUT_MS,
+      progressToken,
+      msg.id
+    );
+  } else if (name === "pi_conversation_send_async") {
+    result = await channelSendAsync(
       typeof args.name === "string" ? args.name : "",
       typeof args.message === "string" ? args.message : "",
       Number.isInteger(args.timeout_ms) && args.timeout_ms > 0 ? args.timeout_ms : DEFAULT_TIMEOUT_MS
@@ -162,7 +207,13 @@ async function handleToolCall(msg) {
       result.channel = {
         alive: chInfo.alive,
         idleMs: Date.now() - chInfo.lastUsedAt,
-        ttlRemainingMs: Math.max(0, TTL_MS - (Date.now() - chInfo.lastUsedAt))
+        ttlRemainingMs: Math.max(0, TTL_MS - (Date.now() - chInfo.lastUsedAt)),
+        turnInFlight: chInfo.turnInFlight,
+        currentTurnId: chInfo.currentTurnId,
+        lastTurnId: chInfo.lastTurnId,
+        lastTurnSettledAt: chInfo.lastTurnSettledAt,
+        steered: chInfo.steered,
+        pendingInterrupt: !!chInfo.pendingInterrupt
       };
     } else if (result) {
       result.channel = null;
@@ -203,13 +254,25 @@ function handleLine(line) {
   }
   if (msg.method === "initialize") {
     clientSupportsElicitation = !!(msg.params && msg.params.capabilities && msg.params.capabilities.elicitation);
+    // Per MCP spec: echo the client-offered version back when we support it
+    // (rather than always our own pin), so a compatible-but-differently-typed
+    // client isn't forced to reject a version match it actually offered.
+    // Fall back to our pinned version -- signaling a mismatch -- otherwise.
+    const requestedVersion = msg.params && msg.params.protocolVersion;
+    const negotiatedVersion = requestedVersion === PROTOCOL_VERSION ? requestedVersion : PROTOCOL_VERSION;
     reply(msg.id, {
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: negotiatedVersion,
       capabilities: { tools: {} },
       serverInfo: SERVER_INFO
     });
   } else if (msg.method === "notifications/initialized") {
     // notification: no reply
+  } else if (msg.method === "notifications/cancelled") {
+    // Stop progress emission for the cancelled request's turn. Does NOT map
+    // to channelInterrupt -- that's a separate, more invasive decision.
+    const cancelledId = msg.params && msg.params.requestId;
+    const ch = activeSendRequests.get(cancelledId);
+    if (ch) { ch.progressToken = null; activeSendRequests.delete(cancelledId); }
   } else if (msg.method === "tools/list") {
     reply(msg.id, { tools: TOOLS });
   } else if (msg.method === "tools/call") {
@@ -287,7 +350,9 @@ function spawnChannel(name) {
   const ch = {
     name, child, alive: true, lastUsedAt: Date.now(),
     buffer: "", events: [], steered: [], pendingInterrupt: null, turnInFlight: false,
-    responseWaiters: [], settleWaiter: null, pendingQuestion: null
+    responseWaiters: [], settleWaiter: null, pendingQuestion: null,
+    currentTurnId: null, lastTurnId: null, lastTurnSettledAt: null,
+    progressToken: null, progressSeq: 0, lastProgressAt: 0
   };
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
@@ -307,6 +372,7 @@ function spawnChannel(name) {
         handleUiRequest(ch, evt);
       }
       ch.events.push(evt);
+      emitProgress(ch, evt);
       if (evt && evt.type === "agent_settled" && ch.settleWaiter) {
         const s = ch.settleWaiter; ch.settleWaiter = null; s();
       }
@@ -321,6 +387,26 @@ function spawnChannel(name) {
   registry.set(name, ch);
   enforceCap();
   return ch;
+}
+
+// MCP notifications/progress visibility layer (ADR-005 §B): additive to the
+// still-blocking pi_conversation_send, gated on the client having sent
+// _meta.progressToken on the originating tools/call.
+const PROGRESS_EVENT_TYPES = new Set(["agent_start", "turn_start", "turn_end", "agent_end", "auto_retry_end"]);
+const PROGRESS_COALESCE_MS = 1000;
+
+function emitProgress(ch, evt, forcedMessage) {
+  if (!ch.progressToken) return;
+  if (!forcedMessage && (!evt || !PROGRESS_EVENT_TYPES.has(evt.type))) return;
+  const now = Date.now();
+  if (!forcedMessage && now - ch.lastProgressAt < PROGRESS_COALESCE_MS) return;
+  ch.lastProgressAt = now;
+  const message = forcedMessage || `pi: ${evt.type}`;
+  sendNotification("notifications/progress", {
+    progressToken: ch.progressToken,
+    progress: ++ch.progressSeq,
+    message
+  });
 }
 
 function killChannel(ch) {
@@ -380,7 +466,53 @@ function waitSettle(ch, timeoutMs) {
   });
 }
 
-async function channelSend(rawName, message, timeoutMs) {
+// Sends the prompt RPC only and does the per-turn reset bookkeeping. Shared by
+// the synchronous and async-dispatch send paths so the wire prompt is issued
+// exactly once per turn either way.
+async function sendPrompt(ch, message) {
+  ch.events.length = 0; // per-turn event scope: turns are serialized per channel
+  ch.steered = [];
+  ch.pendingInterrupt = null;
+  ch.turnInFlight = true;
+  return rpcCommand(ch, { type: "prompt", message }, 15000);
+}
+
+// Waits for the turn kicked off by an already-sent prompt to settle,
+// following the steer/interrupt reprompt loop. Does not send the initial
+// prompt itself -- callers must have called sendPrompt (or equivalent) first.
+async function awaitTurnCompletion(ch, timeoutMs) {
+  let settled = await waitSettle(ch, timeoutMs);
+  let interrupted = false;
+  while (settled && ch.pendingInterrupt) {
+    const nextMessage = ch.pendingInterrupt;
+    ch.pendingInterrupt = null;
+    ch.events.length = 0;
+    const reResp = await rpcCommand(ch, { type: "prompt", message: nextMessage }, 15000);
+    if (!reResp || reResp.success === false) {
+      ch.turnInFlight = false;
+      return { settled: false, interrupted, error: "interrupt reprompt was rejected" };
+    }
+    interrupted = true;
+    settled = await waitSettle(ch, timeoutMs);
+  }
+  ch.lastUsedAt = Date.now();
+  ch.turnInFlight = false;
+  return { settled, interrupted, error: null };
+}
+
+// Full synchronous turn: prompt -> settle/interrupt loop -> result. Used by
+// channelSend. Behavior must stay byte-for-byte identical to the pre-async-
+// dispatch implementation.
+async function runTurn(ch, name, message, timeoutMs) {
+  const promptResp = await sendPrompt(ch, message);
+  if (!promptResp || promptResp.success === false) {
+    ch.turnInFlight = false;
+    return { settled: false, interrupted: false, error: promptResp ? (promptResp.error || "prompt rejected") : "prompt was not acknowledged (channel dead?)" };
+  }
+  return awaitTurnCompletion(ch, timeoutMs);
+}
+
+async function channelSend(rawName, message, timeoutMs, progressToken = null, requestId = undefined) {
   const named = chanName(rawName);
   if (named.error) return taskResult({ errorMessage: named.error });
   const name = named.name;
@@ -400,31 +532,16 @@ async function channelSend(rawName, message, timeoutMs) {
     try {
       const ch = getChannel(name);
       ch.lastUsedAt = Date.now();
-      ch.events.length = 0; // per-turn event scope: turns are serialized per channel
-      ch.steered = [];
-      ch.pendingInterrupt = null;
-      ch.turnInFlight = true;
-      const turnStart = 0;
-      const promptResp = await rpcCommand(ch, { type: "prompt", message }, 15000);
-      if (!promptResp || promptResp.success === false) {
-        return taskResult({ sessionName: name, errorMessage: promptResp ? (promptResp.error || "prompt rejected") : "prompt was not acknowledged (channel dead?)" });
+      if (progressToken !== null && progressToken !== undefined) {
+        ch.progressToken = progressToken;
+        ch.progressSeq = 0;
+        ch.lastProgressAt = 0;
+        if (requestId !== undefined) activeSendRequests.set(requestId, ch);
       }
-      let settled = await waitSettle(ch, timeoutMs);
-      let interrupted = false;
-      while (settled && ch.pendingInterrupt) {
-        const nextMessage = ch.pendingInterrupt;
-        ch.pendingInterrupt = null;
-        ch.events.length = 0;
-        const reResp = await rpcCommand(ch, { type: "prompt", message: nextMessage }, 15000);
-        if (!reResp || reResp.success === false) {
-          ch.turnInFlight = false;
-          return taskResult({ sessionName: name, errorMessage: "interrupt reprompt was rejected" });
-        }
-        interrupted = true;
-        settled = await waitSettle(ch, timeoutMs);
+      const { settled, interrupted, error } = await runTurn(ch, name, message, timeoutMs);
+      if (error) {
+        return taskResult({ sessionName: name, errorMessage: error });
       }
-      ch.lastUsedAt = Date.now();
-      ch.turnInFlight = false;
       if (!settled) {
         killChannel(ch);
         return taskResult({ sessionName: name, errorMessage: `pi did not settle within ${timeoutMs}ms -- channel killed (will respawn on next send)`, steered: ch.steered, interrupted });
@@ -451,12 +568,69 @@ async function channelSend(rawName, message, timeoutMs) {
       });
     } finally {
       const chx = registry.get(name);
-      if (chx) chx.turnInFlight = false;
+      if (chx) { chx.turnInFlight = false; chx.progressToken = null; }
+      if (requestId !== undefined) activeSendRequests.delete(requestId);
       releaseLock(lockPath);
     }
   };
   const prev = sendQueues.get(name) || Promise.resolve();
   const next = prev.then(run, run);
+  sendQueues.set(name, next.catch(() => {}));
+  return next;
+}
+
+// Poll-based async dispatch (ADR-005 §A): returns as soon as the prompt is
+// accepted; the turn itself completes in the background. Caller polls
+// pi_conversation_status for turnInFlight/lastTurnId, then pi_conversation_read
+// for the answer.
+async function channelSendAsync(rawName, message, timeoutMs) {
+  const named = chanName(rawName);
+  if (named.error) return { ok: false, dispatched: false, sessionName: null, errorMessage: named.error };
+  const name = named.name;
+  const cwd = resolveCwd();
+  const lockPath = lockPathFor(cwd, name);
+  const dispatch = async () => {
+    const lock = acquireLock(lockPath);
+    if (!lock.acquired) {
+      return {
+        ok: false, dispatched: false, sessionName: name,
+        errorMessage: lock.heldByPid
+          ? `conversation \"${name}\" is busy (held by pid ${lock.heldByPid}) -- another process is mid-turn`
+          : `failed to acquire conversation lock: ${lock.error || "unknown error"}`
+      };
+    }
+    const ch = getChannel(name);
+    ch.lastUsedAt = Date.now();
+    const turnId = randomUUID();
+    ch.currentTurnId = turnId;
+    const promptResp = await sendPrompt(ch, message);
+    if (!promptResp || promptResp.success === false) {
+      ch.turnInFlight = false;
+      ch.currentTurnId = null;
+      releaseLock(lockPath);
+      return {
+        ok: false, dispatched: false, sessionName: name,
+        errorMessage: promptResp ? (promptResp.error || "prompt rejected") : "prompt was not acknowledged (channel dead?)"
+      };
+    }
+    pendingOps++;
+    awaitTurnCompletion(ch, timeoutMs)
+      .then((res) => {
+        if (!res.settled) killChannel(ch);
+      })
+      .catch(() => { ch.turnInFlight = false; })
+      .then(() => {
+        ch.lastTurnId = turnId;
+        ch.lastTurnSettledAt = Date.now();
+        if (ch.currentTurnId === turnId) ch.currentTurnId = null;
+        releaseLock(lockPath);
+        pendingOps--;
+        if (pendingOps <= 0 && _stdinEnded) { shutdownChannels(); process.exit(0); }
+      });
+    return { ok: true, dispatched: true, sessionName: name, turnId, dispatchedAt: Date.now() };
+  };
+  const prev = sendQueues.get(name) || Promise.resolve();
+  const next = prev.then(dispatch, dispatch);
   sendQueues.set(name, next.catch(() => {}));
   return next;
 }
@@ -503,6 +677,7 @@ function channelSteer(rawName, message) {
     return taskResult({ sessionName: name, errorMessage: "steer write failed (channel dead?)" });
   }
   ch.steered.push(message);
+  emitProgress(ch, null, `steered: ${message}`);
   return taskResult({ ok: true, sessionName: name, summary: "steer queued -- delivered at the next turn boundary" });
 }
 
@@ -522,6 +697,7 @@ function channelInterrupt(rawName, message) {
     ch.pendingInterrupt = null;
     return taskResult({ sessionName: name, errorMessage: "abort write failed (channel dead?)" });
   }
+  emitProgress(ch, null, "interrupt requested");
   return taskResult({ ok: true, sessionName: name, summary: "interrupt queued -- the in-flight send's result will reflect the new turn" });
 }
 

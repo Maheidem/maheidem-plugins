@@ -32,9 +32,10 @@ server registered in `.mcp.json`, exposing the same runtime as typed tools:
 | Tool | Purpose |
 |---|---|
 | `pi_task` | Stateless one-shot task (same as the CLI `task` verb). |
-| `pi_conversation_send` | Send to a named keep-alive conversation (live `pi --mode rpc` child, reused across sends, TTL-reaped when idle, respawned transparently if dead). |
-| `pi_conversation_read` / `pi_conversation_status` | Lock-free transcript tail / session state plus registry info and any pending question. |
-| `pi_conversation_steer` / `pi_conversation_interrupt` | Mid-turn steering / abort-and-reprompt on the live child; both fail `ok:false` when the conversation is idle. |
+| `pi_conversation_send` | Send to a named keep-alive conversation (live `pi --mode rpc` child, reused across sends, TTL-reaped when idle, respawned transparently if dead). Blocks until the turn settles. |
+| `pi_conversation_send_async` | Poll-based async variant (ADR-005): dispatches the prompt and returns immediately instead of blocking on settle. Remember the returned `turnId`, poll `pi_conversation_status` until `channel.lastTurnId === turnId` and `channel.turnInFlight === false`, then call `pi_conversation_read` for the answer. Use for long-running turns you don't want to hold the tool call open for. |
+| `pi_conversation_read` / `pi_conversation_status` | Lock-free transcript tail / session state plus registry info and any pending question. `pi_conversation_status`'s `channel` object also reports `turnInFlight`, `currentTurnId`, `lastTurnId`, `lastTurnSettledAt`, `steered`, `pendingInterrupt` -- the poll contract for `pi_conversation_send_async`. |
+| `pi_conversation_steer` / `pi_conversation_interrupt` | Mid-turn steering / abort-and-reprompt on the live child; both fail `ok:false` when the conversation is idle. Works the same whether the in-flight turn was dispatched via `pi_conversation_send` or `pi_conversation_send_async`. |
 | `pi_conversation_end` | Kill the live child, delete session file(s) and lock. |
 | `pi_respond` | Answer a parked pi dialog when the client lacks elicitation support. |
 
@@ -44,7 +45,16 @@ when the client declares the capability; otherwise they park as
 `pi_respond`), with pi's own dialog auto-cancel as the terminal fallback.
 Env tunables: `PI_MCP_TTL_MS` (default 300000), `PI_MCP_REGISTRY_CAP` (4),
 `PI_MCP_REAP_INTERVAL_MS` (60000). Full design: `docs/adr-002-mcp-facade.md`
-(building on ADR-001 in `docs/architecture.md`).
+(building on ADR-001 in `docs/architecture.md`); async dispatch and progress
+notifications: `docs/adr-005-async-dispatch.md`.
+
+If the client sends `_meta.progressToken` on a `pi_conversation_send` call,
+the server emits `notifications/progress` for that turn (agent lifecycle
+events, coalesced to roughly one per second, plus an uncoalesced notification
+on every `pi_conversation_steer`/`pi_conversation_interrupt` against that
+conversation) -- purely additive visibility; `pi_conversation_send` still
+blocks on settle exactly as before. No client action is required beyond
+sending the token; a client that never sends one sees no notifications.
 
 ## Per-project provider/model pin
 
