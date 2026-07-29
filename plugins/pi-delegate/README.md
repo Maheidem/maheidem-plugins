@@ -2,20 +2,21 @@
 
 Forward a coding task from Claude Code to the locally-installed `pi` CLI
 (pi.dev's `pi-coding-agent`), so the work runs on a local model instead of
-Claude doing it directly. One RPC engine, two facades: a zero-dependency
-stdio MCP server (keep-alive conversations, mid-turn steering, elicitation;
-see "MCP server" below) and the original `/pi-delegate:delegate`
-command/subagent path.
+Claude doing it directly. One RPC engine, a zero-dependency stdio MCP server
+(keep-alive conversations, mid-turn steering, elicitation; see "MCP server"
+below) is the sole facade, plus a `/pi-delegate:delegate` command that helps
+size/decompose a task before dispatching it through those MCP tools.
 
 ## Commands
 
-- `/pi-delegate:delegate <task>` — forwards `<task>` to the `delegate`
-  subagent, which runs it through `pi -p --mode json --no-session` and
-  returns pi's result verbatim. For substantial multi-step work, prefer
-  issuing several small, independently-verifiable `/pi-delegate:delegate`
-  calls in sequence over one large task — `pi` is often a smaller/local
-  model, and narrow, well-scoped tasks succeed far more reliably than
-  open-ended ones. See `commands/delegate.md`'s "Task sizing" section.
+- `/pi-delegate:delegate <task>` — helps decompose `<task>` into
+  independently-verifiable steps and dispatches each one via the
+  `pi_task`/`pi_conversation_send` MCP tools, returning pi's result verbatim.
+  For substantial multi-step work, prefer issuing several small MCP calls in
+  sequence over one large task — `pi` is often a smaller/local model, and
+  narrow, well-scoped tasks succeed far more reliably than open-ended ones.
+  See `commands/delegate.md`'s "Task sizing" section. In most cases you can
+  also call the MCP tools directly without going through this command.
 - `/pi-delegate:setup` — checks that `pi` is on PATH, reports its version and
   the configured `defaultProvider`/`defaultModel` from
   `~/.pi/agent/settings.json`, optionally offers to install it
@@ -84,10 +85,11 @@ always parsed to supply `finalText` (pi's actual final answer). Timeouts kill
 pi's whole process group (SIGTERM, then SIGKILL after 5s) and
 surface a retained progress log path for diagnosis; `--timeout` must be a
 positive integer or the helper exits 2. `--json` output truncates
-`rawStdout`/`rawStderr` to their last 10KB (with truncation flags). See
-`skills/pi-cli-runtime/SKILL.md` for the full invocation contract
-(including the per-project pin and completion-marker schema) and
-`skills/pi-result-handling/SKILL.md` for how results and failures are presented.
+`rawStdout`/`rawStderr` to their last 10KB (with truncation flags). See the
+`pi_task`/`pi_conversation_send` MCP tool descriptions in
+`scripts/pi-mcp-server.mjs` for the full invocation and phrasing contract
+(including the per-project pin), and `docs/adr-003-mcp-only.md` for how
+results and failures should be presented.
 
 Since 0.6.0 the one-shot `task` path uses RPC completion by default
 (measured ~40% faster than the legacy marker contract on the same workload —
@@ -111,10 +113,9 @@ below.
 
 Use `task` for independent one-off asks; use `conversation` only when the
 request is explicitly an ongoing back-and-forth under a named session. See
-`skills/pi-cli-runtime/SKILL.md`'s "Conversation runtime" section for the
-full contract (naming convention, locking, result fields) and
-`skills/pi-result-handling/SKILL.md` for how lock-contention failures should
-be presented.
+the `pi_conversation_send` MCP tool description for the full contract
+(naming convention, locking, result fields) and `docs/adr-003-mcp-only.md`
+for how lock-contention failures should be presented.
 
 `conversation` also has three verbs for peeking at and steering a session
 while a `send` is in flight: `read <name> [--last N]` renders the session's
@@ -128,18 +129,19 @@ send" — and are backed by a FIFO that only lives for the duration of the
 owning `send` call, not a resident process. The typical pattern is a
 backgrounded `send` (`run_in_background`) with `read`/`steer`/`interrupt`
 issued from separate calls while it's outstanding; the task notification for
-the backgrounded `send` is the completion signal. See
-`skills/pi-cli-runtime/SKILL.md`'s "Reading, steering, and interrupting a
-live conversation" section for the full contract.
+the backgrounded `send` is the completion signal. See the
+`pi_conversation_read`/`pi_conversation_steer`/`pi_conversation_interrupt`
+MCP tool descriptions for the full contract.
 
 ## Relationship to orchestrator-mode
 
 This plugin has **zero knowledge of `orchestrator-mode`** and works
-completely standalone. The coupling is one-directional: `orchestrator-mode`'s
-`pi` mode allowlists the exact subagent_type `"pi-delegate:delegate"` so that
-when orchestrator-mode is active, the main thread can still delegate to pi.
-`pi-delegate` itself doesn't reference or depend on `orchestrator-mode` in
-any way.
+completely standalone. The coupling is one-directional and loose:
+`orchestrator-mode`'s `pi` mode allowlists any tool name prefixed
+`mcp__pi-delegate__` or `mcp__plugin_pi-delegate_` so that when
+orchestrator-mode is active, the main thread can still delegate to pi
+through these MCP tools directly. `pi-delegate` itself doesn't reference or
+depend on `orchestrator-mode` in any way.
 
 ## Tests
 

@@ -13,15 +13,26 @@ import {
 
 // MCP spec revision this server implements (ADR-002 §6: pinned in one constant).
 const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_INFO = { name: "pi-delegate", version: "0.8.0-dev" };
+const SERVER_INFO = { name: "pi-delegate", version: "0.9.0" };
 const DEFAULT_TIMEOUT_MS = 600000;
 
 const TOOLS = [
   {
     name: "pi_task",
     description:
-      "Delegate a stateless one-shot coding task to the local pi CLI (RPC completion). " +
-      "Returns pi's final answer as JSON (ok, finalText, errorMessage, ...).",
+      "Delegate a stateless, one-shot coding task to the local pi CLI (RPC completion). pi is often a " +
+      "smaller/local model: succeeds far better on narrowly-scoped work than on open-ended multi-step " +
+      "asks. Keep for yourself: architecture decisions, irreversible or externally-consequential choices " +
+      "(migrations, destructive ops, security boundaries, public API shape), and anything a " +
+      "not-yet-dispatched step depends on. Otherwise delegate the GOAL, not the diff: name the " +
+      "files/surface pi may touch and what's explicitly off-limits, state invariants to preserve, give " +
+      "an acceptance check (test command or expected behavior), and say whether the approach is pi's " +
+      "call or a specific pattern to follow. If pi isn't already familiar with this codebase, say so and " +
+      "grant it permission to explore first. State scope explicitly at the top (bug-fix-scope vs " +
+      "feature-design-scope vs refactor-scope) whenever it isn't obvious -- ambiguity about decision " +
+      "ownership is the most common way a task description fails pi. Go fully literal only when nothing " +
+      "is left to decide: applying an already-written diff, a version bump, a command run purely to " +
+      "gather evidence. Returns pi's final answer as JSON (ok, finalText, errorMessage, ...).",
     inputSchema: {
       type: "object",
       required: ["text"],
@@ -44,9 +55,19 @@ const TOOLS = [
   {
     name: "pi_conversation_send",
     description:
-      "Send a message to a named, persistent pi conversation (keep-alive RPC child, " +
-      "reused across sends; TTL-reaped when idle; transparently respawned if dead). " +
-      "Blocks until the turn settles; returns pi's answer.",
+      "Send a message to a named, persistent pi conversation (keep-alive RPC child, reused across " +
+      "sends; TTL-reaped when idle; transparently respawned if dead). Blocks until the turn settles; " +
+      "returns pi's answer. pi is often a smaller/local model: succeeds far better on narrowly-scoped " +
+      "work than on open-ended multi-step asks. Keep for yourself: architecture decisions, irreversible " +
+      "or externally-consequential choices, and anything a not-yet-dispatched step depends on. " +
+      "Otherwise delegate the GOAL, not the diff: name the files/surface pi may touch and what's " +
+      "explicitly off-limits, state invariants to preserve, give an acceptance check, and say whether " +
+      "the approach is pi's call or a specific pattern to follow. Since this is a multi-turn " +
+      "conversation, the initial goal doesn't need to anticipate everything -- use pi_conversation_steer " +
+      "or pi_conversation_interrupt on later turns to adjust course as pi's approach becomes clear. If " +
+      "pi isn't already familiar with this codebase, say so and grant it permission to explore first. " +
+      "State scope explicitly at the top (bug-fix-scope vs feature-design-scope vs refactor-scope) " +
+      "whenever it isn't obvious. Go fully literal only when nothing is left to decide.",
     inputSchema: {
       type: "object",
       required: ["name", "message"],

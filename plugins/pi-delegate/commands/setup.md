@@ -39,7 +39,7 @@ If `pi` is already installed, do not ask about installation — report the readi
 
 ## Project provider/model pin picker
 
-Only do this when `piInstalled` is `true`. It lets the user view, set, or clear the per-project pin stored in `.claude/pi-delegate.local.md`. See `skills/pi-cli-runtime/SKILL.md` for the full precedence contract: an explicit `--provider`/`--model` flag on a given `pi-companion.mjs task` call wins over this project config file, which in turn wins over pi's own global default from `~/.pi/agent/settings.json`.
+Only do this when `piInstalled` is `true`. It lets the user view, set, or clear the per-project pin stored in `.claude/pi-delegate.local.md`. See the README's "Per-project provider/model pin" section for the full precedence contract: an explicit `--provider`/`--model` flag on a given `pi-companion.mjs task` call wins over this project config file, which in turn wins over pi's own global default from `~/.pi/agent/settings.json`.
 
 1. Fetch the real, machine-specific provider/model combinations — never rely on memory or a guessed name here:
 

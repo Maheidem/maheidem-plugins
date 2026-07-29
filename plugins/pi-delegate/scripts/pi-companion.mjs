@@ -2,7 +2,7 @@
 // pi-companion.mjs — thin, foreground-only, one-shot subprocess wrapper around
 // the local `pi` CLI (pi.dev's pi-coding-agent).
 //
-// Design constraints (see skills/pi-cli-runtime/SKILL.md for the full contract):
+// Design constraints (see docs/adr-003-mcp-only.md for the full contract):
 //   - Foreground only. `task` uses an async `spawn` (awaited to completion,
 //     never backgrounded) instead of `spawnSync`, specifically to avoid a
 //     fixed maxBuffer ceiling on captured stdout -- see the comment on
