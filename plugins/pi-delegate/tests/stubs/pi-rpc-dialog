@@ -1,0 +1,69 @@
+#!/usr/bin/env node
+// Stub `pi --mode rpc` that raises a dialog (extension_ui_request) after each
+// prompt and only settles once it receives the extension_ui_response.
+// get_last_assistant_text reflects the answer: "picked:<value>",
+// "picked:cancelled", or "picked:confirmed-<bool>". Line-buffered stdin.
+
+let turnN = 0;
+let answer = null;
+
+function handleLine(trimmed) {
+  if (!trimmed) return;
+  let evt;
+  try {
+    evt = JSON.parse(trimmed);
+  } catch {
+    return;
+  }
+  if (evt.type === "prompt" && evt.message !== undefined) {
+    turnN++;
+    process.stdout.write(
+      '{"type":"response","command":"prompt","success":true}\n' +
+      '{"type":"agent_start"}\n' +
+      '{"type":"extension_ui_request","id":"q1","method":"select","title":"pick","options":["red","blue"]}\n'
+    );
+  } else if (evt.type === "extension_ui_response" && evt.id === "q1") {
+    if (evt.cancelled) answer = "cancelled";
+    else if (evt.confirmed !== undefined) answer = `confirmed-${evt.confirmed}`;
+    else answer = evt.value;
+    process.stdout.write(
+      '{"type":"turn_start"}\n' +
+      '{"type":"turn_end"}\n' +
+      '{"type":"agent_settled"}\n'
+    );
+  } else if (evt.type === "get_last_assistant_text") {
+    process.stdout.write(
+      JSON.stringify({
+        type: "response",
+        command: "get_last_assistant_text",
+        success: true,
+        data: { text: `picked:${answer}` }
+      }) + "\n"
+    );
+  } else if (evt.type === "get_state") {
+    process.stdout.write(
+      '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2}}\n'
+    );
+  } else if (evt.type === "get_session_stats") {
+    process.stdout.write(
+      JSON.stringify({
+        type: "response",
+        command: "get_session_stats",
+        success: true,
+        data: { userMessages: turnN, assistantMessages: turnN, totalMessages: turnN * 2 }
+      }) + "\n"
+    );
+  }
+}
+
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buf += chunk;
+  let idx;
+  while ((idx = buf.indexOf("\n")) !== -1) {
+    const line = buf.slice(0, idx).trim();
+    buf = buf.slice(idx + 1);
+    handleLine(line);
+  }
+});

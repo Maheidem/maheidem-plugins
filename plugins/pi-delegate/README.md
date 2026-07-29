@@ -2,8 +2,10 @@
 
 Forward a coding task from Claude Code to the locally-installed `pi` CLI
 (pi.dev's `pi-coding-agent`), so the work runs on a local model instead of
-Claude doing it directly. A thin, foreground-only, one-shot subprocess
-wrapper — not a persistent broker, not a JSON-RPC server.
+Claude doing it directly. One RPC engine, two facades: a zero-dependency
+stdio MCP server (keep-alive conversations, mid-turn steering, elicitation;
+see "MCP server" below) and the original `/pi-delegate:delegate`
+command/subagent path.
 
 ## Commands
 
@@ -20,6 +22,28 @@ wrapper — not a persistent broker, not a JSON-RPC server.
   (`npm install -g @earendil-works/pi-coding-agent`) after confirmation, and
   (once pi is installed) lets you view, set, or clear a per-project
   provider/model pin.
+
+## MCP server (ADR-002)
+
+`scripts/pi-mcp-server.mjs` is a hand-rolled, zero-dependency stdio MCP
+server registered in `.mcp.json`, exposing the same runtime as typed tools:
+
+| Tool | Purpose |
+|---|---|
+| `pi_task` | Stateless one-shot task (same as the CLI `task` verb). |
+| `pi_conversation_send` | Send to a named keep-alive conversation (live `pi --mode rpc` child, reused across sends, TTL-reaped when idle, respawned transparently if dead). |
+| `pi_conversation_read` / `pi_conversation_status` | Lock-free transcript tail / session state plus registry info and any pending question. |
+| `pi_conversation_steer` / `pi_conversation_interrupt` | Mid-turn steering / abort-and-reprompt on the live child; both fail `ok:false` when the conversation is idle. |
+| `pi_conversation_end` | Kill the live child, delete session file(s) and lock. |
+| `pi_respond` | Answer a parked pi dialog when the client lacks elicitation support. |
+
+pi questions (`extension_ui_request`) are raised as MCP elicitation requests
+when the client declares the capability; otherwise they park as
+`pendingQuestion` (surfaced by `pi_conversation_status`, answerable via
+`pi_respond`), with pi's own dialog auto-cancel as the terminal fallback.
+Env tunables: `PI_MCP_TTL_MS` (default 300000), `PI_MCP_REGISTRY_CAP` (4),
+`PI_MCP_REAP_INTERVAL_MS` (60000). Full design: `docs/adr-002-mcp-facade.md`
+(building on ADR-001 in `docs/architecture.md`).
 
 ## Per-project provider/model pin
 

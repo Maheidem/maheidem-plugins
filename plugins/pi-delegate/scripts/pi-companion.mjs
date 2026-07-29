@@ -22,6 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_TIMEOUT_MS = 600000; // 600s
 const PI_SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
@@ -2037,7 +2038,15 @@ async function main() {
   process.exit(subcommand ? 1 : 0);
 }
 
-main().catch((err) => {
+const _isDirectRun = (() => {
+  try {
+    return process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (_isDirectRun) main().catch((err) => {
   // Last-resort guard: degrade to clean JSON on stdout, never a raw stack
   // trace. Routed through taskResult() (not a hand-written literal) so this
   // fallback shape can never drift from the one stable contract.
@@ -2052,3 +2061,32 @@ main().catch((err) => {
   );
   process.exit(1);
 });
+
+export {
+  readConversation,
+  taskResult,
+  detectErrorTurn,
+  rpcRoundtrip,
+  spawnManaged,
+  runTaskRpc,
+  runConversationSend,
+  runConversationStart,
+  runConversationStatus,
+  runConversationEnd,
+  runConversationSteer,
+  runConversationInterrupt,
+  runSetup,
+  runListModels,
+  resolveCwd,
+  loadProjectConfig,
+  isSafeArgValue,
+  sanitizeSessionName,
+  lockPathFor,
+  acquireLock,
+  releaseLock,
+  isPidAlive,
+  findSessionFiles,
+  piSessionsDir,
+  renderSessionEntries,
+  writeToFifo
+};

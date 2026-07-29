@@ -1,0 +1,71 @@
+#!/usr/bin/env node
+// Stub `pi --mode rpc` for ADR-002 stale-settle + steering suites.
+// Keeps a turn counter N starting at 1, increments per prompt received.
+// get_last_assistant_text returns 'reply-N' for the CURRENT N.
+// After emitting prompt response + agent_start, sleeps 0.4s BEFORE
+// emitting agent_end/agent_settled (asynchronous settle).
+// Line-buffered stdin: multiple JSON lines may arrive in ONE chunk
+// (kernel pipe buffering during process startup) — split on \n.
+
+let turnN = 0;
+const DELAY_MS = 400; // asynchronous settle window
+
+function handleLine(trimmed) {
+  if (!trimmed) return;
+  let evt;
+  try {
+    evt = JSON.parse(trimmed);
+  } catch {
+    return;
+  }
+  if (evt.type === "prompt" && evt.message !== undefined) {
+    turnN++;
+    process.stdout.write(
+      '{"type":"response","command":"prompt","success":true}\n' +
+      '{"type":"agent_start"}\n'
+    );
+    setTimeout(() => {
+      process.stdout.write(
+        '{"type":"turn_start"}\n' +
+        '{"type":"turn_end"}\n' +
+        '{"type":"agent_settled"}\n'
+      );
+    }, DELAY_MS);
+  } else if (evt.type === "steer" || evt.type === "abort") {
+    // acknowledged silently; server does not await a response for these
+  } else if (evt.type === "get_last_assistant_text") {
+    process.stdout.write(
+      JSON.stringify({
+        type: "response",
+        command: "get_last_assistant_text",
+        success: true,
+        data: { text: `reply-${turnN}` }
+      }) + "\n"
+    );
+  } else if (evt.type === "get_state") {
+    process.stdout.write(
+      '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2}}\n'
+    );
+  } else if (evt.type === "get_session_stats") {
+    process.stdout.write(
+      JSON.stringify({
+        type: "response",
+        command: "get_session_stats",
+        success: true,
+        data: { userMessages: turnN, assistantMessages: turnN, totalMessages: turnN * 2 }
+      }) + "\n"
+    );
+  }
+}
+
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buf += chunk;
+  let idx;
+  while ((idx = buf.indexOf("\n")) !== -1) {
+    const line = buf.slice(0, idx).trim();
+    buf = buf.slice(idx + 1);
+    handleLine(line);
+  }
+});
