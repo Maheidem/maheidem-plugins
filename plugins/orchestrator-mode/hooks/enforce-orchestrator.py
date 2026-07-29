@@ -70,19 +70,31 @@ nothing / let normal flow proceed"):
                                       through to the NORMAL permission prompt;
                                       no longer auto-allowed -- the user
                                       approves the toggle like any other Write)
-  7. mode == "on"  -> tool in MAIN_ALLOWLIST -> silent no-op; else deny.
-  8. mode == "wf"  -> Task/Agent -> allow ONLY subagent_type ==
+  7. [ADR-004] Write/Edit/MultiEdit/NotebookEdit to safe reflection
+     directories (memory/.remember)   -> silent no-op. Two dirs are always
+                                      writable on the main thread regardless
+                                      of mode: (a) project_dir/.remember/ and
+                                      (b) ~/.claude/projects/<slug>/memory/
+                                      where <slug> = project_dir with os.sep
+                                      replaced by "-". These dirs never touch
+                                      repo/product code -- they hold session
+                                      memory and plan artifacts only. Subagents
+                                      are unaffected (already full-access via
+                                      step 5). Non-matching paths fall through
+                                      to the normal mode dispatch.
+  8. mode == "on"  -> tool in MAIN_ALLOWLIST -> silent no-op; else deny.
+  9. mode == "wf"  -> Task/Agent -> allow ONLY subagent_type ==
                        WF_EXPLORE_SUBAGENT_TYPE, else DENY (fail-CLOSED, same
                        rationale as the pi branch below).
                     -> tool in WF_MODE_ALLOWLIST -> silent no-op; else deny.
-  9. mode == "pi"  -> Task/Agent -> DENY outright (ADR-003: no subagent
+  10. mode == "pi" -> Task/Agent -> DENY outright (ADR-003: no subagent
                        target exists anymore; code changes go through the
                        pi-delegate MCP tools instead).
                     -> mcp__pi-delegate__* / mcp__plugin_pi-delegate_* ->
                        silent no-op.
                     -> tool in PI_MODE_ALLOWLIST -> silent no-op; else deny.
 
-MODEL ALLOWLIST (composes with steps 7/8/9): when the active mode carries an
+MODEL ALLOWLIST (composes with steps 8/9/10): when the active mode carries an
 `allowed-models=<m1,m2,...>` option, matching is case-insensitive substring/
 family match (D3: allowlist entry "sonnet" permits any requested model id
 containing "sonnet", e.g. "claude-sonnet-5" -- see _model_allowed()), and an
@@ -432,6 +444,50 @@ def check_workflow_models(tool_input, allowed_models, data):
                ", ".join(allowed_models)) + DELEGATE_GUIDANCE)
 
 
+# ADR-004: safe reflection directories -- these dirs never execute code and
+# never touch repo/product files. They are where session memory and plan
+# artifacts live, so Write/Edit/MultiEdit/NotebookEdit to them stays allowed
+# on the main thread regardless of orchestrator-mode state.
+def _safe_reflection_dirs(data):
+    """Return a list of the two safe reflection directories, each resolved
+    through norm() so symlinks/relative paths are canonicalized."""
+    base = project_dir(data)
+    return [
+        norm(os.path.join(base, ".remember"), base),
+        norm(
+            os.path.join(
+                os.path.expanduser("~/.claude/projects"),
+                project_dir(data).replace(os.sep, "-"),
+                "memory",
+            ),
+            base,
+        ),
+    ]
+
+
+def _is_safe_reflection_write(tool, tool_input, data):
+    """Check whether this Write/Edit/MultiEdit/NotebookEdit targets a safe
+    reflection directory (ADR-004). Returns False immediately if the tool is
+    not one of those four. Otherwise resolves the target path and checks
+    whether it equals or falls under one of the safe dirs. Fail-closed: any
+    exception returns False."""
+    if tool not in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        return False
+    try:
+        path_key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+        base = project_dir(data)
+        target = norm(tool_input.get(path_key, ""), base)
+        if not target:
+            return False
+        safe_dirs = _safe_reflection_dirs(data)
+        for sd in safe_dirs:
+            if target == sd or target.startswith(sd + os.sep):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def handle_on_mode(tool, tool_input, allowed_models, data):
     if tool in MAIN_ALLOWLIST:
         # Model allowlist composes with the mode gating: these delegation
@@ -600,7 +656,14 @@ def main():
         if target and target == norm(state_file_path(data), base):
             noop("Write to state file -> fall through to normal prompt (toggle, D1)")
 
-    # 7/8/9. branch on mode (the model allowlist, when set, composes inside
+    # 7. [ADR-004] Write/Edit/MultiEdit/NotebookEdit to safe reflection dirs
+    # (.remember + ~/.claude/projects/<slug>/memory) on the main thread --
+    # these dirs never touch repo/product code, so they stay writable
+    # regardless of mode. Non-matching paths fall through to the mode dispatch.
+    if _is_safe_reflection_write(tool, tool_input, data):
+        noop("reflection path write -> silent no-op (ADR-004: memory/.remember dirs stay writable)")
+
+    # 8/9/10. branch on mode (the model allowlist, when set, composes inside
     # each handler on delegation calls the mode gating would otherwise allow)
     if mode == "on":
         handle_on_mode(tool, tool_input, allowed_models, data)
