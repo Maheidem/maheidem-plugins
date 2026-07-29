@@ -54,7 +54,7 @@
     {
       "name": "pi-delegate",
       "description": "Delegate coding work to the locally-installed pi CLI (pi.dev's pi-coding-agent) so it runs on a local model. One RPC engine, one MCP facade: a zero-dependency stdio MCP server (keep-alive conversations, mid-turn steering, elicitation) plus the /pi-delegate:delegate command for task sizing/decomposition.",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
