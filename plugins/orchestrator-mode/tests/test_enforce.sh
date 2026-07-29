@@ -196,6 +196,18 @@ run_case "on/Monitor allowed" enforce-orchestrator.py \
   "{\"tool_name\":\"Monitor\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
   0 "__EMPTY__" ""
 
+# pi mode: pi-delegate MCP tools allowed by prefix (D5-D, pi-delegate ADR-002)
+new_proj "pi"
+run_case "pi/mcp pi-delegate allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__pi-delegate__pi_conversation_send\",\"tool_input\":{\"name\":\"x\",\"message\":\"hi\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
+# pi mode: other MCP tools still denied
+new_proj "pi"
+run_case "pi/mcp other denied" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__foo__bar\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
+  0 "deny" ""
+
 echo
 echo "test_enforce.sh: $pass/$total passed"
 [ "$fail" -eq 0 ]

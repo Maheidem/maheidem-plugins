@@ -523,6 +523,14 @@ def handle_pi_mode(tool, tool_input, allowed_models):
             % (tool, subagent_type))
         deny(reason)
 
+    # D5-D (pi-delegate ADR-002): the pi-delegate MCP server's tools ARE the
+    # sanctioned "changes go through pi" path, so they are allowlisted by
+    # prefix under PI mode. D2's state-file scan (step 3 in main()) already
+    # ran before any mode branch, so a pi-delegate MCP call whose input
+    # mentions the state file is still denied there.
+    if tool.startswith("mcp__pi-delegate__"):
+        noop("mode=pi: pi-delegate MCP tool %s -> silent no-op" % tool)
+
     if tool in PI_MODE_ALLOWLIST:
         noop("allowlisted tool %s -> silent no-op (mode=pi)" % tool)
 
