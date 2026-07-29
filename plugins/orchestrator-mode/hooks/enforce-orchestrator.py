@@ -528,7 +528,12 @@ def handle_pi_mode(tool, tool_input, allowed_models):
     # prefix under PI mode. D2's state-file scan (step 3 in main()) already
     # ran before any mode branch, so a pi-delegate MCP call whose input
     # mentions the state file is still denied there.
-    if tool.startswith("mcp__pi-delegate__"):
+    # Claude Code exposes plugin-bundled MCP servers under
+    # "mcp__plugin_<plugin>_<server>__<tool>" at runtime (observed live:
+    # mcp__plugin_pi-delegate_pi-delegate__pi_task); the bare
+    # "mcp__pi-delegate__" form is kept for direct (non-plugin) .mcp.json
+    # registrations of the same server.
+    if tool.startswith("mcp__pi-delegate__") or tool.startswith("mcp__plugin_pi-delegate_"):
         noop("mode=pi: pi-delegate MCP tool %s -> silent no-op" % tool)
 
     if tool in PI_MODE_ALLOWLIST:

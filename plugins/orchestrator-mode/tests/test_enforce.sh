@@ -202,6 +202,12 @@ run_case "pi/mcp pi-delegate allowed" enforce-orchestrator.py \
   "{\"tool_name\":\"mcp__pi-delegate__pi_conversation_send\",\"tool_input\":{\"name\":\"x\",\"message\":\"hi\"},\"cwd\":\"$TMP/proj\"}" \
   0 "__EMPTY__" ""
 
+# pi mode: plugin-qualified runtime name (as Claude Code actually exposes it)
+new_proj "pi"
+run_case "pi/mcp pi-delegate plugin-qualified allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__plugin_pi-delegate_pi-delegate__pi_task\",\"tool_input\":{\"text\":\"hi\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
 # pi mode: other MCP tools still denied
 new_proj "pi"
 run_case "pi/mcp other denied" enforce-orchestrator.py \

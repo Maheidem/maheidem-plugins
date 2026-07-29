@@ -53,7 +53,8 @@ REMINDER_ON = (
 REMINDER_PI = (
     "ORCHESTRATION MODE is set to PI for this project. You are READ-ONLY on "
     "the main thread AND you cannot delegate to any subagent except "
-    "pi-delegate: Write, Edit, NotebookEdit, Bash, all MCP tools, and "
+    "pi-delegate: Write, Edit, NotebookEdit, Bash, all MCP tools except the "
+    "pi-delegate server's own (mcp__pi-delegate__* is allowed), and "
     "Task/Agent to any subagent_type other than exactly "
     "'pi-delegate:delegate' are all blocked. Read, Grep, Glob, LS, WebFetch, "
     "WebSearch, and the task-tracking tools (TodoWrite, TaskCreate, etc.) are "
