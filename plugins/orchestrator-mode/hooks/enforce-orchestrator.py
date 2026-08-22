@@ -256,6 +256,20 @@ PI_MODE_ALLOWLIST = {
     "CronCreate", "CronDelete",
 }
 
+# MCP server prefixes allowed under mode == "pi". pi-delegate is the
+# sanctioned delegation path; discord and telegram are messaging plugins
+# the user explicitly allowed. Each server appears in two forms: the
+# plugin-bundled "mcp__plugin_<plugin>_<server>__" runtime name and the
+# bare "mcp__<server>__" form for direct .mcp.json registrations.
+PI_MODE_MCP_PREFIXES = (
+    "mcp__pi-delegate__",
+    "mcp__plugin_pi-delegate_",
+    "mcp__discord__",
+    "mcp__plugin_discord_",
+    "mcp__telegram__",
+    "mcp__plugin_telegram_",
+)
+
 # RESOLVED (was an open question as of 0.2.2): `Workflow` was added to
 # MAIN_ALLOWLIST in 0.2.3 (pure delegation, same category as Task/Agent) but
 # deliberately NOT added to PI_MODE_ALLOWLIST. Workflow can itself spawn
@@ -562,8 +576,9 @@ def handle_pi_mode(tool, tool_input, allowed_models):
     # mcp__plugin_pi-delegate_pi-delegate__pi_task); the bare
     # "mcp__pi-delegate__" form is kept for direct (non-plugin) .mcp.json
     # registrations of the same server.
-    if tool.startswith("mcp__pi-delegate__") or tool.startswith("mcp__plugin_pi-delegate_"):
-        noop("mode=pi: pi-delegate MCP tool %s -> silent no-op" % tool)
+    for prefix in PI_MODE_MCP_PREFIXES:
+        if tool.startswith(prefix):
+            noop("mode=pi: allowlisted MCP tool %s -> silent no-op" % tool)
 
     if tool in PI_MODE_ALLOWLIST:
         noop("allowlisted tool %s -> silent no-op (mode=pi)" % tool)
