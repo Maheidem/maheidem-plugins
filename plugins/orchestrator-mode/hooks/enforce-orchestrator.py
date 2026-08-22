@@ -256,12 +256,12 @@ PI_MODE_ALLOWLIST = {
     "CronCreate", "CronDelete",
 }
 
-# MCP server prefixes allowed under mode == "pi". pi-delegate is the
-# sanctioned delegation path; discord and telegram are messaging plugins
-# the user explicitly allowed. Each server appears in two forms: the
-# plugin-bundled "mcp__plugin_<plugin>_<server>__" runtime name and the
-# bare "mcp__<server>__" form for direct .mcp.json registrations.
-PI_MODE_MCP_PREFIXES = (
+# MCP server prefixes allowed on the main thread in ALL orchestrator modes.
+# pi-delegate is the sanctioned delegation path; discord and telegram are
+# messaging plugins the user explicitly allowed. Each server appears in two
+# forms: the plugin-bundled "mcp__plugin_<plugin>_<server>__" runtime name
+# and the bare "mcp__<server>__" form for direct .mcp.json registrations.
+ALLOWED_MCP_PREFIXES = (
     "mcp__pi-delegate__",
     "mcp__plugin_pi-delegate_",
     "mcp__discord__",
@@ -503,6 +503,10 @@ def _is_safe_reflection_write(tool, tool_input, data):
 
 
 def handle_on_mode(tool, tool_input, allowed_models, data):
+    for prefix in ALLOWED_MCP_PREFIXES:
+        if tool.startswith(prefix):
+            noop("mode=on: allowlisted MCP tool %s -> silent no-op" % tool)
+
     if tool in MAIN_ALLOWLIST:
         # Model allowlist composes with the mode gating: these delegation
         # calls are otherwise allowed under ON, so run the model check first.
@@ -522,6 +526,10 @@ def handle_on_mode(tool, tool_input, allowed_models, data):
 
 
 def handle_wf_mode(tool, tool_input, allowed_models, data):
+    for prefix in ALLOWED_MCP_PREFIXES:
+        if tool.startswith(prefix):
+            noop("mode=wf: allowlisted MCP tool %s -> silent no-op" % tool)
+
     # Task/Agent: allow ONLY the built-in read-only Explore scout. Same
     # deliberate FAIL-CLOSED exception to the fail-open policy elsewhere in
     # this file as handle_pi_mode below -- missing/empty/wrong subagent_type
@@ -576,7 +584,7 @@ def handle_pi_mode(tool, tool_input, allowed_models):
     # mcp__plugin_pi-delegate_pi-delegate__pi_task); the bare
     # "mcp__pi-delegate__" form is kept for direct (non-plugin) .mcp.json
     # registrations of the same server.
-    for prefix in PI_MODE_MCP_PREFIXES:
+    for prefix in ALLOWED_MCP_PREFIXES:
         if tool.startswith(prefix):
             noop("mode=pi: allowlisted MCP tool %s -> silent no-op" % tool)
 
