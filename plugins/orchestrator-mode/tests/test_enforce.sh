@@ -214,6 +214,62 @@ run_case "pi/mcp other denied" enforce-orchestrator.py \
   "{\"tool_name\":\"mcp__foo__bar\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
   0 "deny" ""
 
+# presales-toolkit MCP carve-out (0.9.2): plugin-qualified prefix allowed
+# under all three active modes, for both a read tool and a write tool.
+new_proj "on"
+run_case "on/mcp presales-toolkit read allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_list\",\"tool_input\":{\"client\":\"x\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
+new_proj "wf"
+run_case "wf/mcp presales-toolkit read allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_list\",\"tool_input\":{\"client\":\"x\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
+new_proj "pi"
+run_case "pi/mcp presales-toolkit read allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_list\",\"tool_input\":{\"client\":\"x\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
+new_proj "on"
+run_case "on/mcp presales-toolkit write allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_upsert\",\"tool_input\":{\"client\":\"x\",\"name\":\"y\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
+new_proj "wf"
+run_case "wf/mcp presales-toolkit write allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_upsert\",\"tool_input\":{\"client\":\"x\",\"name\":\"y\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
+new_proj "pi"
+run_case "pi/mcp presales-toolkit write allowed" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_upsert\",\"tool_input\":{\"client\":\"x\",\"name\":\"y\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "__EMPTY__" ""
+
+# The carve-out is a specific prefix allowlist, not a blanket mcp__* pass: a
+# non-allowlisted MCP tool is still denied under all three active modes.
+new_proj "on"
+run_case "on/mcp non-allowlisted denied" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__claude_ai_Slack__slack_send_message\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
+  0 "deny" ""
+
+new_proj "wf"
+run_case "wf/mcp non-allowlisted denied" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__claude_ai_Slack__slack_send_message\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
+  0 "deny" ""
+
+new_proj "pi"
+run_case "pi/mcp non-allowlisted denied" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__claude_ai_Slack__slack_send_message\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
+  0 "deny" ""
+
+# D2 still wins over the presales-toolkit carve-out: an allowlisted-prefix
+# MCP call whose tool_input mentions the state file is denied regardless.
+new_proj "on"
+run_case "D2/mcp presales-toolkit state-file substring denied" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__misc_add\",\"tool_input\":{\"note\":\"see /x/.orchestrator-mode.state\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "state-file changes go through" ""
+
 echo
 echo "test_enforce.sh: $pass/$total passed"
 [ "$fail" -eq 0 ]

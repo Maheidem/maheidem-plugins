@@ -258,9 +258,16 @@ PI_MODE_ALLOWLIST = {
 
 # MCP server prefixes allowed on the main thread in ALL orchestrator modes.
 # pi-delegate is the sanctioned delegation path; discord and telegram are
-# messaging plugins the user explicitly allowed. Each server appears in two
-# forms: the plugin-bundled "mcp__plugin_<plugin>_<server>__" runtime name
-# and the bare "mcp__<server>__" form for direct .mcp.json registrations.
+# messaging plugins the user explicitly allowed; presales-toolkit is the
+# client-tracking DB MCP server the user explicitly allowed. Each server
+# normally appears in two forms: the plugin-bundled
+# "mcp__plugin_<plugin>_<server>__" runtime name and the bare
+# "mcp__<server>__" form for direct .mcp.json registrations. presales-toolkit
+# is deliberately the plugin-qualified form ONLY -- its .mcp.json registers
+# the server under the bare name "db", so a bare "mcp__db__" prefix would
+# exempt ANY MCP server named "db" from ANY plugin, not just this one. That's
+# too broad a carve-out to grant by name collision, so only the fully
+# plugin-qualified "mcp__plugin_presales-toolkit_" form is allowlisted.
 ALLOWED_MCP_PREFIXES = (
     "mcp__pi-delegate__",
     "mcp__plugin_pi-delegate_",
@@ -268,6 +275,7 @@ ALLOWED_MCP_PREFIXES = (
     "mcp__plugin_discord_",
     "mcp__telegram__",
     "mcp__plugin_telegram_",
+    "mcp__plugin_presales-toolkit_",
 )
 
 # RESOLVED (was an open question as of 0.2.2): `Workflow` was added to

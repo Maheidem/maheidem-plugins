@@ -131,7 +131,9 @@ repo/state mutation, same category as the already-allowlisted `ScheduleWakeup`.
 
 - `Write`, `Edit`, `MultiEdit`, `NotebookEdit` (file mutation)
 - `Bash` (command execution)
-- **ALL `mcp__*` tools** (every MCP server tool is blocked on main)
+- **`mcp__*` tools, except the allowlisted server prefixes** in
+  `ALLOWED_MCP_PREFIXES` (pi-delegate, discord, telegram, presales-toolkit) —
+  every other MCP server tool is blocked on main
 - `EnterWorktree`, `ExitWorktree`, `RemoteTrigger` (external side effects or
   state mutation)
 - any unknown / future tool not on the allowlist
@@ -168,6 +170,21 @@ MAIN_ALLOWLIST = {
     "MyExtraTool",   # <- add here
 }
 ```
+
+**Exempting an MCP server's tools** goes through a separate mechanism: the
+`ALLOWED_MCP_PREFIXES` tuple (also in `hooks/enforce-orchestrator.py`), not
+the three tool-name sets above. Every entry is a `startswith` prefix match
+against the *runtime* tool name — the name Claude Code actually dispatches
+under, which for a plugin-bundled server is
+`mcp__plugin_<plugin>_<server>__<tool>`, not the server name alone. A prefix
+match here exempts every tool the matching server exposes, in all three
+modes at once, so add an entry only for a server the user has explicitly
+sanctioned. Prefer the plugin-qualified form
+(`mcp__plugin_<plugin>_<server>_`); only use the bare `mcp__<server>__` form
+when the server name is globally unambiguous — a bare prefix matches that
+server name regardless of which plugin (or none) registers it, so a common
+or collision-prone server name (e.g. `db`) would exempt every plugin's
+server of that name, not just the one intended.
 
 ## Behavior when `pi` (forced delegation via pi-delegate)
 
@@ -264,7 +281,9 @@ can spawn arbitrary subagents, which is exactly what `wf` mode intends to
 route through, unlike `pi`'s pi-delegate-only restriction).
 
 **Denied under `wf`** — same as `on` (Write, Edit, MultiEdit, NotebookEdit,
-Bash, all `mcp__*`), plus Task/Agent to any subagent other than `Explore`.
+Bash, all `mcp__*` except the allowlisted server prefixes in
+`ALLOWED_MCP_PREFIXES` — pi-delegate, discord, telegram, presales-toolkit),
+plus Task/Agent to any subagent other than `Explore`.
 
 ## Model allowlist (`--allowed-models`)
 
