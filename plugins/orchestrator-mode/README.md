@@ -10,7 +10,7 @@ Per-project "orchestrator" mode for Claude Code, with four states: `off`,
 - **`pi`**: the same read-only restriction, PLUS the general delegation escape
   hatch is closed. Task/Agent is **denied outright** — no subagent target
   exists for this mode. Code changes go through the pi-delegate MCP tools
-  directly (`mcp__pi-delegate__pi_task` etc., shipped by the separate
+  directly (`mcp__plugin_pi-delegate_pi-delegate__pi_task` etc., shipped by the separate
   `pi-delegate` plugin, allowlisted by tool-name prefix) or via
   `/pi-delegate:delegate <task>`, which forwards the task to the local `pi`
   CLI. WebFetch/WebSearch stay allowlisted, same as under `on`

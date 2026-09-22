@@ -606,7 +606,7 @@ def handle_pi_mode(tool, tool_input, allowed_models):
         "orchestrator-mode is set to PI for this project: the main agent "
         "cannot write, edit, or execute commands directly, and cannot "
         "delegate to any subagent. '%s' is blocked. Code changes go through "
-        "the pi-delegate MCP tools (mcp__pi-delegate__pi_task, "
+        "the pi-delegate MCP tools (mcp__plugin_pi-delegate_pi-delegate__pi_task, "
         "pi_conversation_send/steer/interrupt/read/status/end) directly, or "
         "via /pi-delegate:delegate <task> for task decomposition. To exit "
         "this mode, run /orchestrator-mode:mode off." % tool) + DELEGATE_GUIDANCE
