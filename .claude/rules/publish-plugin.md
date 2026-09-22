@@ -33,28 +33,56 @@ Run `claude plugin validate .` from the marketplace root (this repo's root) — 
 
 Example: `pi-delegate 0.2.0 -> 0.3.0: completion-marker contract as primary success signal`
 
-**5. Push to the remote** (`git push`). This is required — the marketplace is git-backed, and `marketplace update` in step 6 only sees commits that have landed on the remote (`github.com/maheidem/maheidem-plugins`, branch `master`).
+**5. Push to the remote** (the step 6 block runs `git push` and checks it landed). The two profiles read this marketplace from different places (`plugins/known_marketplaces.json` in each config dir):
 
-> Pushing is a shared-state, hard-to-reverse action. Confirm with the user before this step unless they've already explicitly authorized the full publish sequence in the current conversation.
+| Profile | How to run `claude` | maheidem-plugins source |
+|---|---|---|
+| PERSONAL | `CLAUDE_CONFIG_DIR` **unset** (`env -u CLAUDE_CONFIG_DIR`); never set it to `~/.claude`, that points at a stub state file | `directory` -> this working tree (sees even uncommitted edits) |
+| WORK | `CLAUDE_CONFIG_DIR=$HOME/.claude-symphony` (what `ccsymphony` sets) | `github` -> `maheidem/maheidem-plugins`, branch `master` (sees only pushed commits) |
 
-**6. Refresh the marketplace catalog:**
+So PERSONAL updates without a push, but WORK silently stays on the old version until the push lands. Push is pre-authorized by Marcos as part of every release of this marketplace; still never force-push.
 
-```bash
-claude plugin marketplace update maheidem-plugins
-```
-
-(Interactive equivalent: `/plugin marketplace update maheidem-plugins`.) If this runs before step 5's push lands, it silently sees stale data — always push first.
-
-**7. Update the installed plugin to the new version:**
+**6. Push, then update BOTH profiles and read the installed version back.** Run from the marketplace root, with `P` set to the plugin name. Run it as one block so a failure stops before the summary:
 
 ```bash
-claude plugin update <plugin-name>@maheidem-plugins
+P=<plugin-name>
+M=plugins/$P/.claude-plugin/plugin.json; [ -f "$M" ] || M=plugins/$P/plugin.json   # handoff keeps it at the plugin root
+WANT=$(jq -r .version "$M")
+git push && git fetch -q && [ "$(git rev-parse HEAD)" = "$(git rev-parse '@{u}')" ] \
+  || { echo "FAIL: push did not land on origin"; false; }
+fail=0
+for prof in personal work; do
+  if [ "$prof" = personal ]; then run() { env -u CLAUDE_CONFIG_DIR claude "$@"; }
+  else run() { CLAUDE_CONFIG_DIR="$HOME/.claude-symphony" claude "$@"; }; fi
+  run plugin marketplace update maheidem-plugins || { echo "FAIL $prof: marketplace update"; fail=1; continue; }
+  GOT=$(run plugin list --json | jq -r --arg id "$P@maheidem-plugins" \
+        '[.[] | select(.id == $id and .scope == "user")][0].version // "not-installed"')
+  if [ "$GOT" = not-installed ]; then echo "SKIP $prof: $P is not installed at user scope"; continue; fi
+  run plugin update "$P@maheidem-plugins" || { echo "FAIL $prof: plugin update"; fail=1; continue; }
+  GOT=$(run plugin list --json | jq -r --arg id "$P@maheidem-plugins" \
+        '[.[] | select(.id == $id and .scope == "user")][0].version // "not-installed"')
+  if [ "$GOT" = "$WANT" ]; then echo "OK   $prof: $P $GOT"; else echo "FAIL $prof: $P installed=$GOT source=$WANT"; fail=1; fi
+done
+[ "$fail" = 0 ]
 ```
 
-(Interactive equivalent: `/plugin update <plugin-name>@maheidem-plugins`.) Always use the full `<plugin-name>@maheidem-plugins` identifier — the bare plugin name has been observed to fail (CLI 2.1.x, 2026-07-23: `claude plugin update orchestrator-mode` exited 1 with `Plugin "orchestrator-mode" not found`, even with no cross-marketplace ambiguity) while the suffixed form succeeded. `plugin update` is a no-op if the version didn't actually change, so a failed step 2 or 5 will surface here.
+- Always use the full `<plugin-name>@maheidem-plugins` id: the bare name has failed with `Plugin "orchestrator-mode" not found` (CLI 2.1.x, 2026-07-23) where the suffixed form worked.
+- `plugin update` is a no-op when the version didn't change, so a missed bump (step 2) or push (step 5) shows up as a `FAIL ... installed=<old>` line, not as a silent success. Treat any FAIL as "not released".
+- `SKIP` means the plugin was never installed in that profile. Installing it there (`run plugin install $P@maheidem-plugins`) is a separate decision, so ask first.
+- The check reads `scope == "user"` only. `plugin list --json` can also show `project`/`local` entries (e.g. WORK lists a project-scope orchestrator-mode for `/Users/maheidem`); those need `--scope project|local` run from that project dir.
+- Updates apply on the next session start (the CLI says "restart required").
+
+**7. Check the settings that must match across profiles.** Three keys are meant to be identical in both `settings.json` files: `cleanupPeriodDays`, the no-hang Bash guard hook command, and `statusLine.command`:
+
+```bash
+k='{cleanupPeriodDays, statusLine: .statusLine.command, noHang: [.. | objects | .command? // empty | strings | select(test("no-hang"))]}'
+diff <(jq -S "$k" ~/.claude/settings.json) <(jq -S "$k" ~/.claude-symphony/settings.json) && echo "profiles in sync"
+```
+
+Any diff output is drift: report it, don't "fix" it inside a release.
 
 ## Gotchas
 
-- Steps 6 and 7 are two distinct operations: marketplace update pulls the new catalog (manifest metadata); plugin update re-syncs the actual installed plugin files from that catalog entry. Both are needed — running only one leaves either a stale catalog or a stale install.
+- `marketplace update` and `plugin update` are two distinct operations: the first pulls the new catalog (manifest metadata), the second re-syncs the installed plugin files from that catalog entry. The step 6 loop runs both per profile; running only one leaves either a stale catalog or a stale install.
 - `marketplace.json`'s per-plugin `description` field sometimes drifts from the plugin's own `plugin.json` description (pre-existing in this repo, e.g. `handoff`). The bump script does not reconcile these — only sync descriptions manually if you're intentionally updating them.
 - Sources: `https://code.claude.com/docs/en/plugin-marketplaces.md`, `https://code.claude.com/docs/en/plugins-reference.md`.
