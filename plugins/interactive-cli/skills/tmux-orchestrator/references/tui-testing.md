@@ -174,4 +174,4 @@ Mitigations (pick one):
 - **Session-name reuse**: failed teardown leaves orphan sessions. Always `find-session`
   before `create-session`, or always use `$$`-suffixed names.
 
-For driving pi specifically, see the pi-session-monitor skill.
+For pi, delegate through the pi-delegate plugin (`/pi-delegate:delegate`, `mcp__plugin_pi-delegate_pi-delegate__*` tools) instead of driving its TUI.

@@ -75,7 +75,8 @@ modifiers `C-`/`M-`/`S-`. Full table + recipes: `references/send-keys-cookbook.m
 | Send input (especially anything beyond `cmd + Enter`) | `references/send-keys-cookbook.md` |
 | Read output, stream logs, assert on screen state, manage scrollback | `references/capture-and-stream.md` |
 | Coordinate multiple sessions, detect completion, hooks, `wait-for`, format strings | `references/orchestration-patterns.md` |
-| Drive a TUI/REPL — or another `claude` — end-to-end (startup gates, idle detection, completion sentinels, autonomy) | `references/tui-testing.md` (pi specifics live in the pi-session-monitor skill) |
+| Drive a TUI/REPL end-to-end (startup gates, idle detection, completion sentinels, autonomy) | `references/tui-testing.md` (for pi, use the pi-delegate plugin's MCP tools, not tmux) |
+| Drive the Claude Code TUI specifically | `references/claude-tui.md` |
 | Assert that any tmux flag / command / hook / format variable exists | `references/verify-recipes.md` ← always before asserting |
 
 ## Helper scripts (`scripts/`)
@@ -91,8 +92,7 @@ tmux 3.6a on this host.
 | `assert-pane-contains.sh <target> <regex> [lines=50]` | One-shot capture + grep; exit 1 with diagnostic dump on miss. |
 | `stream-pane-to-file.sh <target> <logfile> [--detach]` | Opens `pipe-pane -o "cat >> file"` with EXIT-trap cleanup (foreground) or fire-and-forget (`--detach`). |
 
-For an end-to-end driven-session example, see the pi-session-monitor skill
-(`examples/smoke-orchestrate.sh`).
+For an end-to-end driven-session example, see `references/claude-tui.md`.
 
 ## Verify-before-assert (hard rule)
 
