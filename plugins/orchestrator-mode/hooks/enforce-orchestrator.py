@@ -278,6 +278,19 @@ ALLOWED_MCP_PREFIXES = (
     "mcp__plugin_presales-toolkit_",
 )
 
+# Individual MCP tools allowed on the main thread in ALL orchestrator modes,
+# matched by EXACT name (never by prefix). These are send tools that reach
+# another person, so the rest of their server stays blocked and each one must
+# also be listed in permissions.ask of the profile's settings.json -- the
+# orchestrator hook only stops blocking it, the ask rule still gates it.
+ALLOWED_MCP_TOOLS = frozenset({
+    "mcp__waha-whatsapp__whatsapp_send_text",
+})
+
+
+def _is_allowed_mcp(tool):
+    return tool in ALLOWED_MCP_TOOLS or tool.startswith(ALLOWED_MCP_PREFIXES)
+
 # RESOLVED (was an open question as of 0.2.2): `Workflow` was added to
 # MAIN_ALLOWLIST in 0.2.3 (pure delegation, same category as Task/Agent) but
 # deliberately NOT added to PI_MODE_ALLOWLIST. Workflow can itself spawn
@@ -470,17 +483,44 @@ def check_workflow_models(tool_input, allowed_models, data):
 # never touch repo/product files. They are where session memory and plan
 # artifacts live, so Write/Edit/MultiEdit/NotebookEdit to them stays allowed
 # on the main thread regardless of orchestrator-mode state.
+_SLUG_MAX = 200
+
+
+def _project_slug(path):
+    """Claude Code's projects/<slug> rule, copied from the CLI (2.1.280):
+    every char outside [A-Za-z0-9] becomes '-' (so '/', '.', '_' all do);
+    past 200 chars it keeps the first 200 plus '-' and base36(abs(h)), where
+    h is the Java-style 32-bit string hash over UTF-16 code units."""
+    slug = re.sub(r"[^A-Za-z0-9]", "-", path)
+    if len(slug) <= _SLUG_MAX:
+        return slug
+    units = path.encode("utf-16-le")
+    h = 0
+    for i in range(0, len(units), 2):
+        h = (h * 31 + int.from_bytes(units[i:i + 2], "little")) & 0xFFFFFFFF
+    h = abs(h - (1 << 32) if h >= (1 << 31) else h)
+    digits = ""
+    while True:
+        h, r = divmod(h, 36)
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"[r] + digits
+        if not h:
+            break
+    return "%s-%s" % (slug[:_SLUG_MAX], digits)
+
+
 def _safe_reflection_dirs(data):
     """Return a list of the two safe reflection directories, each resolved
-    through norm() so symlinks/relative paths are canonicalized."""
+    through norm() so symlinks/relative paths are canonicalized. The memory
+    dir lives under the ACTIVE profile's config dir (CLAUDE_CONFIG_DIR, or
+    ~/.claude when unset/empty), not always ~/.claude."""
     base = project_dir(data)
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
     return [
         norm(os.path.join(base, ".remember"), base),
         norm(
             os.path.join(
-                os.path.expanduser("~/.claude/projects"),
-                project_dir(data).replace(os.sep, "-"),
-                "memory",
+                os.path.expanduser(config_dir), "projects",
+                _project_slug(base), "memory",
             ),
             base,
         ),
@@ -511,9 +551,8 @@ def _is_safe_reflection_write(tool, tool_input, data):
 
 
 def handle_on_mode(tool, tool_input, allowed_models, data):
-    for prefix in ALLOWED_MCP_PREFIXES:
-        if tool.startswith(prefix):
-            noop("mode=on: allowlisted MCP tool %s -> silent no-op" % tool)
+    if _is_allowed_mcp(tool):
+        noop("mode=on: allowlisted MCP tool %s -> silent no-op" % tool)
 
     if tool in MAIN_ALLOWLIST:
         # Model allowlist composes with the mode gating: these delegation
@@ -534,9 +573,8 @@ def handle_on_mode(tool, tool_input, allowed_models, data):
 
 
 def handle_wf_mode(tool, tool_input, allowed_models, data):
-    for prefix in ALLOWED_MCP_PREFIXES:
-        if tool.startswith(prefix):
-            noop("mode=wf: allowlisted MCP tool %s -> silent no-op" % tool)
+    if _is_allowed_mcp(tool):
+        noop("mode=wf: allowlisted MCP tool %s -> silent no-op" % tool)
 
     # Task/Agent: allow ONLY the built-in read-only Explore scout. Same
     # deliberate FAIL-CLOSED exception to the fail-open policy elsewhere in
@@ -592,9 +630,8 @@ def handle_pi_mode(tool, tool_input, allowed_models):
     # mcp__plugin_pi-delegate_pi-delegate__pi_task); the bare
     # "mcp__pi-delegate__" form is kept for direct (non-plugin) .mcp.json
     # registrations of the same server.
-    for prefix in ALLOWED_MCP_PREFIXES:
-        if tool.startswith(prefix):
-            noop("mode=pi: allowlisted MCP tool %s -> silent no-op" % tool)
+    if _is_allowed_mcp(tool):
+        noop("mode=pi: allowlisted MCP tool %s -> silent no-op" % tool)
 
     if tool in PI_MODE_ALLOWLIST:
         noop("allowlisted tool %s -> silent no-op (mode=pi)" % tool)

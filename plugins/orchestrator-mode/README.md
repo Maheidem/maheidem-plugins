@@ -132,7 +132,10 @@ repo/state mutation, same category as the already-allowlisted `ScheduleWakeup`.
 - `Write`, `Edit`, `MultiEdit`, `NotebookEdit` (file mutation)
 - `Bash` (command execution)
 - **`mcp__*` tools, except the allowlisted server prefixes** in
-  `ALLOWED_MCP_PREFIXES` (pi-delegate, discord, telegram, presales-toolkit) —
+  `ALLOWED_MCP_PREFIXES` (pi-delegate, discord, telegram, presales-toolkit)
+  and the exact tool names in `ALLOWED_MCP_TOOLS`
+  (`mcp__waha-whatsapp__whatsapp_send_text` only; it reaches another person,
+  so it must also sit in `permissions.ask` of the profile's settings.json) —
   every other MCP server tool is blocked on main
 - `EnterWorktree`, `ExitWorktree`, `RemoteTrigger` (external side effects or
   state mutation)
@@ -282,7 +285,8 @@ route through, unlike `pi`'s pi-delegate-only restriction).
 
 **Denied under `wf`** — same as `on` (Write, Edit, MultiEdit, NotebookEdit,
 Bash, all `mcp__*` except the allowlisted server prefixes in
-`ALLOWED_MCP_PREFIXES` — pi-delegate, discord, telegram, presales-toolkit),
+`ALLOWED_MCP_PREFIXES` — pi-delegate, discord, telegram, presales-toolkit —
+and the exact names in `ALLOWED_MCP_TOOLS`),
 plus Task/Agent to any subagent other than `Explore`.
 
 ## Model allowlist (`--allowed-models`)
@@ -299,6 +303,10 @@ request:
 
 The command writes the option into the state file after the mode token
 (e.g. `wf allowed-models=opus,sonnet,haiku` — single line, lowercased list).
+Switching modes without the flag keeps the stored list (`wf` -> `on` stays
+restricted); `--allowed-models none` clears it. The flag is parsed leniently
+(`-allowed-models`, `--allowed-modes`, comma- or space-separated values) and
+the command echoes the normalized state line it wrote.
 `/orchestrator-mode:mode off` clears it along with the mode;
 `/orchestrator-mode:mode status` reports it when set. The per-prompt reminder
 also names the allowlist while it is active.

@@ -30,14 +30,33 @@ allowlist for delegated agents).
 The requested action is: **$ARGUMENTS** (one of `on`, `off`, `pi`, `wf`,
 `status`; if empty or unrecognized, treat it as `status`).
 
-Parse an optional `--allowed-models <m1,m2,...>` flag (also accept
-`--allowed-models=<m1,m2,...>`) AFTER the mode argument for `on`, `pi`, and
-`wf`. When present, lowercase the comma-separated list, strip whitespace, and
-constrain which models delegated agents and workflow scripts may explicitly
-request. **When an `allowed-models` restriction is active, omitting the model
-is NOT allowed** for delegated Task/Agent calls or `Workflow` `agent()` calls —
-every delegated call must explicitly declare a model from the list, or it is
-denied. Ignore the flag for `off` and `status`.
+**Parsing the allowed-models flag** (only for `on`, `pi`, `wf`; ignore it for
+`off` and `status`). It comes AFTER the mode argument. Be lenient about how it
+is typed:
+- Flag spelling: accept `--allowed-models`, `-allowed-models`,
+  `--allowed-model`, `--allowed-modes`, `--allowedmodels` and
+  `--allowed_models` (any number of leading dashes, `-` or `_` or nothing
+  between the words, `model`/`models`/`modes`). Treat all of them as the same
+  flag.
+- Value: `=value` or a following value (`--allowed-models opus,haiku`). The
+  models may be separated by commas, spaces, or both (`opus, sonnet haiku`
+  and `opus sonnet haiku` all mean `opus,sonnet,haiku`): every token after
+  the flag up to the end of the arguments is a model name.
+- Normalize: lowercase, strip whitespace, drop empty entries and duplicates
+  (keep first-seen order), join with commas and no spaces.
+- An explicit `none` value, or a flag with no value at all, CLEARS the
+  allowlist (write the bare mode).
+
+**Reusing the stored allowlist.** For `on`, `pi`, and `wf` ALWAYS Read
+`.orchestrator-mode.state` first (a missing file is fine). If the flag was NOT
+given and the existing line contains `allowed-models=<list>`, keep that list:
+write `<mode> allowed-models=<list>` with the stored list unchanged. Switching
+modes (e.g. `wf` -> `on`) therefore never silently drops the restriction. Only
+the flag (including `none`) or `off` changes it.
+
+When an `allowed-models` restriction is active, **omitting the model is NOT
+allowed** for delegated Task/Agent calls or `Workflow` `agent()` calls: every
+delegated call must explicitly declare a model from the list, or it is denied.
 
 IMPORTANT: Do this work YOURSELF in the main thread using the Read and Write
 tools. Do NOT delegate the toggle to a subagent, even if an orchestration-mode
@@ -66,9 +85,10 @@ Steps:
    anything.
 
 2. **on** -> Use the Write tool to write the file `.orchestrator-mode.state`
-   with the single line `on` -- or, if `--allowed-models` was given, the
-   single line `on allowed-models=<list>` (single space, lowercased
-   comma-separated list, e.g. `on allowed-models=opus,haiku`). Then report:
+   with the single line `on` -- or, if an allowlist results from the rules
+   above (flag given, or reused from the stored line), the single line
+   `on allowed-models=<list>` (single space, normalized list, e.g.
+   `on allowed-models=opus,haiku`). Then report:
    `orchestrator-mode ENABLED for this project. The main agent is now
    READ-ONLY -- delegate all writes and command execution to subagents via
    the Agent/Task tool.` If an allowlist was set, append: ` Delegated-agent
@@ -80,8 +100,9 @@ Steps:
    DISABLED for this project. The main agent has full access again.`
 
 4. **pi** -> Use the Write tool to write the file `.orchestrator-mode.state`
-   with the single line `pi` -- or, if `--allowed-models` was given, the
-   single line `pi allowed-models=<list>` (single space, lowercased list).
+   with the single line `pi` -- or, if an allowlist results from the rules
+   above (flag given, or reused), the single line `pi allowed-models=<list>`
+   (single space, normalized list).
    Then report: `orchestrator-mode set to PI for
    this project. The main agent is now READ-ONLY and cannot delegate to any
    subagent -- code changes go through the pi-delegate MCP tools directly or
@@ -90,13 +111,17 @@ Steps:
    <list>.`
 
 5. **wf** -> Use the Write tool to write the file `.orchestrator-mode.state`
-   with the single line `wf` -- or, if `--allowed-models` was given, the
-   single line `wf allowed-models=<list>` (single space, lowercased list,
-   e.g. `wf allowed-models=opus,sonnet,haiku`). Then report:
+   with the single line `wf` -- or, if an allowlist results from the rules
+   above (flag given, or reused), the single line `wf allowed-models=<list>`
+   (single space, normalized list, e.g. `wf allowed-models=opus,sonnet,haiku`). Then report:
    `orchestrator-mode set to WF for
    this project. The main agent is now READ-ONLY and must orchestrate via the
    Workflow tool (dynamic workflows); Task/Agent is only allowed for the
    read-only Explore scout. Run /orchestrator-mode:mode off to exit.` If an
    allowlist was set, append: ` Delegated-agent model allowlist: <list>.`
 
-Report only the single status/result line to the user. Keep it terse.
+Report only the single status/result line to the user, then one more line
+with exactly what is now in the file: `State: <exact line written>` (for
+`status`, the exact line read, or `State: (no file)` when it is missing). If
+the allowlist was reused from the stored line, add ` (allowlist kept from
+previous state)`. Keep it terse.

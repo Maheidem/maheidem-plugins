@@ -270,6 +270,66 @@ run_case "D2/mcp presales-toolkit state-file substring denied" enforce-orchestra
   "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__misc_add\",\"tool_input\":{\"note\":\"see /x/.orchestrator-mode.state\"},\"cwd\":\"$TMP/proj\"}" \
   0 "state-file changes go through" ""
 
+# --- 0.9.4: exact-match send tool (ALLOWED_MCP_TOOLS) -----------------------
+for m in on wf pi; do
+  new_proj "$m"
+  run_case "$m/mcp waha send_text exact allowed" enforce-orchestrator.py \
+    "{\"tool_name\":\"mcp__waha-whatsapp__whatsapp_send_text\",\"tool_input\":{\"chatId\":\"x\",\"text\":\"hi\"},\"cwd\":\"$TMP/proj\"}" \
+    0 "__EMPTY__" ""
+  run_case "$m/mcp waha other tool still denied" enforce-orchestrator.py \
+    "{\"tool_name\":\"mcp__waha-whatsapp__whatsapp_delete_message\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
+    0 "deny" ""
+  run_case "$m/mcp waha send_text prefix-extension denied" enforce-orchestrator.py \
+    "{\"tool_name\":\"mcp__waha-whatsapp__whatsapp_send_text_bulk\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
+    0 "deny" ""
+done
+new_proj "on"
+run_case "on/mcp waha send_text state-file substring denied" enforce-orchestrator.py \
+  "{\"tool_name\":\"mcp__waha-whatsapp__whatsapp_send_text\",\"tool_input\":{\"text\":\"/x/.orchestrator-mode.state\"},\"cwd\":\"$TMP/proj\"}" \
+  0 "state-file changes go through" ""
+
+# --- 0.9.4: auto-memory exemption follows CLAUDE_CONFIG_DIR + real slug rule --
+# Project path with '_' and '.' (both become '-' in Claude Code's slug).
+TMP="$(mktemp -d)"
+PROJ="$TMP/my_proj.v2"
+mkdir -p "$PROJ" && printf 'wf' > "$PROJ/.orchestrator-mode.state"
+export CLAUDE_PROJECT_DIR="$PROJ"
+SLUG="$(printf '%s' "$PROJ" | sed 's/[^A-Za-z0-9]/-/g')"
+mkdir -p "$TMP/home/.claude" "$TMP/work"
+
+(
+  export HOME="$TMP/home"; unset CLAUDE_CONFIG_DIR
+  run_case "mem/personal (CLAUDE_CONFIG_DIR unset) ~/.claude memory allowed" enforce-orchestrator.py \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/home/.claude/projects/$SLUG/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
+    0 "__EMPTY__" ""
+  run_case "mem/personal: work-profile memory path denied" enforce-orchestrator.py \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/work/projects/$SLUG/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
+    0 "deny" ""
+  run_case "mem/old slug (only / replaced) denied" enforce-orchestrator.py \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/home/.claude/projects/$(printf '%s' "$PROJ" | tr / -)/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
+    0 "deny" ""
+  export CLAUDE_CONFIG_DIR=""
+  run_case "mem/empty CLAUDE_CONFIG_DIR treated as unset" enforce-orchestrator.py \
+    "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$TMP/home/.claude/projects/$SLUG/memory/MEMORY.md\",\"old_string\":\"a\",\"new_string\":\"b\"},\"cwd\":\"$PROJ\"}" \
+    0 "__EMPTY__" ""
+  echo "$pass $fail $total" > "$TMP/counts"
+)
+read pass fail total < "$TMP/counts"
+(
+  export HOME="$TMP/home" CLAUDE_CONFIG_DIR="$TMP/work"
+  run_case "mem/work (CLAUDE_CONFIG_DIR set) memory allowed" enforce-orchestrator.py \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/work/projects/$SLUG/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
+    0 "__EMPTY__" ""
+  run_case "mem/work: ~/.claude memory path denied" enforce-orchestrator.py \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/home/.claude/projects/$SLUG/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
+    0 "deny" ""
+  run_case "mem/work: sibling of memory dir denied" enforce-orchestrator.py \
+    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/work/projects/$SLUG/memory-evil/x.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
+    0 "deny" ""
+  echo "$pass $fail $total" > "$TMP/counts"
+)
+read pass fail total < "$TMP/counts"
+
 echo
 echo "test_enforce.sh: $pass/$total passed"
 [ "$fail" -eq 0 ]
