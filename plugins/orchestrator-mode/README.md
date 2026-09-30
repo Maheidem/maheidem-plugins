@@ -18,10 +18,13 @@ injected into the main thread on every prompt while a mode is active.
 ## Commands
 
 ```
-/orchestrator-mode:mode on | pi | wf          # switch mode (keeps allowlists)
-/orchestrator-mode:mode wf --allowed-models opus,sonnet
-                                              # + model allowlist for delegated agents
-/orchestrator-mode:mode wf --allowed-models none   # clear the model allowlist
+/orchestrator-mode:mode on | pi | wf          # switch mode (keeps allowlists; from off
+                                              # with no stored list -> sonnet, haiku)
+/orchestrator-mode:mode wf sonnet, haiku      # mode + model allowlist for delegated agents
+/orchestrator-mode:mode models no opus        # change only the models; interpreted
+                                              # requests get a confirm picker
+/orchestrator-mode:mode models none           # clear the model allowlist
+                                              # (--allowed-models <list> still works)
 /orchestrator-mode:mode allow mcp__okto-neuron__*  # add a main-thread pattern
 /orchestrator-mode:mode disallow mcp__okto-neuron__*
 /orchestrator-mode:mode allow slack reading, but nothing that sends

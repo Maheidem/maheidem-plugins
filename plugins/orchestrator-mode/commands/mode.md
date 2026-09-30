@@ -1,6 +1,6 @@
 ---
 description: Set orchestrator-mode (off/on/pi/wf), manage the main-thread allowlist, or show status for this project
-argument-hint: "on | off | pi | wf [--allowed-models m1,m2] | allow [<pattern> | <what you want, in words>] | disallow [...] | status"
+argument-hint: "on | off | pi | wf [sonnet, haiku ...] | models <which, in words> | allow [<pattern> | <what you want, in words>] | disallow [...] | status"
 allowed-tools: Read, Write, AskUserQuestion, ToolSearch, Bash(python3 *_state.py* status)
 ---
 
@@ -57,16 +57,42 @@ from that line: the first word is the mode, and the words after
 Write the file as pretty JSON (2-space indent) with keys in the order
 `mode`, `allowed-models`, `main-allow`; leave a key out when its list is empty.
 
-### `on` / `pi` / `wf` [--allowed-models ...]
-Set `mode`. Keep `main-allow` as is. For `allowed-models`:
-- The flag is lenient: any number of leading dashes, `-`/`_`/nothing between
-  the words, `model`/`models`/`modes`. The value is `=list` or the tokens
-  after the flag, split on commas and/or spaces. Lowercase, strip, drop empty
-  entries and duplicates (keep order).
-- `none`, or the flag with no value, clears the list.
-- Flag absent: keep the stored list (switching modes never silently drops it).
+### `on` / `pi` / `wf` [models] and `models [...]`
+`on`/`pi`/`wf` set `mode`; `models` keeps the current mode and changes only
+`allowed-models` (if the mode is `off`, say the list only applies once a mode
+is on, and still save it). Keep `main-allow` as is.
+
+**The model request** is everything after the verb, flag or not: the old
+`--allowed-models` flag (any dashes, `-`/`_`/nothing between the words,
+`model`/`models`/`modes`, `=list` or following tokens) and plain words
+(`wf sonnet, haiku`, `wf only sonnet and haiku`, `models no opus`) mean the
+same thing. Valid entries are the families `opus`, `sonnet`, `haiku`,
+`fable`, lowercase, no duplicates, in the order given.
+- **Plain names** (every word is a family, ignoring commas, `and`, `only`,
+  `just`, the flag itself): write them directly, no question.
+- **Anything you had to interpret** (a typo like `sonet`, an exclusion like
+  `no opus` / `everything but opus`, a description like `the cheap ones`, an
+  unknown name): resolve it to a list of families, then confirm with the
+  **quick confirm** (below): the question quotes what the user typed; the
+  "Use ..." option lists the resolved families; the full list offers all
+  four families, with the excluded ones' descriptions saying why. Write what
+  they choose. Never write a name that isn't a family (if they type one via
+  "Other", map it to a family or ask again).
+- `none` / `clear` / `any model` / `no restriction` (or the flag with no
+  value) clears the list.
+- **No model request:** keep the stored list, so switching modes never
+  drops it. If there is no stored list AND the previous mode was `off` (or
+  there was no config), write the default `["sonnet", "haiku"]` and say so
+  in the report.
 With a list set, every Agent/Task call and workflow `agent()` call must
 declare an allowed model, and fork subagents are denied.
+
+**Quick confirm** (used by `models` and `allow`). Multi-select options start
+unticked, so accepting a guess that way takes several keys. Instead ask ONE
+single-select `AskUserQuestion` with two options: `Use <the resolved list>
+(Recommended)` first, then `Let me choose`. On "Use", take that list as-is.
+On "Let me choose", ask the full multi-select list that section describes
+and take what they tick.
 
 ### `off`
 Set `mode` to `off` and remove `allowed-models`. Keep `main-allow`.
@@ -102,15 +128,17 @@ For `allow`:
    or side-effecting (anything that sends, writes, creates, updates, edits,
    deletes, posts, publishes, runs or executes). Read-only is the default
    unless the user explicitly asked for writes or sends.
-3. Ask with `AskUserQuestion`, `multiSelect: true`, 2-4 options per question
-   and up to 4 questions (group by server when there are many; if more than
-   16 candidates, keep the closest matches). Each option's label is the exact
-   entry; its description says what it does. Put read-only options first
-   with "(Recommended)" at the end of the label; side-effecting ones get
-   "⚠️ writes/sends:" at the start of the description and no
-   "(Recommended)". Offer a server prefix `mcp__<server>__*` only when the
-   user asked for all of a server, marked ⚠️ if the server has any
-   side-effecting tool. Name the target file in the question text.
+3. Confirm with the **quick confirm** (below), naming the target file in the
+   question. The "Use ..." option lists the recommended entries (the
+   read-only ones; if there are none, skip straight to the full list). The
+   full list: `multiSelect: true`, 2-4 options per question, up to 4
+   questions (group by server when there are many; if more than 16
+   candidates, keep the closest matches). Each option's label is the exact
+   entry; its description says what it does. Read-only options first with
+   "(Recommended)" at the end of the label; side-effecting ones get "⚠️
+   writes/sends:" at the start of the description and no "(Recommended)".
+   Offer a server prefix `mcp__<server>__*` only when the user asked for all
+   of a server, marked ⚠️ if the server has any side-effecting tool.
 4. Append the chosen entries (skip ones already there), Write the target,
    Read it back, and report from what you read. Nothing chosen: write nothing.
 5. If the target was the user-wide file and any entry you just added is also

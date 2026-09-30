@@ -2,6 +2,20 @@
 
 Earlier versions have no changelog; see `git log -- plugins/orchestrator-mode`.
 
+## 0.11.0 (2026-09-30)
+
+### Added
+- **Model allowlist in plain words.** `/orchestrator-mode:mode wf sonnet, haiku`
+  sets mode and models; `models <words>` changes only the models. Plain
+  family names go straight in; typos, exclusions ("no opus") or descriptions
+  get a confirm picker. Only `opus`/`sonnet`/`haiku`/`fable` are written.
+  The `--allowed-models` flag still works.
+- **One-Enter confirm.** The `models` and `allow` wizards now confirm with a
+  single choice, "Use <guess> (Recommended)" or "Let me choose", instead of
+  a multi-select whose recommended options start unticked.
+- **Default model list.** Turning a mode on from `off` with no models named
+  and none stored writes `["sonnet", "haiku"]`. Clear it with `models none`.
+
 ## 0.10.1 (2026-09-30)
 
 ### Added

@@ -65,7 +65,7 @@
     {
       "name": "orchestrator-mode",
       "description": "Per-project orchestrator mode (off/on/pi/wf): the main conversation agent goes read-only (deny-by-default allowlist) while subagents keep full access. 'on' delegates via Agent/Task or Workflow; 'wf' via the Workflow tool, with Agent/Task limited to the Explore scout; 'pi' allows no subagents and routes code changes through the pi-delegate MCP tools. Config is <project>/.orchestrator-mode.json (mode, allowed-models, main-allow) plus a user-wide $CLAUDE_CONFIG_DIR/orchestrator-mode.json main-allow list; main-allow entries are exact tool names or trailing-* prefixes. With allowed-models set, every delegated Agent/Task, workflow agent() and explicit pi_task model must be on the list, forks are denied, and this applies to subagents too. Config files are protected from all agents; the main-thread /mode write goes through the normal permission prompt. Main-thread writes under .remember/ and the auto-memory dir stay allowed. Fails closed on internal errors. OFF by default.",
-      "version": "0.10.1",
+      "version": "0.11.0",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
