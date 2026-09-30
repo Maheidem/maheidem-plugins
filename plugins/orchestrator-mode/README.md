@@ -24,12 +24,43 @@ injected into the main thread on every prompt while a mode is active.
 /orchestrator-mode:mode wf --allowed-models none   # clear the model allowlist
 /orchestrator-mode:mode allow mcp__okto-neuron__*  # add a main-thread pattern
 /orchestrator-mode:mode disallow mcp__okto-neuron__*
+/orchestrator-mode:mode allow slack reading, but nothing that sends
+                                              # wizard: plain words -> picker of real tools
+/orchestrator-mode:mode allow codegraph status everywhere
+                                              # wizard, user-wide file
+/orchestrator-mode:mode disallow the codegraph stuff   # wizard removal
 /orchestrator-mode:mode off                   # normal behavior (drops the model allowlist)
 /orchestrator-mode:mode status                # effective config: core + user-wide + project
 ```
 
-The command works while the lock is active: its one Write to the project
-config goes through the normal permission prompt.
+The command works while the lock is active: the hook lets its main-thread
+Write to a config file through. Inside `/orchestrator-mode:mode` the
+command's own `allowed-tools` pre-approves Write for project files, so the
+project config is written without a prompt (you typed the command and
+ticked the picker). Claude Code still prompts for the user-wide file, since
+it sits outside the project. A main-thread Write to either config from
+anywhere else gets the normal permission prompt.
+
+### The allow / disallow wizard
+
+`allow` with one token that is a tool name or `mcp__...` pattern adds it
+directly. Anything else is read as a request in plain words (a bare `allow`
+asks for one). Claude looks up the **real** tools that fit, from its tool
+list and `ToolSearch` (it never invents names), and shows a multi-select
+picker:
+
+- read-only tools (read, get, list, search, status, ...) come first, marked
+  *Recommended*;
+- tools that send, write, create, delete or run are listed with
+  `⚠️ writes/sends` and are not recommended, unless you asked for them;
+- a whole-server prefix (`mcp__<server>__*`) is offered only when you ask
+  for all of a server.
+
+The entries you tick go into the project file, or into the user-wide file
+when your words say *everywhere / globally / all projects*. The file is read
+back and the result reported. `disallow` in plain words shows a picker of the
+matching entries from both files and removes the chosen ones from whichever
+file holds them.
 
 ## Configuration
 
@@ -64,8 +95,9 @@ project's list:
 { "main-allow": ["mcp__waha-whatsapp__whatsapp_send_text"] }
 ```
 
-Edit it by hand; no tool (main thread or subagent) may write it while a mode
-is active.
+Change it with `/orchestrator-mode:mode allow ... everywhere` (a main-thread
+Write; Claude Code asks before creating or changing it) or by hand. Subagents, Edit, shell commands and
+MCP tools may not touch it while a mode is active.
 
 ### Patterns
 
@@ -158,7 +190,8 @@ While a mode is active the hook denies, for main thread and subagents alike:
   reached through a symlink), and to the user-wide config.
 
 The one exception is a **main-thread Write to the project config** (the
-`<project>/.orchestrator-mode.json`, or the JSON config the lookup found).
+`<project>/.orchestrator-mode.json`, or the JSON config the lookup found) **or
+to the user-wide config**.
 It gets no decision from this hook, so Claude Code shows its normal
 permission prompt. That is how `/orchestrator-mode:mode` works under the
 lock. Nested config files, which would shadow the root one, are never
@@ -182,7 +215,7 @@ This is a **cooperative guardrail** that keeps a well-behaved main agent in
 an orchestrate-and-delegate posture. It is not a sandbox.
 
 - **The toggle is model-serviceable.** The main agent can write `off` to
-  the project config. You approve that Write in the normal prompt, **unless**
+  the project config, or add entries to either config's `main-allow`. You approve that Write in the normal prompt, **unless**
   your permission mode or rules auto-approve Writes (`acceptEdits`, bypass
   permissions, or `Write` in `permissions.allow`). Then it happens silently.
 - **Skills that run as subagents.** `Skill` is allowed on the main thread.

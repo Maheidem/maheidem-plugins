@@ -52,8 +52,18 @@ denied "#8 subagent Write nested shadow config" \
   "$(payload Write "{\"file_path\":\"$PROJ/sub/.orchestrator-mode.json\"}" "$A")" "config files"
 denied "#2 subagent Write user-wide config" \
   "$(payload Write "{\"file_path\":\"$CFG/orchestrator-mode.json\"}" "$A")" "config files"
-denied "#2 main Write user-wide config" \
-  "$(payload Write "{\"file_path\":\"$CFG/orchestrator-mode.json\"}")" "config files"
+allowed "global toggle: main Write user-wide config -> normal prompt" \
+  "$(payload Write "{\"file_path\":\"$CFG/orchestrator-mode.json\"}")"
+allowed "global toggle: case-folded path" \
+  "$(payload Write "{\"file_path\":\"$CFG/Orchestrator-Mode.JSON\"}")"
+denied "global toggle is Write-only: main Edit user-wide config" \
+  "$(payload Edit "{\"file_path\":\"$CFG/orchestrator-mode.json\"}")" "config files"
+denied "global toggle: main Bash mentioning user-wide config" \
+  "$(payload Bash "{\"command\":\"echo {} > $CFG/orchestrator-mode.json\"}")" "config files"
+denied "global toggle: main MCP input mentioning user-wide config" \
+  "$(payload mcp__plugin_pi-delegate_pi-delegate__pi_task "{\"text\":\"edit $CFG/orchestrator-mode.json\"}")" "config files"
+denied "global toggle: main Write other-dir orchestrator-mode.json" \
+  "$(payload Write "{\"file_path\":\"$ROOT/elsewhere/orchestrator-mode.json\"}")" "blocked on the main thread"
 ln -s "$PROJ/.orchestrator-mode.json" "$PROJ/alias.json"
 denied "#2 subagent Write via symlink to config" \
   "$(payload Write "{\"file_path\":\"$PROJ/alias.json\"}" "$A")" "config files"

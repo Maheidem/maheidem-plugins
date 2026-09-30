@@ -4,8 +4,9 @@
 With mode on/pi/wf active (see _state.py for where the config comes from):
   1. orchestrator-mode config files are protected from everyone: shell/MCP
      input mentioning them and Write/Edit/MultiEdit/NotebookEdit to them are
-     denied. The one exception is the main thread's Write to the project
-     config, which falls through to the normal permission prompt (/mode).
+     denied. The one exception is the main thread's Write to the project or
+     user-wide config, which falls through to the normal permission prompt
+     (/mode).
   2. with "allowed-models" set, every delegation call (Task/Agent, Workflow
      agent() calls, pi_task) from ANY caller must name an allowed model.
   3. subagents (payload has agent_id) otherwise keep full access.
@@ -90,7 +91,7 @@ def is_protected(path):
 
 def is_toggle_target(path, data):
     found = find_config(data)
-    candidates = [os.path.join(project_dir(data), CONFIG_NAME)]
+    candidates = [os.path.join(project_dir(data), CONFIG_NAME), global_config_path()]
     if found and found.endswith(CONFIG_NAME):
         candidates.append(found)
     return any(_same(path, c) for c in candidates)
@@ -243,7 +244,7 @@ def gate(data, cfg):
     target = target_path(tool, tool_input, base)
     if target and is_protected(target):
         if not agent_id and tool == "Write" and is_toggle_target(target, data):
-            noop("main-thread Write to project config -> normal permission prompt")
+            noop("main-thread Write to orchestrator-mode config -> normal permission prompt")
         deny("orchestrator-mode: its config files change only through "
              "/orchestrator-mode:mode on the main thread." + GUIDANCE)
 

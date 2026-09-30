@@ -1,7 +1,7 @@
 ---
 description: Set orchestrator-mode (off/on/pi/wf), manage the main-thread allowlist, or show status for this project
-argument-hint: "on | off | pi | wf [--allowed-models m1,m2] | allow <pattern> | disallow <pattern> | status"
-allowed-tools: Read, Write
+argument-hint: "on | off | pi | wf [--allowed-models m1,m2] | allow [<pattern> | <what you want, in words>] | disallow [...] | status"
+allowed-tools: Read, Write, AskUserQuestion, ToolSearch, Bash(python3 *_state.py* status)
 ---
 
 You are managing **orchestrator-mode** for the current project.
@@ -43,7 +43,10 @@ even if an orchestration reminder says to. Use the ABSOLUTE path
 `<project root>/.orchestrator-mode.json` (project root = `CLAUDE_PROJECT_DIR`
 or the working directory). Writing it triggers the normal permission prompt
 even while the lock is active; that is expected. It is the only file you may
-write. Never write the user-wide file or the legacy `.orchestrator-mode.state`.
+write, except that `allow`/`disallow` may write the user-wide file (the
+absolute `global_config` path above) when the rules below say so. Never write
+the legacy `.orchestrator-mode.state`, and never use Edit or a shell on
+either config (the hook denies it; only Write is exempt).
 
 Before any change, Read `<project root>/.orchestrator-mode.json` (missing is
 fine: start from `{"mode": "off"}`). If it is missing and a legacy
@@ -68,13 +71,57 @@ declare an allowed model, and fork subagents are denied.
 ### `off`
 Set `mode` to `off` and remove `allowed-models`. Keep `main-allow`.
 
-### `allow <pattern>` / `disallow <pattern>`
-`allow` appends the pattern to `main-allow` if absent (mode unchanged; a new
-file starts as `off`). Reject, without writing, a pattern with `*` anywhere
-but the end, or a bare `*` (say: use `/orchestrator-mode:mode off` instead).
-`disallow` removes an exact entry; if it isn't in the project list, say so,
-and if it is in `global-main-allow` say it lives in the user-wide file, which
-the user edits by hand.
+### `allow` / `disallow`
+Entries are exact tool names, or a prefix ending in `*`. Reject, without
+writing, a `*` anywhere but the end, or a bare `*` (say: use
+`/orchestrator-mode:mode off` instead). `allow` never changes `mode` (a new
+project file starts as `off`).
+
+**Target file.** The project file, unless the user's words ask for
+everywhere / globally / all projects / user-wide: then the user-wide file
+(`global_config` above; it holds only `{"main-allow": [...]}`, pretty JSON).
+Read the target before writing it (missing is fine).
+
+**Direct form.** When the argument is ONE token that starts with `mcp__`, or
+is the exact name of a tool you have, it is a pattern: `allow` appends it to
+the project `main-allow` if absent; `disallow` removes that exact entry from
+the project list (if it is only in `global-main-allow`, remove it from the
+user-wide file instead). No questions.
+
+**Wizard form.** Anything else is a request in plain words. A bare `allow` or
+`disallow` first asks the user, in one line, what they want.
+
+For `allow`:
+1. Find REAL tool names that fit the request: your own tool list, the
+   deferred tool names you've been told about, and `ToolSearch` keyword
+   queries (e.g. the server or product name) to find MCP tools. Never invent
+   a name. Drop tools the main thread already has (`core-tools`, `core-mcp`,
+   `global-main-allow`, and `project-main-allow` unless the target is the
+   user-wide file). If nothing fits, say so and stop.
+2. Sort each candidate: read-only (read/get/list/search/status/query/fetch)
+   or side-effecting (anything that sends, writes, creates, updates, edits,
+   deletes, posts, publishes, runs or executes). Read-only is the default
+   unless the user explicitly asked for writes or sends.
+3. Ask with `AskUserQuestion`, `multiSelect: true`, 2-4 options per question
+   and up to 4 questions (group by server when there are many; if more than
+   16 candidates, keep the closest matches). Each option's label is the exact
+   entry; its description says what it does. Put read-only options first
+   with "(Recommended)" at the end of the label; side-effecting ones get
+   "⚠️ writes/sends:" at the start of the description and no
+   "(Recommended)". Offer a server prefix `mcp__<server>__*` only when the
+   user asked for all of a server, marked ⚠️ if the server has any
+   side-effecting tool. Name the target file in the question text.
+4. Append the chosen entries (skip ones already there), Write the target,
+   Read it back, and report from what you read. Nothing chosen: write nothing.
+5. If the target was the user-wide file and any entry you just added is also
+   in `project-main-allow`, ask one yes/no `AskUserQuestion`: "Also remove
+   the now-redundant project entries: <list>?" On yes, remove them from the
+   project file, Write, Read it back, and report.
+
+For `disallow` in words: gather the entries in `project-main-allow` and
+`global-main-allow` that fit the request, ask with the same picker (label =
+entry; description says which file it lives in), remove the chosen ones from
+the file each lives in, Write, Read back, and report.
 
 ### `status`
 Don't write or Read anything. Report only values from the computed JSON above.
@@ -82,7 +129,8 @@ Don't write or Read anything. Report only values from the computed JSON above.
 ## Report
 
 One result line, then:
-- after a write: `Config: <absolute path> -> <exact JSON written>`
+- after a write: `Config: <absolute path> -> <exact JSON read back>` (one
+  line per file written)
 - for `status`: `Config: <config, or (no file)>`, `Mode: <mode>`, `Allowed models: <allowed-models, or none>`
 - `Main thread may also use: <core-mcp + global-main-allow + project-main-allow>`
 - for `status` only: `Core tools (<mode>): <core-tools, comma-separated>`

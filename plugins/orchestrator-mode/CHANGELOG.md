@@ -2,6 +2,30 @@
 
 Earlier versions have no changelog; see `git log -- plugins/orchestrator-mode`.
 
+## 0.10.1 (2026-09-30)
+
+### Added
+- **allow / disallow wizard.** `/orchestrator-mode:mode allow <plain words>`
+  maps the request to real tool names (tool list + `ToolSearch`), proposes
+  read-only tools as recommended and marks side-effecting ones
+  `⚠️ writes/sends`, and writes what you pick after a multi-select picker.
+  A single tool name or `mcp__...` pattern still adds directly; a bare
+  `allow` asks what you want. `disallow` in plain words picks from the
+  existing project and user-wide entries.
+- **User-wide target.** Saying *everywhere / globally / all projects* makes
+  the wizard write `$CLAUDE_CONFIG_DIR/orchestrator-mode.json`. The
+  enforcer's Write-only toggle exemption now covers that file too (main
+  thread only; Edit, shell, MCP and subagents stay denied). After adding an
+  entry user-wide, the wizard offers to drop the same entry from the project
+  file.
+
+### Fixed
+- **`/orchestrator-mode:mode` was broken outside bypass-permissions mode.**
+  Its `!python3 .../_state.py status` injection needs a Bash permission, and
+  the command didn't grant one, so in the default permission mode it failed
+  with "This command requires approval" and the command did nothing. The
+  frontmatter now allows exactly `Bash(python3 *_state.py* status)`.
+
 ## 0.10.0 (2026-09-30)
 
 Configurable main-thread allowlist, plus fixes from a security and design
