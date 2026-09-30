@@ -1,143 +1,214 @@
-"""Shared state-file helper for orchestrator-mode hooks.
+"""Shared config + tool tables for the orchestrator-mode hooks.
 
-Both enforce-orchestrator.py and inject-reminder.py import this (same
-directory, via sys.path) so the four-state parsing can't drift out of sync
-between the two hook scripts.
+Both hook scripts import this so they can't disagree on what the config says
+or what the main thread may use. `python3 _state.py status` prints the
+effective config as JSON (used by /orchestrator-mode:mode status).
 
-State lives in a plain-text file at `<project>/.orchestrator-mode.state` (at
-the PROJECT ROOT, not under `.claude/`). The file is a single line: a MODE
-token optionally followed by whitespace-separated `key=value` options, e.g.:
+Config lookup: walk up from CLAUDE_PROJECT_DIR (else the payload cwd); in
+each directory `.orchestrator-mode.json` wins over the legacy one-line
+`.orchestrator-mode.state`; the nearest directory holding either wins.
 
-    wf allowed-models=opus,sonnet,haiku
+    {"mode": "off|on|pi|wf",
+     "allowed-models": ["opus", "sonnet"],       # optional
+     "main-allow": ["mcp__okto-neuron__*"]}      # optional, exact or trailing *
 
-The MODE is the FIRST whitespace-separated token (trimmed, lowercased) --
-options never affect mode detection. Valid modes: "on", "pi", "wf". Anything
-else -- missing file, empty, "off", garbage, unreadable -- is OFF.
+The user-wide layer `$CLAUDE_CONFIG_DIR/orchestrator-mode.json` (default
+~/.claude) contributes only "main-allow"; it is additive to the project's.
 
-Recognized options (parsed by get_state()):
-  - allowed-models: comma-separated list of model names, normalized to
-    lowercase. Empty value or absent key means NO restriction.
-
-Unparseable options fail open (they are ignored, never raised on). Fail-open
-everywhere: parsing never raises.
+A config file that can't be read or parsed, or breaks the schema, prints a
+stderr warning and counts as OFF. A broken user-wide file is ignored (fewer
+tools allowed, never more). Nothing here raises.
 """
+import json
 import os
+import re
 import sys
+
+MODES = ("on", "pi", "wf")
+CONFIG_NAME = ".orchestrator-mode.json"
+LEGACY_NAME = ".orchestrator-mode.state"
+GLOBAL_NAME = "orchestrator-mode.json"
+FAMILIES = ("opus", "sonnet", "haiku", "fable")
+
+# Built-in main-thread tools, grouped so the reminder can describe them.
+# Every entry is non-mutating for the repo. Monitor is deliberately absent:
+# it runs a shell command. Artifact "delete" and durable CronCreate are
+# denied separately in the enforcer.
+TOOL_GROUPS = {
+    "read/search": ("Read", "Grep", "Glob", "LS", "LSP", "ToolSearch",
+                    "ListMcpResourcesTool", "ReadMcpResourceTool",
+                    "ReadMcpResourceDirTool"),
+    "task tracking": ("TodoWrite", "TaskCreate", "TaskUpdate", "TaskList",
+                      "TaskGet", "TaskStop", "TaskOutput"),
+    "web research": ("WebFetch", "WebSearch"),
+    "meta (AskUserQuestion, Skill, SendMessage, plan mode, cron, notifications)": ("AskUserQuestion", "Skill", "SlashCommand", "EnterPlanMode",
+             "ExitPlanMode", "SendMessage", "ReportFindings",
+             "PushNotification", "ScheduleWakeup", "CronList", "CronCreate",
+             "CronDelete"),
+    "Artifact (no delete)": ("Artifact",),
+}
+BASE_TOOLS = frozenset(t for group in TOOL_GROUPS.values() for t in group)
+MODE_TOOLS = {
+    "on": BASE_TOOLS | {"Task", "Agent", "Workflow"},
+    "wf": BASE_TOOLS | {"Workflow"},  # Task/Agent: Explore only, see enforcer
+    "pi": BASE_TOOLS,
+}
+# pi mode can't work without pi-delegate, so its tools are core everywhere.
+CORE_PATTERNS = ("mcp__plugin_pi-delegate_pi-delegate__*", "mcp__pi-delegate__*")
+
+_SLUG_MAX = 200
+OFF = {"mode": "off", "allowed_models": [], "main_allow": [],
+       "global_allow": [], "path": None}
+
+
+def warn(msg):
+    sys.stderr.write("[orchestrator-mode] warning: %s\n" % msg)
 
 
 def project_dir(data):
-    """Project root. Prefer CLAUDE_PROJECT_DIR; fall back to the payload cwd
-    (the env var came through empty under headless `-p` in testing)."""
     return os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd") or os.getcwd()
 
 
-def _discover_state_dir(start):
-    """Walk up from `start` looking for a directory containing
-    .orchestrator-mode.state. Stops at filesystem root; falls back to `start`
-    if never found. Never raises."""
+def config_dir():
+    return os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
+
+
+def global_config_path():
+    return os.path.join(config_dir(), GLOBAL_NAME)
+
+
+def project_slug(path):
+    """Claude Code's projects/<slug> rule (CLI 2.1.280): every char outside
+    [A-Za-z0-9] becomes '-'; past 200 chars, the first 200 plus '-' and
+    base36 of the Java-style 32-bit hash over UTF-16 code units."""
+    slug = re.sub(r"[^A-Za-z0-9]", "-", path)
+    if len(slug) <= _SLUG_MAX:
+        return slug
+    units = path.encode("utf-16-le")
+    h = 0
+    for i in range(0, len(units), 2):
+        h = (h * 31 + int.from_bytes(units[i:i + 2], "little")) & 0xFFFFFFFF
+    h = abs(h - (1 << 32) if h >= (1 << 31) else h)
+    digits = ""
+    while True:
+        h, r = divmod(h, 36)
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"[r] + digits
+        if not h:
+            return "%s-%s" % (slug[:_SLUG_MAX], digits)
+
+
+def find_config(data):
+    cur = os.path.abspath(project_dir(data))
+    while True:
+        for name in (CONFIG_NAME, LEGACY_NAME):
+            path = os.path.join(cur, name)
+            if os.path.isfile(path):
+                return path
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def matches(name, patterns):
+    """Exact name, or prefix when the pattern ends in '*'. Nothing else."""
+    return any(name.startswith(p[:-1]) if p.endswith("*") else name == p
+               for p in patterns)
+
+
+def model_allowed(model, allowed):
+    """Entry == model, a family name that is a whole token of the model id
+    ('sonnet' ~ 'claude-sonnet-5'), or an id prefix ending at a non-alnum
+    boundary ('claude-opus-5' ~ 'claude-opus-5-5'). Never a substring."""
+    m = str(model).strip().lower()
+    tokens = set(re.split(r"[^a-z0-9]+", m))
+    for e in allowed:
+        if m == e or (e in FAMILIES and e in tokens):
+            return True
+        if m.startswith(e) and not m[len(e)].isalnum():
+            return True
+    return False
+
+
+def _str_list(obj, key, where):
+    value = obj.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        raise ValueError("%s: %r must be a list of non-empty strings" % (where, key))
+    return [v.strip() for v in value]
+
+
+def _parse_json(raw, where):
+    obj = json.loads(raw)
+    if not isinstance(obj, dict):
+        raise ValueError("%s: top level must be an object" % where)
+    unknown = set(obj) - {"mode", "allowed-models", "main-allow"}
+    if unknown:
+        warn("%s: ignoring unknown key(s) %s" % (where, ", ".join(sorted(unknown))))
+    mode = obj.get("mode", "off")
+    if not isinstance(mode, str) or mode.lower() not in MODES + ("off",):
+        raise ValueError("%s: mode %r is not one of on/pi/wf/off" % (where, mode))
+    return {"mode": mode.lower(),
+            "allowed_models": [m.lower() for m in _str_list(obj, "allowed-models", where)],
+            "main_allow": _str_list(obj, "main-allow", where)}
+
+
+def _parse_legacy(raw, where):
+    """`<mode> [allowed-models=a,b ...]`; every token after the '=' is a
+    model, split on commas and/or spaces."""
+    tokens = raw.split()
+    mode = tokens[0].lower() if tokens else "off"
+    if mode not in MODES + ("off",):
+        raise ValueError("%s: unrecognized mode token %r" % (where, tokens[0]))
+    found = re.search(r"allowed-models=(.*)", " ".join(tokens[1:]), re.I | re.S)
+    models = re.split(r"[,\s]+", found.group(1).lower()) if found else []
+    return {"mode": mode, "allowed_models": [m for m in models if m], "main_allow": []}
+
+
+def _global_allow():
+    path = global_config_path()
+    if not os.path.isfile(path):
+        return []
     try:
-        cur = os.path.realpath(start)
-        while True:
-            if os.path.isfile(os.path.join(cur, ".orchestrator-mode.state")):
-                return cur
-            parent = os.path.dirname(cur)
-            if parent == cur:
-                return start
-            cur = parent
-    except Exception:
-        return start
+        with open(path) as f:
+            obj = json.load(f)
+        if not isinstance(obj, dict):
+            raise ValueError("top level must be an object")
+        return _str_list(obj, "main-allow", path)
+    except Exception as e:
+        warn("%s ignored: %s" % (path, e))
+        return []
 
 
-def state_file_path(data):
-    """Resolve the state-file path. When CLAUDE_PROJECT_DIR is set (the
-    normal, non-headless case), this is just `<project_dir>/.orchestrator-mode.state`
-    -- unchanged behavior. When it is unset (T6: headless cwd robustness), walk
-    up from the payload cwd looking for the nearest ancestor that actually
-    contains a state file, falling back to cwd itself if none is found. Note:
-    project_dir() (used by norm()'s relative-path base in
-    enforce-orchestrator.py) is NOT changed by this -- it still just returns
-    cwd verbatim when CLAUDE_PROJECT_DIR is unset. That is an intentional,
-    documented asymmetry: in a nested cwd with no env var set, the discovered
-    state file may resolve at an ancestor root while relative tool-input paths
-    still resolve against cwd."""
-    if os.environ.get("CLAUDE_PROJECT_DIR"):
-        return os.path.join(project_dir(data), ".orchestrator-mode.state")
-    base = data.get("cwd") or os.getcwd()
-    return os.path.join(_discover_state_dir(base), ".orchestrator-mode.state")
-
-
-def _parse(raw):
-    """Parse raw state-file text -> (mode, options_dict). Never raises.
-
-    Mode is the first whitespace-separated token, lowercased; unrecognized ->
-    "off" (with a stderr warning, unless the file was empty or literally
-    "off" -- see below). Remaining tokens of the form key=value become options
-    (keys and values lowercased); tokens without "=" or otherwise malformed
-    are ignored (fail open). The "allowed-models" value is split on commas
-    into a list of non-empty lowercase names; an empty list means no
-    restriction and is dropped from the dict entirely so absent-key ==
-    no-restriction holds. If a bare (non key=value) token appears AFTER
-    allowed-models has been seen (e.g. a stray continuation from
-    "allowed-models=opus, haiku" with a space), the entire allowed-models
-    option is discarded and a warning is printed -- fail-open, never stricter
-    than intended.
-    """
+def get_config(data):
     try:
-        tokens = raw.strip().split()
-        if not tokens:
-            return "off", {}
-        mode = tokens[0].lower()
-        if mode not in ("on", "pi", "wf", "off"):
-            sys.stderr.write(
-                "[orchestrator-mode] warning: unrecognized state-file mode "
-                "token %r -> treating as OFF (state file exists but its "
-                "first token is not on/pi/wf/off)\n" % tokens[0])
-            return "off", {}
-        if mode == "off":
-            return "off", {}
-        options = {}
-        saw_allowed_models = False
-        malformed_allowed_models = False
-        for token in tokens[1:]:
-            if "=" not in token:
-                if saw_allowed_models:
-                    malformed_allowed_models = True
-                continue  # unparseable option -> ignore (fail open)
-            key, _, value = token.partition("=")
-            key = key.strip().lower()
-            if not key:
-                continue
-            if key == "allowed-models":
-                saw_allowed_models = True
-                models = [m.strip().lower() for m in value.split(",")]
-                models = [m for m in models if m]
-                if models:
-                    options[key] = models
-                # empty value -> no restriction -> leave key absent
-            else:
-                options[key] = value.strip().lower()
-        if malformed_allowed_models and "allowed-models" in options:
-            sys.stderr.write(
-                "[orchestrator-mode] warning: malformed allowed-models option "
-                "(stray token after mode line) -> discarding entire "
-                "allowed-models restriction, fail-open\n")
-            del options["allowed-models"]
-        return mode, options
-    except Exception:
-        return "off", {}
-
-
-def get_state(data):
-    """Returns (mode, options_dict).
-
-    mode is "off" | "on" | "pi" | "wf"; options_dict maps option keys to
-    parsed values ("allowed-models" -> list of lowercase model names).
-    Missing/unreadable/unrecognized -> ("off", {}) (fail open -- a broken or
-    corrupted state file must never brick a session by denying tools; it just
-    falls back to normal behavior)."""
-    try:
-        with open(state_file_path(data), "r") as f:
+        path = find_config(data)
+        if not path:
+            return dict(OFF)
+        with open(path) as f:
             raw = f.read()
-    except Exception:
-        return "off", {}
-    return _parse(raw)
+        parse = _parse_legacy if path.endswith(LEGACY_NAME) else _parse_json
+        cfg = parse(raw, path)
+    except Exception as e:
+        warn("%s -> treating as OFF" % e)
+        return dict(OFF)
+    cfg["path"] = path
+    cfg["global_allow"] = _global_allow() if cfg["mode"] != "off" else []
+    return cfg
+
+
+def effective(cfg):
+    mode = cfg["mode"]
+    return {
+        "mode": mode,
+        "config": cfg["path"],
+        "global_config": global_config_path(),
+        "allowed-models": cfg["allowed_models"],
+        "core-tools": sorted(MODE_TOOLS.get(mode, ())),
+        "core-mcp": list(CORE_PATTERNS),
+        "global-main-allow": cfg["global_allow"] or _global_allow(),
+        "project-main-allow": cfg["main_allow"],
+    }
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["status"]:
+    print(json.dumps(effective(get_config({"cwd": os.getcwd()})), indent=2))

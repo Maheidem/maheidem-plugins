@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs the full orchestrator-mode test suite. Non-zero exit on any failure.
-# CRITICAL: every sub-suite operates only inside mktemp project dirs with
-# CLAUDE_PROJECT_DIR overridden -- never touches the real repo's
-# .orchestrator-mode.state.
+# Every sub-suite works inside one mktemp root (see helpers.sh) with
+# CLAUDE_PROJECT_DIR and CLAUDE_CONFIG_DIR overridden, so the real project
+# and user-wide configs are never touched.
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

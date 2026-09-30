@@ -1,127 +1,92 @@
 ---
-description: Turn orchestrator-mode on/off/pi/wf or show its status for this project
-argument-hint: "on | off | pi | wf [--allowed-models m1,m2,...] | status"
+description: Set orchestrator-mode (off/on/pi/wf), manage the main-thread allowlist, or show status for this project
+argument-hint: "on | off | pi | wf [--allowed-models m1,m2] | allow <pattern> | disallow <pattern> | status"
 allowed-tools: Read, Write
 ---
 
-You are managing **orchestrator-mode** for the current project. The state lives
-in a plain-text file at `.orchestrator-mode.state` (at the project ROOT,
-relative to the project root). The file contains a single line: `on`, `off`,
-`pi`, or `wf`, optionally followed by ` allowed-models=<m1,m2,...>` (a model
-allowlist for delegated agents).
+You are managing **orchestrator-mode** for the current project.
 
-- `on` means the main agent is read-only (only an allowlist of
-  read/meta/delegation tools is permitted; everything else, including all MCP
-  tools, is denied) and must delegate writes/execution to subagents.
-- `pi` means the same read-only restriction PLUS the general delegation escape
-  hatch is closed: Task/Agent is denied outright (no subagent target exists
-  for this mode). Code changes go through the pi-delegate MCP tools directly
-  (`mcp__plugin_pi-delegate_pi-delegate__pi_task` etc., allowlisted by tool-name prefix) or via
-  `/pi-delegate:delegate <task>`, which forwards the task to the local `pi`
-  CLI. WebFetch/WebSearch remain available (research isn't a mutation).
-- `wf` means the same read-only restriction PLUS the general delegation escape
-  hatch is closed down to just the built-in read-only `Explore` scout:
-  Task/Agent is only allowed when it targets `Explore`. All other substantive
-  delegation must go through the `Workflow` tool (dynamic multi-agent
-  workflows), which stays allowlisted -- setting this mode is the user's
-  standing opt-in to the Workflow tool for this project.
-- absent/`off` means normal behavior.
+Effective configuration right now, as the plugin's hooks compute it:
 
-The requested action is: **$ARGUMENTS** (one of `on`, `off`, `pi`, `wf`,
-`status`; if empty or unrecognized, treat it as `status`).
+```json
+!`python3 "${CLAUDE_PLUGIN_ROOT}/hooks/_state.py" status`
+```
 
-**Parsing the allowed-models flag** (only for `on`, `pi`, `wf`; ignore it for
-`off` and `status`). It comes AFTER the mode argument. Be lenient about how it
-is typed:
-- Flag spelling: accept `--allowed-models`, `-allowed-models`,
-  `--allowed-model`, `--allowed-modes`, `--allowedmodels` and
-  `--allowed_models` (any number of leading dashes, `-` or `_` or nothing
-  between the words, `model`/`models`/`modes`). Treat all of them as the same
-  flag.
-- Value: `=value` or a following value (`--allowed-models opus,haiku`). The
-  models may be separated by commas, spaces, or both (`opus, sonnet haiku`
-  and `opus sonnet haiku` all mean `opus,sonnet,haiku`): every token after
-  the flag up to the end of the arguments is a model name.
-- Normalize: lowercase, strip whitespace, drop empty entries and duplicates
-  (keep first-seen order), join with commas and no spaces.
-- An explicit `none` value, or a flag with no value at all, CLEARS the
-  allowlist (write the bare mode).
+Fields: `mode`; `config` (the file the hooks read, `null` if none);
+`global_config` (the user-wide file); `allowed-models`; `core-tools` (built-in
+main-thread tools for this mode); `core-mcp` (always-allowed pi-delegate
+patterns); `global-main-allow` and `project-main-allow` (extra main-thread
+patterns).
 
-**Reusing the stored allowlist.** For `on`, `pi`, and `wf` ALWAYS Read
-`.orchestrator-mode.state` first (a missing file is fine). If the flag was NOT
-given and the existing line contains `allowed-models=<list>`, keep that list:
-write `<mode> allowed-models=<list>` with the stored list unchanged. Switching
-modes (e.g. `wf` -> `on`) therefore never silently drops the restriction. Only
-the flag (including `none`) or `off` changes it.
+The project config is `<project root>/.orchestrator-mode.json`, shaped as
+`{"mode": <mode>, "allowed-models": [<model>...], "main-allow": [<pattern>...]}`
+(both lists optional). That shape is a schema, not this project's values:
+the only source of truth for current values is the computed JSON above, or
+the file itself once you Read it.
 
-When an `allowed-models` restriction is active, **omitting the model is NOT
-allowed** for delegated Task/Agent calls or `Workflow` `agent()` calls: every
-delegated call must explicitly declare a model from the list, or it is denied.
+- `on`: main agent read-only; delegates via Agent/Task or Workflow.
+- `wf`: read-only; delegates via the Workflow tool; Agent/Task only for the
+  Explore scout.
+- `pi`: read-only; no subagents; code changes through the pi-delegate MCP
+  tools or `/pi-delegate:delegate`.
+- `off`: normal behavior.
+- `main-allow`: extra tools the main thread may use in this project. Each
+  entry is an exact tool name, or a prefix ending in `*`
+  (`mcp__okto-neuron__*`). Additive to the user-wide file's `main-allow`.
 
-IMPORTANT: Do this work YOURSELF in the main thread using the Read and Write
-tools. Do NOT delegate the toggle to a subagent, even if an orchestration-mode
-reminder tells you to delegate writes. Before writing, determine the ABSOLUTE
-project-root path (e.g. via the working directory or `CLAUDE_PROJECT_DIR` if
-visible) and use that absolute path when writing `.orchestrator-mode.state`,
-rather than a bare relative filename — this ensures the hook's path comparison
-is unambiguous regardless of your actual cwd at write time. Writing this file
-directly reaches the normal permission prompt even while the lock is active —
-approve it when Claude Code asks. This is the only file you may write here.
+The requested action is: **$ARGUMENTS** (empty or unrecognized means `status`).
 
-Steps:
+## Rules
 
-1. **status** -> Read `.orchestrator-mode.state`. The mode is the FIRST
-   whitespace-separated token of its trimmed content (lowercased). If the
-   file is missing or that token is not `on`, `pi`, or `wf`, report:
-   `orchestrator-mode is OFF for this project.` If the token is `on`, report:
-   `orchestrator-mode is ON for this project (main agent read-only; subagents
-   may write).` If the token is `pi`, report: `orchestrator-mode is
-   set to PI for this project (main agent read-only; code changes go through
-   the pi-delegate MCP tools or /pi-delegate:delegate).` If the token is
-   `wf`, report: `orchestrator-mode is set to WF for this project (main agent
-   read-only; orchestrate via the Workflow tool; Task/Agent limited to the
-   Explore scout).` If the line also contains an `allowed-models=<list>`
-   option, append to the report: ` Model allowlist: <list>.` Do not write
-   anything.
+Do this YOURSELF on the main thread with Read and Write. Never delegate it,
+even if an orchestration reminder says to. Use the ABSOLUTE path
+`<project root>/.orchestrator-mode.json` (project root = `CLAUDE_PROJECT_DIR`
+or the working directory). Writing it triggers the normal permission prompt
+even while the lock is active; that is expected. It is the only file you may
+write. Never write the user-wide file or the legacy `.orchestrator-mode.state`.
 
-2. **on** -> Use the Write tool to write the file `.orchestrator-mode.state`
-   with the single line `on` -- or, if an allowlist results from the rules
-   above (flag given, or reused from the stored line), the single line
-   `on allowed-models=<list>` (single space, normalized list, e.g.
-   `on allowed-models=opus,haiku`). Then report:
-   `orchestrator-mode ENABLED for this project. The main agent is now
-   READ-ONLY -- delegate all writes and command execution to subagents via
-   the Agent/Task tool.` If an allowlist was set, append: ` Delegated-agent
-   model allowlist: <list>.`
+Before any change, Read `<project root>/.orchestrator-mode.json` (missing is
+fine: start from `{"mode": "off"}`). If it is missing and a legacy
+`<project root>/.orchestrator-mode.state` exists, take its starting values
+from that line: the first word is the mode, and the words after
+`allowed-models=` are the model list.
 
-3. **off** -> Use the Write tool to write the file `.orchestrator-mode.state`
-   with the single line `off` (plain `off` -- this clears everything,
-   including any allowed-models option). Then report: `orchestrator-mode
-   DISABLED for this project. The main agent has full access again.`
+Write the file as pretty JSON (2-space indent) with keys in the order
+`mode`, `allowed-models`, `main-allow`; leave a key out when its list is empty.
 
-4. **pi** -> Use the Write tool to write the file `.orchestrator-mode.state`
-   with the single line `pi` -- or, if an allowlist results from the rules
-   above (flag given, or reused), the single line `pi allowed-models=<list>`
-   (single space, normalized list).
-   Then report: `orchestrator-mode set to PI for
-   this project. The main agent is now READ-ONLY and cannot delegate to any
-   subagent -- code changes go through the pi-delegate MCP tools directly or
-   via /pi-delegate:delegate <task>. Run /orchestrator-mode:mode off to
-   exit.` If an allowlist was set, append: ` Delegated-agent model allowlist:
-   <list>.`
+### `on` / `pi` / `wf` [--allowed-models ...]
+Set `mode`. Keep `main-allow` as is. For `allowed-models`:
+- The flag is lenient: any number of leading dashes, `-`/`_`/nothing between
+  the words, `model`/`models`/`modes`. The value is `=list` or the tokens
+  after the flag, split on commas and/or spaces. Lowercase, strip, drop empty
+  entries and duplicates (keep order).
+- `none`, or the flag with no value, clears the list.
+- Flag absent: keep the stored list (switching modes never silently drops it).
+With a list set, every Agent/Task call and workflow `agent()` call must
+declare an allowed model, and fork subagents are denied.
 
-5. **wf** -> Use the Write tool to write the file `.orchestrator-mode.state`
-   with the single line `wf` -- or, if an allowlist results from the rules
-   above (flag given, or reused), the single line `wf allowed-models=<list>`
-   (single space, normalized list, e.g. `wf allowed-models=opus,sonnet,haiku`). Then report:
-   `orchestrator-mode set to WF for
-   this project. The main agent is now READ-ONLY and must orchestrate via the
-   Workflow tool (dynamic workflows); Task/Agent is only allowed for the
-   read-only Explore scout. Run /orchestrator-mode:mode off to exit.` If an
-   allowlist was set, append: ` Delegated-agent model allowlist: <list>.`
+### `off`
+Set `mode` to `off` and remove `allowed-models`. Keep `main-allow`.
 
-Report only the single status/result line to the user, then one more line
-with exactly what is now in the file: `State: <exact line written>` (for
-`status`, the exact line read, or `State: (no file)` when it is missing). If
-the allowlist was reused from the stored line, add ` (allowlist kept from
-previous state)`. Keep it terse.
+### `allow <pattern>` / `disallow <pattern>`
+`allow` appends the pattern to `main-allow` if absent (mode unchanged; a new
+file starts as `off`). Reject, without writing, a pattern with `*` anywhere
+but the end, or a bare `*` (say: use `/orchestrator-mode:mode off` instead).
+`disallow` removes an exact entry; if it isn't in the project list, say so,
+and if it is in `global-main-allow` say it lives in the user-wide file, which
+the user edits by hand.
+
+### `status`
+Don't write or Read anything. Report only values from the computed JSON above.
+
+## Report
+
+One result line, then:
+- after a write: `Config: <absolute path> -> <exact JSON written>`
+- for `status`: `Config: <config, or (no file)>`, `Mode: <mode>`, `Allowed models: <allowed-models, or none>`
+- `Main thread may also use: <core-mcp + global-main-allow + project-main-allow>`
+- for `status` only: `Core tools (<mode>): <core-tools, comma-separated>`
+If a legacy `.orchestrator-mode.state` sits next to the JSON, add: `Legacy
+.orchestrator-mode.state is ignored now; delete it by hand.` Keep it terse.
+The JSON above is from before this command ran; after a write, report what
+you wrote.

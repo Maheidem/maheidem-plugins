@@ -1,5 +1,5 @@
 {
-  "description": "orchestrator-mode hooks: read-only main agent (PreToolUse, allowlist deny-by-default) + delegation reminder (UserPromptSubmit). Both no-op unless this project's .orchestrator-mode.state (at project root) is set to one of the four states: off/on/pi/wf.",
+  "description": "orchestrator-mode hooks: read-only main agent (PreToolUse, deny-by-default allowlist) + mode reminder (UserPromptSubmit). Both no-op unless the nearest .orchestrator-mode.json (or legacy .orchestrator-mode.state) sets mode on/pi/wf.",
   "hooks": {
     "PreToolUse": [
       {

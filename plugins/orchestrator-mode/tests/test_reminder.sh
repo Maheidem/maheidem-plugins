@@ -1,46 +1,43 @@
 #!/usr/bin/env bash
+# UserPromptSubmit reminder: built from the effective config, correct JSON shape.
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/helpers.sh"
 
-# mode off -> nothing injected
-new_proj "off"
-run_case "reminder/off no injection" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "__EMPTY__" ""
+remind() { run_case "$1" inject-reminder.py "{\"cwd\":\"$PROJ\"}" 0 "$2" "${3:-}"; }
 
-# mode on -> READ-ONLY reminder, mentions Workflow/WebFetch/WebSearch
-new_proj "on"
-run_case "reminder/on READ-ONLY" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "READ-ONLY" ""
-run_case "reminder/on mentions Workflow" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "Workflow" ""
-run_case "reminder/on mentions WebFetch" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "WebFetch" ""
-run_case "reminder/on mentions WebSearch" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "WebSearch" ""
+new_proj '{"mode":"off"}'
+remind "off: nothing injected" "__EMPTY__"
+new_proj ''
+remind "no config: nothing injected" "__EMPTY__"
 
-# mode pi -> mentions pi-delegate
-new_proj "pi"
-run_case "reminder/pi mentions pi-delegate" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "pi-delegate" ""
+new_proj '{"mode":"on"}'
+total=$((total+1))
+if printf '{"cwd":"%s"}' "$PROJ" | python3 "$PLUGIN_ROOT/hooks/inject-reminder.py" | python3 -c "
+import json, sys; o = json.load(sys.stdin)['hookSpecificOutput']
+assert o['hookEventName'] == 'UserPromptSubmit' and 'READ-ONLY' in o['additionalContext']"; then
+  echo "PASS: on: hookSpecificOutput.additionalContext shape"; pass=$((pass+1))
+else
+  echo "FAIL: on: JSON shape"; fail=$((fail+1))
+fi
+remind "on: names Agent/Task and Workflow" "Agent/Task, Workflow"
+remind "on: mentions memory write exemption" ".remember/"
+remind "on: says Monitor is blocked" "Monitor"
+remind "on: doesn't claim ALL MCP blocked" "mcp__plugin_pi-delegate_pi-delegate__*"
 
-# mode wf -> mentions Workflow tool
-new_proj "wf"
-run_case "reminder/wf mentions Workflow tool" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "Workflow tool" ""
+new_proj '{"mode":"wf","main-allow":["mcp__okto-neuron__*"]}'
+printf '{"main-allow":["mcp__waha-whatsapp__whatsapp_send_text"]}' > "$CFG/orchestrator-mode.json"
+remind "wf: Workflow + Explore only" "Explore scout only"
+remind "wf: lists project main-allow" "mcp__okto-neuron__*"
+remind "wf: lists user-wide main-allow" "mcp__waha-whatsapp__whatsapp_send_text"
 
-# mode on + allowed-models -> names models AND says model is required (not "allowed to omit")
-new_proj "on allowed-models=sonnet,opus"
-run_case "reminder/on+allowlist names models" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "sonnet" ""
-run_case "reminder/on+allowlist requires model" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "NOT allowed" ""
+new_proj '{"mode":"pi","allowed-models":["haiku"]}'
+remind "pi: pi-delegate path" "/pi-delegate:delegate"
+remind "pi: model allowlist sentence" "Model allowlist: haiku"
 
-# corrupted state (garbage token) -> fail open, no injection, but stderr warning
-# (get_state fails open silently; the T5 warning is shared via _state.py import)
-new_proj "banana"
-run_case "reminder/corrupted state no injection" inject-reminder.py \
-  "{\"cwd\":\"$TMP/proj\"}" 0 "__EMPTY__" "unrecognized state-file mode token"
+new_proj '{"mode":"on",'
+remind "malformed config: nothing, warns" "__EMPTY__" "treating as OFF"
+run_case "unparseable stdin: nothing" inject-reminder.py 'nope' 0 "__EMPTY__" "__EMPTY__"
 
 echo
 echo "test_reminder.sh: $pass/$total passed"

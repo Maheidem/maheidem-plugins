@@ -1,71 +1,61 @@
 #!/usr/bin/env bash
-# Shared test harness for orchestrator-mode hook tests.
-# Never touches the real marketplace repo's .orchestrator-mode.state --
-# every case works inside a fresh mktemp project dir.
+# Shared test harness for orchestrator-mode hook tests. Every case runs in a
+# project dir under one mktemp root (removed on exit) with CLAUDE_CONFIG_DIR
+# pointed at a scratch dir, so neither the real repo config nor the real
+# user-wide config is ever read or written.
 
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(mktemp -d)"
+trap 'rm -rf "$ROOT"' EXIT
 
 pass=0
 fail=0
 total=0
+nproj=0
 
-# run_case name script payload expect_exit expect_stdout_substr expect_stderr_substr
-# expect_stdout_substr / expect_stderr_substr may be "__EMPTY__" (must be empty)
-# or a substring to grep for. Pass "" to skip that assertion.
+# run_case name script payload expect_exit expect_stdout expect_stderr
+# expect_* may be "__EMPTY__" (must be empty), a substring, or "" (skip).
 run_case() {
-  local name="$1" script="$2" payload="$3" expect_exit="$4" expect_stdout_substr="$5" expect_stderr_substr="$6"
+  local name="$1" script="$2" payload="$3" expect_exit="$4" want_out="$5" want_err="$6"
+  local out err rc ok=1
   total=$((total+1))
-  local out err rc errfile
-  errfile="$(mktemp)"
-  out=$(printf '%s' "$payload" | python3 "$PLUGIN_ROOT/hooks/$script" 2>"$errfile")
+  out=$(printf '%s' "$payload" | python3 "$PLUGIN_ROOT/hooks/$script" 2>"$ROOT/err")
   rc=$?
-  err=$(cat "$errfile")
-  rm -f "$errfile"
-
-  local ok=1
-  if [ "$rc" != "$expect_exit" ]; then
-    echo "FAIL $name: exit $rc != $expect_exit"
-    ok=0
-  fi
-  if [ "$expect_stdout_substr" = "__EMPTY__" ]; then
-    if [ -n "$out" ]; then
-      echo "FAIL $name: expected empty stdout, got: $out"
-      ok=0
+  err=$(cat "$ROOT/err")
+  [ "$rc" = "$expect_exit" ] || { echo "FAIL $name: exit $rc != $expect_exit"; ok=0; }
+  for pair in "out:$want_out" "err:$want_err"; do
+    local which="${pair%%:*}" want="${pair#*:}" got
+    [ "$which" = out ] && got="$out" || got="$err"
+    if [ "$want" = "__EMPTY__" ] && [ -n "$got" ]; then
+      echo "FAIL $name: expected empty std$which, got: $got"; ok=0
+    elif [ -n "$want" ] && [ "$want" != "__EMPTY__" ] && ! grep -qF -- "$want" <<<"$got"; then
+      echo "FAIL $name: std$which missing '$want' (got: $got)"; ok=0
     fi
-  elif [ -n "$expect_stdout_substr" ]; then
-    if ! grep -qF -- "$expect_stdout_substr" <<<"$out"; then
-      echo "FAIL $name: stdout missing '$expect_stdout_substr' (got: $out)"
-      ok=0
-    fi
-  fi
-  if [ "$expect_stderr_substr" = "__EMPTY__" ]; then
-    if [ -n "$err" ]; then
-      echo "FAIL $name: expected empty stderr, got: $err"
-      ok=0
-    fi
-  elif [ -n "$expect_stderr_substr" ]; then
-    if ! grep -qF -- "$expect_stderr_substr" <<<"$err"; then
-      echo "FAIL $name: stderr missing '$expect_stderr_substr' (got: $err)"
-      ok=0
-    fi
-  fi
-
-  if [ "$ok" = 1 ]; then
-    echo "PASS: $name"
-    pass=$((pass+1))
-  else
-    fail=$((fail+1))
-  fi
+  done
+  if [ "$ok" = 1 ]; then echo "PASS: $name"; pass=$((pass+1)); else fail=$((fail+1)); fi
 }
 
-# Set up a fresh project dir at $TMP/proj with an optional state-file content.
-# Usage: new_proj "<state content or omit for no file>"
+# new_proj '<config text>' [legacy]: fresh $PROJ (with $CFG as the isolated
+# CLAUDE_CONFIG_DIR). Text goes to .orchestrator-mode.json, or to the legacy
+# .orchestrator-mode.state with "legacy". Empty text -> no config file.
 new_proj() {
-  local content="$1"
-  TMP="$(mktemp -d)"
-  mkdir -p "$TMP/proj"
-  if [ -n "$content" ] || [ "$2" = "empty" ]; then
-    printf '%s' "$content" > "$TMP/proj/.orchestrator-mode.state"
+  nproj=$((nproj+1))
+  PROJ="$ROOT/p$nproj/proj"
+  CFG="$ROOT/p$nproj/cfg"
+  mkdir -p "$PROJ" "$CFG"
+  if [ "${2:-}" = legacy ]; then
+    printf '%s' "$1" > "$PROJ/.orchestrator-mode.state"
+  elif [ -n "$1" ]; then
+    printf '%s' "$1" > "$PROJ/.orchestrator-mode.json"
   fi
-  export CLAUDE_PROJECT_DIR="$TMP/proj"
+  export CLAUDE_PROJECT_DIR="$PROJ" CLAUDE_CONFIG_DIR="$CFG"
 }
+
+# payload tool '<tool_input json>' [extra json members, e.g. ,"agent_id":"a"]
+payload() {
+  printf '{"tool_name":"%s","tool_input":%s,"cwd":"%s"%s}' "$1" "$2" "$PROJ" "${3:-}"
+}
+
+allowed() { run_case "$1" enforce-orchestrator.py "$2" 0 "__EMPTY__" ""; }
+DENY_MARK='"permissionDecision": "deny"'
+denied() { run_case "$1" enforce-orchestrator.py "$2" 0 "${3:-$DENY_MARK}" ""; }

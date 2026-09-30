@@ -1,334 +1,220 @@
 #!/usr/bin/env bash
+# PreToolUse gate. Cases tagged #N are regressions for the 2026-09-30 audit.
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/helpers.sh"
+A=',"agent_id":"sub-1"'
 
-# 1. mode off, Read -> no-op
-new_proj "off"
-run_case "off/Read no-op" enforce-orchestrator.py \
-  "{\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"x\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
+# --- basics -----------------------------------------------------------------
+new_proj ''
+allowed "no config: Bash no-op" "$(payload Bash '{"command":"ls"}')"
+new_proj '{"mode":"off"}'
+allowed "off: Bash no-op" "$(payload Bash '{"command":"ls"}')"
+new_proj '{"mode":"on"}'
+allowed "on: Read allowed" "$(payload Read '{"file_path":"x"}')"
+denied "on: Edit denied" "$(payload Edit '{"file_path":"foo.py"}')" "read-only"
+denied "on: Bash denied" "$(payload Bash '{"command":"ls"}')"
+denied "on: unknown mcp denied" "$(payload mcp__foo__bar '{}')"
+allowed "on: Task any subagent" "$(payload Task '{"subagent_type":"general-purpose"}')"
+allowed "on: Workflow allowed" "$(payload Workflow '{"script":"agent(\"x\")"}')"
+allowed "on: subagent Bash full access" "$(payload Bash '{"command":"rm -rf build"}' "$A")"
+denied "missing tool_name denied" "{\"tool_input\":{},\"cwd\":\"$PROJ\"}"
+new_proj '{"mode":"WF"}'
+denied "uppercase mode token is active" "$(payload Bash '{"command":"ls"}')"
 
-# 2. mode on, Read allowed
-new_proj "on"
-run_case "on/Read allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"x\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 3. mode on, Edit denied
-new_proj "on"
-run_case "on/Edit denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"foo.py\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-run_case "on/Edit denied reason" enforce-orchestrator.py \
-  "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"foo.py\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "read-only" ""
-
-# 4. mode on, Bash denied
-new_proj "on"
-run_case "on/Bash denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-# 5. mode on, mcp__x denied
-new_proj "on"
-run_case "on/mcp denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__foo__bar\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-# 6. mode wf, Task Explore allowed
-new_proj "wf"
-run_case "wf/Task Explore allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"Explore\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 7. mode wf, Task non-Explore denied
-new_proj "wf"
-run_case "wf/Task non-Explore denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"general-purpose\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "Explore" ""
-
-# 8. mode wf, Workflow allowed
-new_proj "wf"
-run_case "wf/Workflow allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"Workflow\",\"tool_input\":{\"script\":\"agent('x', model: \\\"sonnet\\\")\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 9. mode pi, Task denied outright (no subagent target exists anymore)
-new_proj "pi"
-run_case "pi/Task denied outright" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"pi-delegate:delegate\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "cannot delegate to any subagent" ""
-
-# 10. mode pi, Task with any other subagent_type also denied
-new_proj "pi"
-run_case "pi/Task non-pi-delegate denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"Explore\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-# 11. mode pi, Workflow denied
-new_proj "pi"
-run_case "pi/Workflow denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Workflow\",\"tool_input\":{\"script\":\"print(1)\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-# 12. subagent bypass full access
-new_proj "on"
-run_case "on/subagent full access" enforce-orchestrator.py \
-  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf /\"},\"agent_id\":\"sub-1\",\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 13. subagent Write to state file denied
-new_proj "on"
-run_case "on/subagent Write state file denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/proj/.orchestrator-mode.state\"},\"agent_id\":\"sub-1\",\"cwd\":\"$TMP/proj\"}" \
-  0 "subagents may not toggle" ""
-
-# 14. D1: main-thread toggle Write -> silent no-op
-new_proj "on"
-run_case "on/D1 main-thread toggle Write no-op" enforce-orchestrator.py \
-  "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/proj/.orchestrator-mode.state\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 15. D3 family match: matching substring model allowed
-new_proj "on allowed-models=sonnet"
-run_case "D3/family match allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"foo\",\"model\":\"claude-sonnet-5\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 16. D3: off-list model denied
-new_proj "on allowed-models=sonnet"
-run_case "D3/off-list model denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"foo\",\"model\":\"opus\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "sonnet" ""
-
-# 17. D4a: Task omitting model while allowlist active -> denied
-new_proj "on allowed-models=sonnet"
-run_case "D4a/omitted model denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"foo\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "Declare model" ""
-
-# 18. D4b: Workflow script, agent() calls without model -> denied
-new_proj "wf allowed-models=sonnet"
-run_case "D4b/agent() missing model denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Workflow\",\"tool_input\":{\"script\":\"agent('a'); agent('b')\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-# 19. D4b: zero agent() calls -> not denied
-new_proj "wf allowed-models=sonnet"
-run_case "D4b/zero agent() calls allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"Workflow\",\"tool_input\":{\"script\":\"print('hi')\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 20. D4b: all agent() calls declare model -> allowed
-new_proj "wf allowed-models=sonnet"
-run_case "D4b/agent() with model allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"Workflow\",\"tool_input\":{\"script\":\"agent('a', model: \\\"sonnet\\\")\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 21. T5: corrupted state file garbage token -> fail open, stderr warning
-new_proj "banana"
-run_case "T5/garbage token fail-open" enforce-orchestrator.py \
-  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" "unrecognized state-file mode token"
-
-# 22. state file explicit off -> no warning
-new_proj "off"
-run_case "T5/explicit off no warning" enforce-orchestrator.py \
-  "{\"tool_name\":\"Read\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" "__EMPTY__"
-
-# 23. missing state file -> no warning
-TMP="$(mktemp -d)"
-mkdir -p "$TMP/proj"
-export CLAUDE_PROJECT_DIR="$TMP/proj"
-run_case "T5/missing state file no warning" enforce-orchestrator.py \
-  "{\"tool_name\":\"Read\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" "__EMPTY__"
-
-# 24. D2: subagent Bash containing state-file path denied
-new_proj "on"
-run_case "D2/subagent Bash state-file path denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat .orchestrator-mode.state\"},\"agent_id\":\"sub-1\",\"cwd\":\"$TMP/proj\"}" \
-  0 "state-file changes go through" ""
-
-# 25. D2: main-thread Bash containing state-file path denied (specific D2 reason)
-new_proj "on"
-run_case "D2/main-thread Bash state-file path denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo off > .orchestrator-mode.state\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "state-file changes go through" ""
-
-# 25b. D2 is checked before the general subagent bypass: a subagent Bash call
-# that would otherwise be granted full access (step 5) is still denied here
-# because D2 (step 3) runs first and is the only reason it's denied.
-new_proj "on"
-run_case "D2/subagent Bash state-file path denied before subagent bypass" enforce-orchestrator.py \
-  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat .orchestrator-mode.state\"},\"agent_id\":\"sub-2\",\"cwd\":\"$TMP/proj\"}" \
-  0 "state-file changes go through" ""
-
-# 26. D2: mcp__* tool with state-file substring in tool_input denied
-new_proj "on"
-run_case "D2/mcp state-file substring denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__nextcloud__nc_webdav_write_file\",\"tool_input\":{\"path\":\"/x/.orchestrator-mode.state\"},\"agent_id\":\"sub-1\",\"cwd\":\"$TMP/proj\"}" \
-  0 "state-file changes go through" ""
-
-# 27. D3 malformed allowlist -> discarded, fail open, stderr warning
-new_proj "on allowed-models=opus, haiku"
-run_case "D3/malformed allowlist discarded" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"foo\",\"model\":\"gpt-4\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" "malformed allowed-models"
-
-# 28. malformed allowlist + omitted model still allowed (D4 doesn't fire)
-new_proj "on allowed-models=opus, haiku"
-run_case "D3/malformed allowlist + omitted model allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"foo\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" "malformed allowed-models"
-
-# 29. mode wf, CronCreate allowed (scheduling/loop meta-tool, added 2026-07-28)
-new_proj "wf"
-run_case "wf/CronCreate allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"CronCreate\",\"tool_input\":{\"schedule\":\"* * * * *\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# 30. mode on, Monitor allowed (read-only/introspection tool)
-new_proj "on"
-run_case "on/Monitor allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"Monitor\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# pi mode: pi-delegate MCP tools allowed by prefix (D5-D, pi-delegate ADR-002)
-new_proj "pi"
-run_case "pi/mcp pi-delegate allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__pi-delegate__pi_conversation_send\",\"tool_input\":{\"name\":\"x\",\"message\":\"hi\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# pi mode: plugin-qualified runtime name (as Claude Code actually exposes it)
-new_proj "pi"
-run_case "pi/mcp pi-delegate plugin-qualified allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__plugin_pi-delegate_pi-delegate__pi_task\",\"tool_input\":{\"text\":\"hi\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# pi mode: other MCP tools still denied
-new_proj "pi"
-run_case "pi/mcp other denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__foo__bar\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-# presales-toolkit MCP carve-out (0.9.2): plugin-qualified prefix allowed
-# under all three active modes, for both a read tool and a write tool.
-new_proj "on"
-run_case "on/mcp presales-toolkit read allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_list\",\"tool_input\":{\"client\":\"x\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-new_proj "wf"
-run_case "wf/mcp presales-toolkit read allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_list\",\"tool_input\":{\"client\":\"x\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-new_proj "pi"
-run_case "pi/mcp presales-toolkit read allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_list\",\"tool_input\":{\"client\":\"x\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-new_proj "on"
-run_case "on/mcp presales-toolkit write allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_upsert\",\"tool_input\":{\"client\":\"x\",\"name\":\"y\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-new_proj "wf"
-run_case "wf/mcp presales-toolkit write allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_upsert\",\"tool_input\":{\"client\":\"x\",\"name\":\"y\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-new_proj "pi"
-run_case "pi/mcp presales-toolkit write allowed" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__stakeholder_upsert\",\"tool_input\":{\"client\":\"x\",\"name\":\"y\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "__EMPTY__" ""
-
-# The carve-out is a specific prefix allowlist, not a blanket mcp__* pass: a
-# non-allowlisted MCP tool is still denied under all three active modes.
-new_proj "on"
-run_case "on/mcp non-allowlisted denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__claude_ai_Slack__slack_send_message\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-new_proj "wf"
-run_case "wf/mcp non-allowlisted denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__claude_ai_Slack__slack_send_message\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-new_proj "pi"
-run_case "pi/mcp non-allowlisted denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__claude_ai_Slack__slack_send_message\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-  0 "deny" ""
-
-# D2 still wins over the presales-toolkit carve-out: an allowlisted-prefix
-# MCP call whose tool_input mentions the state file is denied regardless.
-new_proj "on"
-run_case "D2/mcp presales-toolkit state-file substring denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__plugin_presales-toolkit_db__misc_add\",\"tool_input\":{\"note\":\"see /x/.orchestrator-mode.state\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "state-file changes go through" ""
-
-# --- 0.9.4: exact-match send tool (ALLOWED_MCP_TOOLS) -----------------------
-for m in on wf pi; do
-  new_proj "$m"
-  run_case "$m/mcp waha send_text exact allowed" enforce-orchestrator.py \
-    "{\"tool_name\":\"mcp__waha-whatsapp__whatsapp_send_text\",\"tool_input\":{\"chatId\":\"x\",\"text\":\"hi\"},\"cwd\":\"$TMP/proj\"}" \
-    0 "__EMPTY__" ""
-  run_case "$m/mcp waha other tool still denied" enforce-orchestrator.py \
-    "{\"tool_name\":\"mcp__waha-whatsapp__whatsapp_delete_message\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-    0 "deny" ""
-  run_case "$m/mcp waha send_text prefix-extension denied" enforce-orchestrator.py \
-    "{\"tool_name\":\"mcp__waha-whatsapp__whatsapp_send_text_bulk\",\"tool_input\":{},\"cwd\":\"$TMP/proj\"}" \
-    0 "deny" ""
+# --- #1 Monitor is not read-only ---------------------------------------------
+for m in on pi wf; do
+  new_proj "{\"mode\":\"$m\"}"
+  denied "#1 $m: main Monitor denied" "$(payload Monitor '{"command":"touch src.py"}')"
 done
-new_proj "on"
-run_case "on/mcp waha send_text state-file substring denied" enforce-orchestrator.py \
-  "{\"tool_name\":\"mcp__waha-whatsapp__whatsapp_send_text\",\"tool_input\":{\"text\":\"/x/.orchestrator-mode.state\"},\"cwd\":\"$TMP/proj\"}" \
-  0 "state-file changes go through" ""
+denied "#1 subagent Monitor writing config denied" \
+  "$(payload Monitor '{"command":"echo off > .orchestrator-mode.json"}' "$A")" "config files"
 
-# --- 0.9.4: auto-memory exemption follows CLAUDE_CONFIG_DIR + real slug rule --
-# Project path with '_' and '.' (both become '-' in Claude Code's slug).
-TMP="$(mktemp -d)"
-PROJ="$TMP/my_proj.v2"
-mkdir -p "$PROJ" && printf 'wf' > "$PROJ/.orchestrator-mode.state"
-export CLAUDE_PROJECT_DIR="$PROJ"
-SLUG="$(printf '%s' "$PROJ" | sed 's/[^A-Za-z0-9]/-/g')"
-mkdir -p "$TMP/home/.claude" "$TMP/work"
+# --- #2/#8 config files protected, case-insensitively, anywhere -------------
+new_proj '{"mode":"on"}'
+denied "#2 subagent Bash uppercase config name" \
+  "$(payload Bash '{"command":"echo off > .ORCHESTRATOR-MODE.JSON"}' "$A")" "config files"
+denied "#2 subagent Bash legacy state name" \
+  "$(payload Bash '{"command":"echo off > .Orchestrator-Mode.State"}' "$A")" "config files"
+denied "#2 main Bash mentioning config" "$(payload Bash '{"command":"cat .orchestrator-mode.json"}')" "config files"
+denied "#2 subagent Write mixed-case config" \
+  "$(payload Write "{\"file_path\":\"$PROJ/.Orchestrator-Mode.Json\"}" "$A")" "config files"
+for t in Edit MultiEdit; do
+  denied "#2 subagent $t config" "$(payload $t "{\"file_path\":\"$PROJ/.orchestrator-mode.json\"}" "$A")" "config files"
+done
+denied "#2 subagent NotebookEdit config" \
+  "$(payload NotebookEdit "{\"notebook_path\":\"$PROJ/.orchestrator-mode.json\"}" "$A")" "config files"
+denied "#2 subagent Write legacy state" \
+  "$(payload Write "{\"file_path\":\"$PROJ/.orchestrator-mode.state\"}" "$A")" "config files"
+denied "#2 subagent Write config.tmp sibling" \
+  "$(payload Write "{\"file_path\":\"$PROJ/.orchestrator-mode.json.tmp\"}" "$A")" "config files"
+denied "#8 subagent Write nested shadow config" \
+  "$(payload Write "{\"file_path\":\"$PROJ/sub/.orchestrator-mode.json\"}" "$A")" "config files"
+denied "#2 subagent Write user-wide config" \
+  "$(payload Write "{\"file_path\":\"$CFG/orchestrator-mode.json\"}" "$A")" "config files"
+denied "#2 main Write user-wide config" \
+  "$(payload Write "{\"file_path\":\"$CFG/orchestrator-mode.json\"}")" "config files"
+ln -s "$PROJ/.orchestrator-mode.json" "$PROJ/alias.json"
+denied "#2 subagent Write via symlink to config" \
+  "$(payload Write "{\"file_path\":\"$PROJ/alias.json\"}" "$A")" "config files"
+denied "#2 mcp input mentioning config" \
+  "$(payload mcp__plugin_pi-delegate_pi-delegate__pi_task '{"text":"rm .orchestrator-mode.json"}')" "config files"
+allowed "toggle: main Write project config -> normal prompt" \
+  "$(payload Write "{\"file_path\":\"$PROJ/.orchestrator-mode.json\"}")"
+allowed "toggle: relative path" "$(payload Write '{"file_path":".orchestrator-mode.json"}')"
+denied "toggle is Write-only: main Edit config" \
+  "$(payload Edit "{\"file_path\":\"$PROJ/.orchestrator-mode.json\"}")" "config files"
+denied "#8 main Write nested config is not the toggle" \
+  "$(payload Write "{\"file_path\":\"$PROJ/sub/.orchestrator-mode.json\"}")" "config files"
 
-(
-  export HOME="$TMP/home"; unset CLAUDE_CONFIG_DIR
-  run_case "mem/personal (CLAUDE_CONFIG_DIR unset) ~/.claude memory allowed" enforce-orchestrator.py \
-    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/home/.claude/projects/$SLUG/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
-    0 "__EMPTY__" ""
-  run_case "mem/personal: work-profile memory path denied" enforce-orchestrator.py \
-    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/work/projects/$SLUG/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
-    0 "deny" ""
-  run_case "mem/old slug (only / replaced) denied" enforce-orchestrator.py \
-    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/home/.claude/projects/$(printf '%s' "$PROJ" | tr / -)/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
-    0 "deny" ""
-  export CLAUDE_CONFIG_DIR=""
-  run_case "mem/empty CLAUDE_CONFIG_DIR treated as unset" enforce-orchestrator.py \
-    "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$TMP/home/.claude/projects/$SLUG/memory/MEMORY.md\",\"old_string\":\"a\",\"new_string\":\"b\"},\"cwd\":\"$PROJ\"}" \
-    0 "__EMPTY__" ""
-  echo "$pass $fail $total" > "$TMP/counts"
-)
-read pass fail total < "$TMP/counts"
-(
-  export HOME="$TMP/home" CLAUDE_CONFIG_DIR="$TMP/work"
-  run_case "mem/work (CLAUDE_CONFIG_DIR set) memory allowed" enforce-orchestrator.py \
-    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/work/projects/$SLUG/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
-    0 "__EMPTY__" ""
-  run_case "mem/work: ~/.claude memory path denied" enforce-orchestrator.py \
-    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/home/.claude/projects/$SLUG/memory/note.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
-    0 "deny" ""
-  run_case "mem/work: sibling of memory dir denied" enforce-orchestrator.py \
-    "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/work/projects/$SLUG/memory-evil/x.md\",\"content\":\"x\"},\"cwd\":\"$PROJ\"}" \
-    0 "deny" ""
-  echo "$pass $fail $total" > "$TMP/counts"
-)
-read pass fail total < "$TMP/counts"
+# --- #3 wf delegation --------------------------------------------------------
+new_proj '{"mode":"wf"}'
+allowed "wf: Task Explore allowed" "$(payload Task '{"subagent_type":"Explore"}')"
+allowed "wf: Agent Explore allowed" "$(payload Agent '{"subagent_type":"Explore"}')"
+denied "wf: Task general-purpose denied" "$(payload Task '{"subagent_type":"general-purpose"}')" "Explore"
+denied "wf: Agent missing subagent_type denied" "$(payload Agent '{}')" "Explore"
+allowed "wf: Workflow allowed" "$(payload Workflow '{"script":"agent(\"x\")"}')"
+
+# --- #4 #5 model allowlist reaches subagents and forks -----------------------
+new_proj '{"mode":"on","allowed-models":["haiku"]}'
+denied "#4 subagent Agent opus denied" "$(payload Agent '{"subagent_type":"x","model":"opus"}' "$A")" "not in the allowlist"
+allowed "#4 subagent Agent haiku allowed" "$(payload Agent '{"subagent_type":"x","model":"haiku"}' "$A")"
+denied "#4 subagent Workflow missing model denied" "$(payload Workflow '{"script":"agent(\"a\")"}' "$A")" "must set model"
+denied "#5 fork denied under allowlist" "$(payload Agent '{"subagent_type":"fork","model":"haiku"}')" "fork"
+denied "D4 main Task omitted model denied" "$(payload Task '{"subagent_type":"x"}')" "declare"
+new_proj '{"mode":"on"}'
+allowed "#5 fork allowed without allowlist" "$(payload Agent '{"subagent_type":"fork"}')"
+new_proj '{"mode":"wf","allowed-models":["sonnet"]}'
+denied "wf: Explore must declare model too" "$(payload Task '{"subagent_type":"Explore"}')" "declare"
+allowed "wf: Explore with allowed model" "$(payload Task '{"subagent_type":"Explore","model":"sonnet"}')"
+
+# --- #6 pi mode ---------------------------------------------------------------
+new_proj '{"mode":"pi","allowed-models":["qwen3-coder"]}'
+PT=mcp__plugin_pi-delegate_pi-delegate__pi_task
+denied "#6 pi_task off-list model denied" "$(payload $PT '{"text":"t","model":"opus"}')" "pi_task model"
+allowed "#6 pi_task listed model allowed" "$(payload $PT '{"text":"t","model":"qwen3-coder"}')"
+allowed "#6 pi_task omitted model uses pi config" "$(payload $PT '{"text":"t"}')"
+new_proj '{"mode":"pi"}'
+for t in Read SendMessage WebFetch Artifact ReportFindings; do
+  allowed "#15 pi: $t allowed" "$(payload $t '{}')"
+done
+denied "pi: Task denied" "$(payload Task '{"subagent_type":"Explore"}')" "cannot spawn subagents"
+denied "pi: Workflow denied" "$(payload Workflow '{"script":"1"}')"
+allowed "pi: bare pi-delegate prefix allowed" "$(payload mcp__pi-delegate__pi_task '{"text":"t"}')"
+denied "pi: other mcp denied" "$(payload mcp__discord__reply '{}')"
+
+# --- #7 config lookup walks up ----------------------------------------------
+new_proj '{"mode":"on"}'
+mkdir -p "$PROJ/a/b"
+CLAUDE_PROJECT_DIR="$PROJ/a/b" denied "#7 launch from subdir still locked" "$(payload Bash '{"command":"ls"}')"
+CLAUDE_PROJECT_DIR="" denied "#7 no env var: walk up from payload cwd" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"},\"cwd\":\"$PROJ/a/b\"}"
+printf '{"mode":"off"}' > "$PROJ/a/.orchestrator-mode.json"
+CLAUDE_PROJECT_DIR="$PROJ/a/b" allowed "#7 nearest config wins" "$(payload Bash '{"command":"ls"}')"
+new_proj 'on' legacy
+denied "legacy .state still read" "$(payload Bash '{"command":"ls"}')"
+printf '{"mode":"off"}' > "$PROJ/.orchestrator-mode.json"
+allowed "JSON wins over legacy in the same dir" "$(payload Bash '{"command":"ls"}')"
+
+# --- #9 memory exemption, symlinks ------------------------------------------
+new_proj '{"mode":"wf"}'
+mkdir -p "$PROJ/.remember" "$PROJ/src"
+allowed "#9 real .remember write allowed" "$(payload Write "{\"file_path\":\"$PROJ/.remember/now.md\"}")"
+denied "#9 .remember sibling denied" "$(payload Write "{\"file_path\":\"$PROJ/.remember-evil/x\"}")"
+rm -rf "$PROJ/.remember" && ln -s "$PROJ/src" "$PROJ/.remember"
+denied "#9 symlinked .remember denied" "$(payload Write "{\"file_path\":\"$PROJ/.remember/app.py\"}")"
+denied "#9 target of the symlink denied" "$(payload Write "{\"file_path\":\"$PROJ/src/app.py\"}")"
+
+new_proj '{"mode":"wf"}'
+P2="$ROOT/my_proj.v2"; mkdir -p "$P2"; printf '{"mode":"wf"}' > "$P2/.orchestrator-mode.json"
+SLUG="$(printf '%s' "$P2" | sed 's/[^A-Za-z0-9]/-/g')"
+export CLAUDE_PROJECT_DIR="$P2"
+allowed "mem: Write under CLAUDE_CONFIG_DIR memory" \
+  "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$CFG/projects/$SLUG/memory/note.md\"},\"cwd\":\"$P2\"}"
+allowed "mem: NotebookEdit under memory" \
+  "{\"tool_name\":\"NotebookEdit\",\"tool_input\":{\"notebook_path\":\"$CFG/projects/$SLUG/memory/n.ipynb\"},\"cwd\":\"$P2\"}"
+denied "mem: sibling of memory dir denied" \
+  "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$CFG/projects/$SLUG/memory-evil/x.md\"},\"cwd\":\"$P2\"}"
+denied "mem: old slug (only / replaced) denied" \
+  "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$CFG/projects/$(printf '%s' "$P2" | tr / -)/memory/x.md\"},\"cwd\":\"$P2\"}"
+mkdir -p "$ROOT/home/.claude"
+HOME="$ROOT/home" CLAUDE_CONFIG_DIR="" allowed "mem: empty CLAUDE_CONFIG_DIR means ~/.claude" \
+  "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$ROOT/home/.claude/projects/$SLUG/memory/MEMORY.md\"},\"cwd\":\"$P2\"}"
+denied "mem: other profile's memory denied" \
+  "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$ROOT/home/.claude/projects/$SLUG/memory/x.md\"},\"cwd\":\"$P2\"}"
+mkdir -p "$ROOT/elsewhere" "$CFG/projects/$SLUG" && ln -s "$ROOT/elsewhere" "$CFG/projects/$SLUG/memory"
+denied "#9 symlinked memory dir denied" \
+  "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$CFG/projects/$SLUG/memory/x.md\"},\"cwd\":\"$P2\"}"
+
+# --- #10 #13 Workflow model lint -------------------------------------------
+new_proj '{"mode":"wf","allowed-models":["sonnet"]}'
+wf() { payload Workflow "$(python3 -c 'import json,sys; print(json.dumps({"script": sys.argv[1]}))' "$1")"; }
+allowed "#13 every call declares an allowed model" "$(wf 'await agent("a (b)", {model: "sonnet"}); agent(`c`, {"model": "claude-sonnet-5"})')"
+allowed "#13 subagent( is not an agent() call" "$(wf 'subagent("a")')"
+allowed "#13 agent( inside a string is ignored" "$(wf 'log("agent(x)"); agent("y", {model: "sonnet"})')"
+denied "#13 comment cannot supply the model" "$(wf $'// model: sonnet model: sonnet\nagent("a"); agent("b")')" "line 2"
+denied "#13 model: inside the prompt string doesn't count" "$(wf 'agent("use model: \"sonnet\"")')" "must set model"
+denied "#13 model from a variable denied" "$(wf 'const m = "sonnet"; agent("a", {model: m})')" "string literal"
+denied "#13 off-list literal denied" "$(wf 'agent("a", {model: "opus"})')" "'opus'"
+denied "#13 template literal with \${} denied" "$(wf 'agent("a", {model: `${x}`})')" "string literal"
+denied "#13 named workflow can't be linted" "$(payload Workflow '{"name":"review"}')" "named/saved"
+printf 'agent("a", {model: "sonnet"})' > "$PROJ/ok.js"
+allowed "#13 scriptPath relative, regular file" "$(payload Workflow '{"scriptPath":"ok.js"}')"
+denied "#10 scriptPath missing file denied" "$(payload Workflow '{"scriptPath":"nope.js"}')" "can't lint"
+mkfifo "$PROJ/fifo.js"
+start=$SECONDS
+denied "#10 scriptPath FIFO denied without hanging" "$(payload Workflow '{"scriptPath":"fifo.js"}')" "regular file"
+[ $((SECONDS-start)) -lt 3 ] || { echo "FAIL #10 FIFO took $((SECONDS-start))s"; fail=$((fail+1)); }
+new_proj '{"mode":"on"}'
+allowed "no allowlist: named workflow allowed" "$(payload Workflow '{"name":"review"}')"
+
+# --- #11 fail closed on bad input, fail open on bad config ------------------
+new_proj '{"mode":"on"}'
+denied "#11 tool_input null (main Write) denied, no crash" "$(payload Write null)"
+allowed "#11 tool_input null (subagent Edit) no crash" "$(payload Edit null "$A")"
+denied "#11 tool_input string denied" "$(payload Write '"x"')"
+denied "#11 non-object payload denied" '[1,2]'
+denied "#11 internal error fails closed" "{\"tool_name\":[\"Bash\"],\"tool_input\":{},\"cwd\":\"$PROJ\"}" "internal error"
+run_case "#11 unparseable stdin fails open" enforce-orchestrator.py 'not json' 0 "__EMPTY__" ""
+new_proj '{"mode":"on",'
+run_case "#11 malformed JSON config -> warn + off" enforce-orchestrator.py "$(payload Bash '{"command":"ls"}')" 0 "__EMPTY__" "treating as OFF"
+new_proj '{"mode":"on","main-allow":"mcp__x__*"}'
+run_case "#11 schema violation -> warn + off" enforce-orchestrator.py "$(payload Bash '{"command":"ls"}')" 0 "__EMPTY__" "list of non-empty strings"
+new_proj 'banana' legacy
+run_case "#11 garbage legacy token -> warn + off" enforce-orchestrator.py "$(payload Bash '{"command":"ls"}')" 0 "__EMPTY__" "unrecognized mode token"
+new_proj '' legacy
+run_case "empty legacy file -> off, silent" enforce-orchestrator.py "$(payload Bash '{"command":"ls"}')" 0 "__EMPTY__" "__EMPTY__"
+
+# --- #12 model matching -------------------------------------------------------
+new_proj '{"mode":"on","allowed-models":["o"]}'
+denied "#12 entry 'o' does not allow opus" "$(payload Task '{"subagent_type":"x","model":"opus"}')"
+new_proj '{"mode":"on","allowed-models":["sonnet","claude-opus-5"]}'
+allowed "#12 family token match" "$(payload Task '{"subagent_type":"x","model":"claude-sonnet-5-5"}')"
+allowed "#12 id prefix at boundary" "$(payload Task '{"subagent_type":"x","model":"claude-opus-5-5"}')"
+denied "#12 id prefix mid-token denied" "$(payload Task '{"subagent_type":"x","model":"claude-opus-50"}')"
+denied "#12 case-insensitive off-list" "$(payload Task '{"subagent_type":"x","model":"HAIKU"}')"
+new_proj 'on allowed-models=opus, haiku' legacy
+allowed "#12 legacy spaced list keeps haiku" "$(payload Task '{"subagent_type":"x","model":"haiku"}')"
+denied "#12 legacy spaced list still restricts" "$(payload Task '{"subagent_type":"x","model":"sonnet"}')"
+
+# --- #14 side effects and MCP patterns ---------------------------------------
+new_proj '{"mode":"on","main-allow":["mcp__okto-neuron__*","mcp__x__read"]}'
+allowed "#14 Artifact publish allowed" "$(payload Artifact '{"file_path":"a.html"}')"
+denied "#14 Artifact delete denied" "$(payload Artifact '{"action":"delete","url":"u"}')" "irreversible"
+allowed "#14 CronCreate session-only allowed" "$(payload CronCreate '{"durable":false}')"
+denied "#14 CronCreate durable denied" "$(payload CronCreate '{"durable":true}')" "durable"
+allowed "main-allow prefix pattern" "$(payload mcp__okto-neuron__ask '{}')"
+allowed "main-allow exact pattern" "$(payload mcp__x__read '{}')"
+denied "#14 exact pattern is not a prefix" "$(payload mcp__x__readwrite '{}')"
+denied "#14 discord no longer hard-coded" "$(payload mcp__plugin_discord_discord__reply '{}')"
+denied "#14 waha send no longer hard-coded" "$(payload mcp__waha-whatsapp__whatsapp_send_text '{}')"
+allowed "core pi-delegate allowed in on mode" "$(payload mcp__plugin_pi-delegate_pi-delegate__pi_setup '{}')"
+printf '{"main-allow":["mcp__waha-whatsapp__whatsapp_send_text"]}' > "$CFG/orchestrator-mode.json"
+allowed "user-wide main-allow applies" "$(payload mcp__waha-whatsapp__whatsapp_send_text '{}')"
+denied "user-wide exact entry is not a prefix" "$(payload mcp__waha-whatsapp__whatsapp_send_textx '{}')"
+printf '{"main-allow":"oops"}' > "$CFG/orchestrator-mode.json"
+run_case "broken user-wide config ignored (fewer tools)" enforce-orchestrator.py \
+  "$(payload mcp__waha-whatsapp__whatsapp_send_text '{}')" 0 "$DENY_MARK" "ignored"
 
 echo
 echo "test_enforce.sh: $pass/$total passed"
