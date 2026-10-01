@@ -37,6 +37,32 @@ and report the final result. If this rerun now reports `piInstalled: true`, cont
 
 If `pi` is already installed, do not ask about installation — report the readiness summary above, then continue with the project-pin picker below.
 
+## Delegation settings (independent of the model picker)
+
+Always report `delegateSettings` from setup JSON: each setting's value/source
+and any warnings. Offer one AskUserQuestion: Keep settings / Change settings.
+If changing, ask project vs profile scope, then which setting(s) to change.
+Accept only these validated values (or `inherit` to remove that scope's key):
+- questions_per_turn: integer 0..100 or unlimited (0 refuses every question).
+- turn_timeout_minutes: integer 1..1440 or unlimited.
+- question_wait_minutes: integer 1..1440.
+- max_live_children: integer 1..16.
+- idle_park_minutes: integer 1..1440 or never.
+- default_thinking: off|minimal|low|medium|high|xhigh|max|pi-default.
+
+After confirmation, call the same companion write path (hyphens in flags):
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/pi-companion.mjs" write-config --scope <project|user> --questions-per-turn <N|unlimited|inherit> --json
+```
+
+Use the corresponding `--turn-timeout-minutes`, `--question-wait-minutes`,
+`--max-live-children`, `--idle-park-minutes`, `--default-thinking` flags for
+other settings; multiple settings may be written together. Do not mix with
+provider/model flags. Never edit pi's settings to change these values.
+Rerun setup and report effective values/sources. Then continue the model picker;
+Keep settings does not skip it. Explicit pi_agent timeout/thinking still wins.
+
 ## Project provider/model pin picker
 
 Only do this when `piInstalled` is `true`. It lets the user view, set, or clear the per-project pin stored in `.claude/pi-delegate.local.md`. See the README's "Per-project provider/model pin" section for the full precedence contract: an explicit `--provider`/`--model` flag on a given `pi-companion.mjs task` call wins over this project config file, which in turn wins over pi's own global default from `~/.pi/agent/settings.json`.

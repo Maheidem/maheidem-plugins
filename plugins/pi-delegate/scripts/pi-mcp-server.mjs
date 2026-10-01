@@ -38,8 +38,11 @@ const MAX_WAIT_MS = 1500000;
 // The server owns ask expiry and the question budget (0.11 §5). The soft
 // timer starts once a question event is consumed; the child only has a 4h
 // hard cap and a budget it never reaches, so neither decides on its own.
-const ASK_TIMEOUT_MS = Number(process.env.PI_MCP_ASK_TIMEOUT_MS) > 0 ? Number(process.env.PI_MCP_ASK_TIMEOUT_MS) : 600000;
-const ASK_MAX_PER_TURN = Number(process.env.PI_MCP_ASK_MAX_PER_TURN) > 0 ? Number(process.env.PI_MCP_ASK_MAX_PER_TURN) : 5;
+function askTimeoutMs() { return setting("question_wait_minutes") * 60000; }
+// Config is refreshed at server start and each spawn/turn.
+let delegateSettings = resolveSettings(resolveCwd());
+function refreshDelegateSettings() { delegateSettings = resolveSettings(resolveCwd()); }
+function setting(key) { return delegateSettings.settings[key].value; }
 const CHILD_ASK_TIMEOUT_MS = 14400000;
 const CHILD_ASK_MAX = 1000;
 // ask.ts ASK_FALLBACK_TEXT, byte for byte: what the child would get on its own timeout.
@@ -80,7 +83,7 @@ const INSTRUCTIONS =
 
 const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-const DEFAULT_TURN_TIMEOUT_MS = 3600000;
+import { resolveSettings, resolveTurnTimeout, settingsLabel } from "./question-settings.mjs";
 const HEARTBEAT_MS = 20000;
 
 const PI_AGENT_TOOL = {
@@ -114,7 +117,7 @@ const PI_AGENT_TOOL = {
       tools: { type: "array", items: { type: "string" }, description: "Tool allowlist (pi -t). ask_parent is added when ask is on." },
       exclude_tools: { type: "array", items: { type: "string" }, description: "Tool denylist (pi -xt). Excluding ask_parent turns ask off." },
       ask: { type: "boolean", description: "Default true: the child may ask you questions (ask_parent)." },
-      turn_timeout_ms: { type: "integer", minimum: 1, description: `Default ${DEFAULT_TURN_TIMEOUT_MS}; the clock is paused while a question is pending.` }
+      turn_timeout_ms: { type: "integer", minimum: 1, description: "Overrides the configured turn timeout (default 60 minutes); paused while a question is pending." }
     }
   }
 };
@@ -1581,20 +1584,20 @@ function onAskStart(ch, evt) {
   // The budget is per turn and the server's (§5): the child's own limit is
   // set out of reach, so it never drops ask or needs a respawn.
   ch.questionsThisTurn++;
-  if (ch.questionsThisTurn > ASK_MAX_PER_TURN) {
+  if (ch.questionLimit !== "unlimited" && ch.questionsThisTurn > ch.questionLimit) {
     ask.budget = true;
     try {
-      writeAnswer(ch.name, ask, "model (budget)", `Question budget exhausted (${ASK_MAX_PER_TURN} per turn). ${ASK_FALLBACK_TEXT}`, "expired (budget)");
+      writeAnswer(ch.name, ask, "model (budget)", `Question budget exhausted (${ch.questionLimit} per turn). ${ASK_FALLBACK_TEXT}`, "expired (budget)");
     } catch (err) {
       process.stderr.write(`pi-delegate: budget answer for ${questionId} on pi:${ch.name}: ${err && err.message ? err.message : String(err)}\n`);
     }
     emitExpired(ch.name, ask, "budget");
-    emitProgress(ch, null, `pi asked over its question budget (${ASK_MAX_PER_TURN} per turn); answered for it`);
+    emitProgress(ch, null, `pi asked over its question budget (${ch.questionLimit} per turn); answered for it`);
     return;
   }
   emitProgress(ch, null, `pi asks (${topic}): ${text.slice(0, 200)}`);
   setState(store.get(ch.name), "waiting", { questionsThisTurn: ch.questionsThisTurn });
-  const e = emitEvent(ch.name, "question", { question_id: questionId, toolCallId: evt.toolCallId, topic, text, n: ch.questionsThisTurn, max: ASK_MAX_PER_TURN },
+  const e = emitEvent(ch.name, "question", { question_id: questionId, toolCallId: evt.toolCallId, topic, text, n: ch.questionsThisTurn, max: ch.questionLimit },
     { pid: ch.child && ch.child.pid });
   if (e) ask.seq = e.seq;
   for (const w of [...ch.askWaiters]) w();
@@ -1672,7 +1675,7 @@ function startAskTimers(name, seqs) {
   if (!m) return;
   for (const a of m.values()) {
     if (a.answeredAt || a.timer || !Number.isInteger(a.seq) || !seqs.has(a.seq)) continue;
-    a.timer = setTimeout(() => expireAsk(name, a), ASK_TIMEOUT_MS);
+    a.timer = setTimeout(() => expireAsk(name, a), askTimeoutMs());
     a.timer.unref();
   }
 }
@@ -1881,8 +1884,8 @@ function answerDialog(name, ch, qid, args) {
 // dead. Turns are serialized per channel; different names run in parallel.
 // ---------------------------------------------------------------------------
 
-const TTL_MS = Number(process.env.PI_MCP_TTL_MS) > 0 ? Number(process.env.PI_MCP_TTL_MS) : 300000;
-const REGISTRY_CAP = Number(process.env.PI_MCP_REGISTRY_CAP) > 0 ? Number(process.env.PI_MCP_REGISTRY_CAP) : 4;
+function ttlMs() { return setting("idle_park_minutes") === "never" ? Infinity : setting("idle_park_minutes") * 60000; }
+function registryCap() { return setting("max_live_children"); }
 const REAP_INTERVAL_MS = Number(process.env.PI_MCP_REAP_INTERVAL_MS) > 0 ? Number(process.env.PI_MCP_REAP_INTERVAL_MS) : 60000;
 const registry = new Map();
 // Names pi_agent has reserved a cap slot for, from its cap check until the
@@ -1963,6 +1966,7 @@ function markDead(ch) {
 // it until it dies. With `opts.handshake`, the record stays "spawning" and no
 // spawned event is written: pi_agent commits both after its handshake.
 async function spawnChannel(name, opts = {}) {
+  refreshDelegateSettings();
   const cwd = resolveCwd();
   const projectConfig = loadProjectConfig(cwd);
   let spec = opts.spec || null;
@@ -2142,7 +2146,7 @@ function parkChannel(ch, why) {
 // question pending, or still in pi_agent's spawn/handshake is never killed to
 // make room. Slots pi_agent has reserved count as used.
 function enforceCap() {
-  while (liveSlots() > REGISTRY_CAP) {
+  while (liveSlots() > registryCap()) {
     let oldest = null;
     for (const ch of registry.values()) {
       if (!ch.alive || ch.spawning || ch.turnInFlight || isBlockedOnAsk(ch)) continue;
@@ -2186,7 +2190,7 @@ function waitSettle(ch, timeoutMs) {
       }, ms);
       t.unref();
     };
-    arm(timeoutMs);
+    if (timeoutMs !== null) arm(timeoutMs);
     ch.settleWaiter = (outcome) => { clearTimeout(t); resolve(outcome); };
   });
 }
@@ -2262,6 +2266,8 @@ async function startTrackedTurn(ch, name, message, timeoutMs, detach = false) {
   const rec = store.get(name);
   const prior = rec ? { turn: rec.turn, state: rec.meta.state, questions: ch.questionsThisTurn } : null;
   // The question budget is per turn (§5).
+  refreshDelegateSettings();
+  ch.questionLimit = setting("questions_per_turn");
   ch.questionsThisTurn = 0;
   if (rec) { rec.turn++; setState(rec, "running", { questionsThisTurn: 0 }); }
   const promptResp = await sendPrompt(ch, message);
@@ -2473,11 +2479,11 @@ function reserveSlot(name) {
   const live = registry.get(name);
   const others = [...registry.values()].filter((c) => c.alive && c !== live);
   const pending = [...spawning].filter((n) => n !== name && !others.some((c) => c.name === n));
-  if (others.length + pending.length >= REGISTRY_CAP) {
+  if (others.length + pending.length >= registryCap()) {
     const idle = others.filter((c) => childStateLabel(c) === "idle").sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
     if (!idle) {
       const busy = [...others.map((c) => `${c.name} (${childStateLabel(c)})`), ...pending.map((n) => `${n} (spawning)`)];
-      return { error: `${busy.length} pi children are live (cap ${REGISTRY_CAP}) and all are busy: ${busy.join(", ")}. Wait for one to finish or stop one.` };
+      return { error: `${busy.length} pi children are live (cap ${registryCap()}) and all are busy: ${busy.join(", ")}. Wait for one to finish or stop one.` };
     }
     parkChannel(idle, "cap");
   }
@@ -2524,7 +2530,8 @@ async function piAgent(args, progressToken, requestId) {
   for (const [k, v] of [["provider", provider], ["model", model]]) {
     if (v !== null && (typeof v !== "string" || !isSafeArgValue(v))) return agentError(`invalid ${k} ${JSON.stringify(v)}`);
   }
-  const thinking = args.thinking ?? null;
+  refreshDelegateSettings();
+  const thinking = args.thinking ?? (setting("default_thinking") === "pi-default" ? null : setting("default_thinking"));
   if (thinking !== null && !THINKING_LEVELS.includes(thinking)) return agentError(`thinking must be one of ${THINKING_LEVELS.join(", ")}`);
   const tools = toolListArg(args.tools, "tools");
   if (tools.error) return agentError(tools.error);
@@ -2537,7 +2544,8 @@ async function piAgent(args, progressToken, requestId) {
   const pin = validPin(projectConfig);
   const name = resolved.name || generatedName(args.description);
   const background = args.run_in_background !== false;
-  const turnTimeout = intArg(args.turn_timeout_ms, DEFAULT_TURN_TIMEOUT_MS);
+  refreshDelegateSettings();
+  const turnTimeout = resolveTurnTimeout(cwd, args.turn_timeout_ms).value;
   // The one push check of this server's lifetime (§3.4 step 3), before the
   // spawn: it is in Claude Code's queue by the time this call blocks.
   maybeProbe();
@@ -2614,7 +2622,7 @@ async function piAgent(args, progressToken, requestId) {
       tools: tools.list,
       excludeTools: exclude.list,
       ask: args.ask !== false,
-      turnTimeoutMs: turnTimeout
+      turnTimeoutMs: args.turn_timeout_ms ?? null
     };
     const ch = await spawnChannel(name, { spec, gen, gens, lifetimeLock: lockRef.lifetimeLock, handshake: true });
     const rec = store.get(name);
@@ -2873,7 +2881,7 @@ function pushConfirmedResult(name, info, head) {
 // wake: say what happens if nobody answers, and what picks up the end then.
 function askExpiryNote(name, picked) {
   if (pushConsumes() || !picked.some(({ e }) => e.type === "question")) return "";
-  return `\nIf unanswered within ${fmtDuration(ASK_TIMEOUT_MS)}, the child goes on alone on its best judgment; ` +
+  return `\nIf unanswered within ${fmtDuration(askTimeoutMs())}, the child goes on alone on its best judgment; ` +
     `a later pi_answer {to:"${name}"} or pi_wait {name:"${name}"} then picks up its end.`;
 }
 
@@ -3335,7 +3343,7 @@ async function piSendMessage(args, progressToken, requestId) {
         ch.progressSeq = 0;
         ch.lastProgressAt = 0;
       }
-      const start = await startTrackedTurn(ch, name, message, intArg(spec.turnTimeoutMs, DEFAULT_TURN_TIMEOUT_MS), detach);
+      const start = await startTrackedTurn(ch, name, message, resolveTurnTimeout(resolveCwd(), spec.turnTimeoutMs).value, detach);
       if (!start.dispatched) return { result: agentError(`pi:${name} did not accept the message: ${start.error}`, { name, delivered: null, rawStderr: ch.stderrTail }) };
       if (call.cancelled) abandonTurn(start.tracked);
       const rec = store.get(name);
@@ -3539,7 +3547,7 @@ async function listHeader() {
   const v = await checkPiVersion();
   const pi = v && v.version ? `pi ${v.version}` : v && v.skipped ? "pi not found on PATH" : `pi ? (${(v && v.error) || "version unknown"})`;
   const pin = pinLabel(loadProjectConfig(resolveCwd()));
-  return `${pi} · pin ${pin || "none"} · wake ${wakeLabel()} · live ${liveSlots()}/${REGISTRY_CAP} · wait armed: ${waitArmed() ? "yes" : "no"}`;
+  return `${pi} · pin ${pin || "none"} · ${settingsLabel(resolveSettings(resolveCwd()))} · wake ${wakeLabel()} · live ${liveSlots()}/${registryCap()} · wait armed: ${waitArmed() ? "yes" : "no"}`;
 }
 
 // Every child this project has a record of (name -> meta), plus live ones.
@@ -3577,7 +3585,7 @@ function childView(name, meta) {
     stateCol = `waiting ${open[0].questionId}`;
     extra.push(JSON.stringify(oneLine(open[0].text, 80)));
     if (open.length > 1) extra.push(`+${open.length - 1} more question(s)`);
-    extra.push(`questions ${ch.questionsThisTurn}/${ASK_MAX_PER_TURN} this turn`);
+    extra.push(`questions ${ch.questionsThisTurn}/${ch.questionLimit} this turn`);
   } else if (state === "failed" && meta.reason) extra.push(`(${meta.reason})`);
   if (!owner && meta.lastTurn && !(live && state === "running")) {
     const lt = meta.lastTurn;
@@ -3693,7 +3701,7 @@ async function listOne(name, meta, header) {
     channel: ch ? {
       alive: ch.alive,
       idleMs: Date.now() - ch.lastUsedAt,
-      ttlRemainingMs: ch.turnInFlight ? null : Math.max(0, TTL_MS - (Date.now() - ch.lastUsedAt)),
+      ttlRemainingMs: ch.turnInFlight ? null : Math.max(0, ttlMs() - (Date.now() - ch.lastUsedAt)),
       turnInFlight: ch.turnInFlight,
       currentTurnId: ch.currentTurnId,
       lastTurnId: ch.lastTurnId,
@@ -3782,6 +3790,7 @@ async function doctorReport() {
     s.piInstalled ? `pi ${s.piVersion}${s.piVersionOk === false ? ` (too old: needs >= ${s.minPiVersion})` : ""}` : `pi: ${s.errorMessage}`,
     `pin: ${s.projectConfigFound ? [s.projectConfigProvider, s.projectConfigModel].filter(Boolean).join("/") || "(none)" : "none (pi's default model)"}`,
     `provider extensions: ${s.projectConfigExtensions.length ? s.projectConfigExtensions.join(", ") : "none"}${s.extensionWarnings.length ? ` (problems: ${s.extensionWarnings.join("; ")})` : ""}`,
+    settingsLabel(s.delegateSettings),
     `ask_parent package: ${pkg ? `${pkg}${childPackageVersion ? ` (${childPackageVersion})` : ""}` : "not installed (children run with ask off)"}`,
     `wake: ${wakeLabel()}${wake.confirmedBy ? ` (by ${wake.confirmedBy})` : ""}${wake.source === "override" ? " (PI_DELEGATE_WAKE override)" : ""}`,
     `argv detection: ${argvLabel()}`,
@@ -4204,7 +4213,7 @@ async function runShutdown(why) {
 const reaper = setInterval(() => {
   const now = Date.now();
   for (const ch of [...registry.values()]) {
-    if (ch.alive && !ch.turnInFlight && !isBlockedOnAsk(ch) && now - ch.lastUsedAt > TTL_MS) parkChannel(ch, "ttl");
+    if (ch.alive && !ch.turnInFlight && !isBlockedOnAsk(ch) && now - ch.lastUsedAt > ttlMs()) parkChannel(ch, "ttl");
   }
 }, REAP_INTERVAL_MS);
 reaper.unref();

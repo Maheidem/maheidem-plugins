@@ -37,7 +37,7 @@ status_of() { field_of "$(json_for_id "$1" "$2")" status; }
 {
   use_stub pi-rpc-lab
   PB="$(make_scratch)"; PIDS="$PB/pidfile"; : > "$PIDS"; OUT="$(make_scratch)/reg_b.jsonl"
-  CLAUDE_PROJECT_DIR="$PB" PI_MCP_TTL_MS=1500 PI_MCP_REAP_INTERVAL_MS=500 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PB" PI_MCP_TEST=1 PI_MCP_TTL_MS=1500 PI_MCP_REAP_INTERVAL_MS=500 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
     "$(call 2 pi_agent '{"name":"rb","prompt":"one","run_in_background":false}')" "WAIT_FOR \"id\":2 10" "SLEEP 4" \
     "$(call 3 pi_send_message '{"to":"rb","message":"two"}')" "WAIT_FOR \"id\":3 10"
   [ "$(status_of "$OUT" 3)" = done ] && [ "$(field_of "$(json_for_id "$OUT" 3)" delivered)" = resumed ] && pass "B: parked child resumed" || fail "B: id3 ($(json_for_id "$OUT" 3))"

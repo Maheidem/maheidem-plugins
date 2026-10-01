@@ -2,6 +2,29 @@
 
 Earlier versions have no changelog; see `git log -- plugins/pi-delegate`.
 
+## 0.12.0 (2026-10-01)
+
+### Added
+- `/pi-delegate:agents`: a live pane inside Claude Code (plugin hooks module,
+  Claude Code >= 2.1.287, terminal/Desktop) listing this project's pi children
+  with result / transcript / events / questions tabs, and Stop (confirmed),
+  Send and Answer actions routed through the existing pi_* tools (normal
+  permission prompts; children of another Claude session are read-only).
+  When hooks modules are unavailable the command prints a read-only text
+  snapshot instead. See docs/agents-viewer.md.
+- Settings tab (key 5) and six configurable settings: questions_per_turn,
+  turn_timeout_minutes, question_wait_minutes, max_live_children,
+  idle_park_minutes, default_thinking. Precedence project > Claude profile
+  ($CLAUDE_CONFIG_DIR/pi-delegate.json) > default; an explicit per-call
+  turn_timeout_ms / thinking still wins. Scoped `write-config --scope
+  project|user --<setting> <value>|inherit` preserves unrelated content.
+  Setup and the pi_list_agents header/doctor show values, sources, warnings.
+
+### Changed
+- Legacy timing/cap environment overrides (PI_MCP_TTL_MS,
+  PI_MCP_ASK_TIMEOUT_MS, PI_MCP_REGISTRY_CAP) only apply with PI_MCP_TEST=1,
+  shown as test mode; PI_MCP_ASK_MAX_PER_TURN is removed.
+
 ## 0.11.1 (2026-10-01)
 
 ### Fixed

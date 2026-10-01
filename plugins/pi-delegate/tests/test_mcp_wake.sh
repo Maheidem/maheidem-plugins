@@ -165,7 +165,7 @@ JS
     "$(call 6 pi_list_agents '{}')" "$(call 7 pi_wait '{"name":"cc"}')" "WAIT_FOR \"id\":7 5"
   case "$(field_of "$(res_json "$OUT" 4)" errorMessage)" in *"is not this server's push check"*) [ "$(field_of "$(res_json "$OUT" 4)" confirmed)" = false ] && pass "C: a wrong nonce confirms nothing" || fail "C: wrong nonce confirmed" ;; *) fail "C: wrong nonce ($(res_json "$OUT" 4))" ;; esac
   H5="$(res_head "$OUT" 5)"
-  [[ "$H5" =~ ^pi\ [0-9.]+\ ·\ pin\ none\ ·\ wake\ channel\ \(confirmed\ [0-9]{2}:[0-9]{2}\)\ ·\ live\ 1/4\ ·\ wait\ armed:\ (yes|no)$ ]] && pass "C: confirm_push returns only the header: wake channel (confirmed HH:MM)" || fail "C: confirm header ($H5)"
+  [[ "$H5" =~ ^pi\ [0-9.]+\ ·\ pin\ none\ ·\ questions_per_turn\ 5\ \(default\)\ ·\ .*\ ·\ wake\ channel\ \(confirmed\ [0-9]{2}:[0-9]{2}\)\ ·\ live\ 1/4\ ·\ wait\ armed:\ (yes|no)$ ]] && pass "C: confirm_push returns only the header: wake channel (confirmed HH:MM)" || fail "C: confirm header ($H5)"
   case "$(res_head "$OUT" 2)" in *": push confirmed; you will be notified by channel when pi:cc finishes or asks. Nothing was consumed; end your turn.") pass "C: the blocked fallback pi_agent returned push confirmed" ;; *) fail "C: pi_agent ($(inner_for_id "$OUT" 2))" ;; esac
   [ "$(field_of "$(res_json "$OUT" 2)" status)" = running ] && [ "$(field_of "$(res_json "$OUT" 2)" events)" = null ] && pass "C: ... before the turn ended, carrying no event" || fail "C: pi_agent json ($(res_json "$OUT" 2))"
   [ "$(field_of "$(res_json "$OUT" 3)" pushConfirmed)" = true ] && [ "$(field_of "$(res_json "$OUT" 3)" events)" = "[]" ] && pass "C: the open pi_wait returned push confirmed, nothing consumed" || fail "C: pi_wait ($(res_json "$OUT" 3))"

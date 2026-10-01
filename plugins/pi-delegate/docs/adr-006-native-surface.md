@@ -112,9 +112,9 @@ consume, so a fallback return may repeat it, marked `(also pushed HH:MM:SS)`. Pu
   reports `picked up` only when the child's `tool_execution_end` says `askAnswered`, and lists
   sibling questions from the same batch that are still pending.
 - **The server owns expiry.** Children get a 4h hard cap; the server's soft timer
-  (`PI_MCP_ASK_TIMEOUT_MS`, default 10 min) starts once the question is consumed, then writes the
+  (`question_wait_minutes`, default 10 min) starts once the question is consumed, then writes the
   fallback answer itself (`model (timeout)`) and emits `question_expired`.
-- **Budget per turn**, enforced by the server: `PI_MCP_ASK_MAX_PER_TURN`, default 5 (D5). The
+- **Budget per turn**, enforced by the server: `questions_per_turn`, default 5 (D5). The
   6th question in a turn gets an immediate budget answer.
 - A message to a child blocked on a question is refused and shows the full question.
   `interrupt:true` pre-answers pending questions, sends `clear_queue`, aborts and prompts.
@@ -156,7 +156,7 @@ consume, so a fallback return may repeat it, marked `(also pushed HH:MM:SS)`. Pu
 | D2 | Version | 0.11.0 (not 1.0.0; channels are still a research preview). The bump is a separate step. |
 | D3 | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` | No settings change. `pi_list_agents {doctor:true}` reports the effective value and a recommendation. Revisit only if channels turn out to be unavailable. |
 | D4 | Old generations and sessions on disk | Kept until `pi_stop {forget:true}`. No auto-delete in 0.11. |
-| D5 | Per-turn question budget | 5 (`PI_MCP_ASK_MAX_PER_TURN`). |
+| D5 | Per-turn question budget | 5 (configurable `questions_per_turn`; see README profile/project settings). |
 
 Later binding decisions from the same review: a server `kill -9` loses the child (see above), and
 two data stores in one project are kept apart by the store id in the session id.

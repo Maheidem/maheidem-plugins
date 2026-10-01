@@ -351,7 +351,7 @@ seqs_unique() {
   PIDS_M="$(make_scratch)/pids"; FLAG_M="$(make_scratch)/b-claimed"; SNAP_M="$(make_scratch)/snap"; BPID_M="$(make_scratch)/bpid"; ALIVE_M="$(make_scratch)/alive"
   DIR_M="$(child_dir "$PROJ_M" x)"
   : > "$PIDS_M"
-  CLAUDE_PROJECT_DIR="$PROJ_M" PI_STUB_PID_FILE="$PIDS_M" PI_MCP_TTL_MS=500 PI_MCP_REAP_INTERVAL_MS=200 feed "$OUT_MA" \
+  CLAUDE_PROJECT_DIR="$PROJ_M" PI_STUB_PID_FILE="$PIDS_M" PI_MCP_TEST=1 PI_MCP_TTL_MS=500 PI_MCP_REAP_INTERVAL_MS=200 feed "$OUT_MA" \
     "$(call 2 pi_agent '{"name":"x","prompt":"a1","run_in_background":false}')" "WAIT_FOR \"id\":2 10" "SLEEP 1.5" \
     "SH for _j in \$(seq 1 100); do [ -f '$FLAG_M' ] && break; sleep 0.1; done" \
     "$(call 3 pi_wait '{"name":"x","timeout_ms":1000}')" "WAIT_FOR \"id\":3 5" \

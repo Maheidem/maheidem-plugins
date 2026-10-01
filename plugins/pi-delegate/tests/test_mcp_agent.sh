@@ -195,7 +195,7 @@ schema_props() { # schema_props <out> <id> -> comma list of pi_agent properties
 # ---------------------------------------------------------------------------
 {
   PH="$(make_scratch)"; PIDS="$(make_scratch)/pids"; : > "$PIDS"; OUT="$(make_scratch)/h.jsonl"
-  CLAUDE_PROJECT_DIR="$PH" PI_DELEGATE_WAKE=channel PI_MCP_REGISTRY_CAP=1 PI_STUB_SETTLE_MS=2000 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PH" PI_DELEGATE_WAKE=channel PI_MCP_TEST=1 PI_MCP_REGISTRY_CAP=1 PI_STUB_SETTLE_MS=2000 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
     "$(call 2 pi_agent '{"name":"busy","prompt":"one"}')" "WAIT_FOR \"id\":2 10" \
     "$(call 3 pi_agent '{"name":"other","prompt":"two"}')" "WAIT_FOR \"id\":3 10" \
     "WAIT_FOR \"event\":\"done\" 10" \
@@ -277,7 +277,7 @@ schema_props() { # schema_props <out> <id> -> comma list of pi_agent properties
 # ---------------------------------------------------------------------------
 {
   PL="$(make_scratch)"; PIDS="$(make_scratch)/pids"; : > "$PIDS"; OUT="$(make_scratch)/l.jsonl"
-  CLAUDE_PROJECT_DIR="$PL" PI_DELEGATE_WAKE=channel PI_MCP_REGISTRY_CAP=1 PI_STUB_SETTLE_MS=3000 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PL" PI_DELEGATE_WAKE=channel PI_MCP_TEST=1 PI_MCP_REGISTRY_CAP=1 PI_STUB_SETTLE_MS=3000 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
     "$(call 2 pi_agent '{"name":"aa","prompt":"one"}')" "$(call 3 pi_agent '{"name":"bb","prompt":"two"}')" \
     "WAIT_FOR \"id\":2 10" "WAIT_FOR \"id\":3 10" "SLEEP 0.5"
   [ "$(field_of "$(agent_json "$OUT" 2)" ok)" = true ] && pass "L: first parallel spawn succeeds" || fail "L: aa ($(inner_for_id "$OUT" 2))"

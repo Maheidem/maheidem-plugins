@@ -15,6 +15,21 @@ The 0.11 design and the decisions behind it are in
 
 ## Commands
 
+- `/pi-delegate:agents`: opens a native interactive pane (Claude Code >=
+  2.1.287, mods enabled, terminal/Desktop). Lists every child in this project,
+  including other Claude sessions' children, with state, model, generation/turn,
+  age, last event, and pending-question count. Tab selects controls; 1–4 switch
+  result/transcript/events/questions; Esc closes. Refreshes disk snapshots every
+  2 seconds while open. Reads never invoke MCP or consume events.
+  Press **5 (Settings)** for all six delegation settings: effective value and
+  source, project/user values, scope selection, validated edits and reset-to-inherit.
+  Settings writes use the existing companion CLI with normal Bash permission
+  prompts; the model pin is shown read-only. Without plugin hooks modules,
+  the same command displays a compact read-only children/settings snapshot.
+  Children owned by this Claude session offer confirmed Stop, a message field, and pending
+  question reply fields. Actions use the existing MCP tools and normal permission
+  prompts; foreign-session children remain read-only. Server ownership/lock
+  refusals are displayed unchanged. See [viewer design](docs/agents-viewer.md).
 - `/pi-delegate:delegate <task>`: helps decompose `<task>` into
   independently-verifiable steps and dispatches each through the MCP tools.
   `pi` is often a smaller/local model: narrow, well-scoped steps succeed far
@@ -118,10 +133,10 @@ asking off. The package's `handoff` tool is always excluded.
   opinion that changes scope). An answer the user dictated in advance, e.g.
   in the prompt that started the child, is the model's: `relay_user` false.
 - **Expiry is the server's.** The child's own cap is 4h. The server's timer
-  (`PI_MCP_ASK_TIMEOUT_MS`, default 10 min) starts once the question has been
+  (`question_wait_minutes`, default 10 min) starts once the question has been
   shown to Claude; on expiry it answers with the fallback text as
   `model (timeout)` and a later `pi_answer` is refused.
-- **Budget per turn:** `PI_MCP_ASK_MAX_PER_TURN`, default 5. The next
+- **Budget per turn:** `questions_per_turn`, default 5. The next
   question in that turn gets an immediate "budget exhausted" answer. A new
   turn starts the count over.
 - Several questions can be pending at once; then `pi_answer` needs
@@ -132,8 +147,8 @@ asking off. The package's `handoff` tool is always excluded.
 ## Lifecycle and storage
 
 `spawning -> running <-> waiting -> idle`. An idle child is parked after
-`PI_MCP_TTL_MS` (default 300000) or when the live cap
-(`PI_MCP_REGISTRY_CAP`, default 4) needs room; a crash, error or
+`idle_park_minutes` (default 5) or when the live cap
+(`max_live_children`, default 4) needs room; a crash, error or
 `turn_timeout_ms` gives `failed`; `pi_stop` gives `stopped`. A child is never
 reaped mid-turn or while waiting, and its turn clock pauses while a question
 is pending. `pi_send_message` brings any of those back on the same session.
@@ -212,11 +227,7 @@ names (resolved under `~/.pi/agent/npm/node_modules`), absolute paths, or
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PI_MCP_TTL_MS` | 300000 | idle time before a child is parked |
-| `PI_MCP_REGISTRY_CAP` | 4 | live pi processes per server |
 | `PI_MCP_REAP_INTERVAL_MS` | 60000 | reaper tick |
-| `PI_MCP_ASK_TIMEOUT_MS` | 600000 | server soft timeout for a question, from when Claude saw it |
-| `PI_MCP_ASK_MAX_PER_TURN` | 5 | questions per child turn |
 | `PI_DELEGATE_WAKE` | (detected) | force `channel` or `fallback` |
 | `PI_DELEGATE_PROVIDER_EXTENSIONS` | (probed) | `none` or a list of provider packages |
 
@@ -245,6 +256,12 @@ pin.
 bash plugins/pi-delegate/tests/run_all.sh
 ```
 
+Native viewer tests (no sign-in, model, or network):
+
+```bash
+claude plugin test plugins/pi-delegate
+```
+
 Bash-driven suites run the real server/CLI against stub `pi` executables
 (`tests/stubs/`), plus real-pi suites that skip only when `pi` (or the pi-side
 package) is absent: `test_task_e2e_real.sh`, `test_conversation_e2e_real.sh`
@@ -257,3 +274,45 @@ server: a real child asks for a secret word and must reply with the answer).
 `docs/architecture.md` (ADR-001, the RPC engine and its history),
 `docs/adr-002-mcp-facade.md`, `docs/adr-003-mcp-only.md`,
 `docs/adr-005-async-dispatch.md`, and `CHANGELOG.md`.
+
+## Profile and project delegation settings
+
+Settings use `.claude/pi-delegate.local.md` frontmatter (project), then
+`$CLAUDE_CONFIG_DIR/pi-delegate.json` (profile; defaults to
+`~/.claude/pi-delegate.json`), then the built-in default. Invalid values warn
+and fall through. No dependencies or pi-global settings changes.
+
+| Key / CLI flag (replace underscores with hyphens) | Values | Default |
+|---|---|---|
+| `questions_per_turn` | integer 0..100 or `unlimited` | 5 |
+| `turn_timeout_minutes` | integer 1..1440 or `unlimited` | 60 |
+| `question_wait_minutes` | integer 1..1440 | 10 |
+| `max_live_children` | integer 1..16 | 4 |
+| `idle_park_minutes` | integer 1..1440 or `never` | 5 |
+| `default_thinking` | off, minimal, low, medium, high, xhigh, max, pi-default | pi-default |
+
+`0` questions auto-answers every question as exhausted; notes are unaffected.
+`unlimited` removes the server turn/question cap, not the child's existing
+hard ask cap. Turn clocks still pause while questions are pending. Explicit
+`pi_agent.turn_timeout_ms` / `thinking` override their configured defaults.
+Question budget is captured each turn; server values refresh at spawn/turn.
+Existing children retain their launch thinking level on resume.
+
+```bash
+node scripts/pi-companion.mjs write-config --scope project --questions-per-turn 2 --turn-timeout-minutes unlimited --json
+node scripts/pi-companion.mjs write-config --scope user --idle-park-minutes never --json
+node scripts/pi-companion.mjs write-config --scope project --questions-per-turn inherit --json
+node scripts/pi-companion.mjs setup --json
+```
+
+`inherit` removes only that key. Writes preserve other keys and project body.
+Write provider/model separately; pin writes/removal preserve settings.
+Shared API: `scripts/question-settings.mjs` exports `resolveSettings`,
+`writeSettings` and `SETTINGS`. Setup JSON's `delegateSettings` and MCP
+header/doctor expose values, sources, paths and warnings. `/pi-delegate:setup`
+offers these settings independently of the provider/model picker.
+
+**Test-only:** `PI_MCP_TEST=1` enables legacy `PI_MCP_TTL_MS`,
+`PI_MCP_REGISTRY_CAP` and `PI_MCP_ASK_TIMEOUT_MS` overrides for fast timing tests.
+The header/doctor visibly reports test mode. These variables are otherwise
+ignored; `PI_MCP_ASK_MAX_PER_TURN` is always ignored.

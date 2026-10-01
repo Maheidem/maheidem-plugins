@@ -23,6 +23,8 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { resolveSettings, writeSettings, SETTINGS, settingsLabel } from "./question-settings.mjs";
+export { resolveSettings } from "./question-settings.mjs";
 
 const DEFAULT_TIMEOUT_MS = 600000; // 600s
 // Resolved through piAgentDir() (hoisted) so PI_CODING_AGENT_DIR moves it, as it moves pi.
@@ -173,14 +175,18 @@ function parseTaskArgs(argv) {
   return opts;
 }
 
-// Strict parser for write-config: only --provider/--model/--json allowed;
+// Strict parser for write-config: pin flags and shared setting flags allowed;
 // anything else (unknown flag or positional) is a hard error.
 function parseWriteConfigArgs(argv) {
-  const opts = { provider: null, model: null, json: false, error: null };
+  const opts = { provider: null, model: null, json: false, error: null, scope: "project", settings: {} };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json") {
       opts.json = true;
+    } else if (arg === "--scope") {
+      opts.scope = argv[++i];
+    } else if (arg.startsWith("--") && Object.hasOwn(SETTINGS, arg.slice(2).replaceAll("-", "_"))) {
+      opts.settings[arg.slice(2).replaceAll("-", "_")] = argv[++i] ?? "";
     } else if (arg === "--provider") {
       opts.provider = argv[++i] ?? null;
     } else if (arg === "--model") {
@@ -2300,10 +2306,14 @@ function runWriteConfig(provider, model) {
       fs.mkdirSync(configDir, { recursive: true });
     }
 
-    let frontmatter = "---\n";
-    if (provider) frontmatter += `provider: ${provider}\n`;
-    if (model) frontmatter += `model: ${model}\n`;
-    frontmatter += "---\n";
+    let raw = "";
+    try { raw = fs.readFileSync(configPath, "utf8"); } catch (err) { if (err.code !== "ENOENT") throw err; }
+    const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    if (raw.startsWith("---") && !fm) throw new Error("invalid project frontmatter");
+    const lines = fm ? fm[1].split(/\r?\n/).filter(line => !/^(provider|model)\s*:/.test(line)) : [];
+    if (provider) lines.push(`provider: ${provider}`);
+    if (model) lines.push(`model: ${model}`);
+    const frontmatter = `---\n${lines.join("\n")}\n---\n` + (fm ? raw.slice(fm[0].length) : raw);
 
     fs.writeFileSync(configPath, frontmatter, "utf8");
 
@@ -2330,7 +2340,8 @@ function printWriteConfigResult(result, json) {
   }
 
   if (result.ok) {
-    console.log(`Wrote project config: ${result.configPath}`);
+    console.log(`Wrote ${result.scope || "project"} config: ${result.configPath}`);
+    if (result.settings) for (const [key, value] of Object.entries(result.settings)) console.log(`  ${key}: ${value}`);
     if (result.provider) console.log(`  provider: ${result.provider}`);
     if (result.model) console.log(`  model: ${result.model}`);
   } else {
@@ -2348,7 +2359,12 @@ function runRemoveConfig() {
 
   try {
     if (fs.existsSync(configPath)) {
-      fs.unlinkSync(configPath);
+      const raw = fs.readFileSync(configPath, "utf8");
+      const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      const lines = fm ? fm[1].split(/\r?\n/).filter(line => !/^(provider|model)\s*:/.test(line)) : [];
+      const body = fm ? raw.slice(fm[0].length) : raw;
+      if (lines.some(line => line.trim()) || body.trim()) fs.writeFileSync(configPath, `---\n${lines.join("\n")}\n---\n${body}`, "utf8");
+      else fs.unlinkSync(configPath);
     }
     return {
       ok: true,
@@ -2396,6 +2412,7 @@ function runSetup() {
     projectConfigProvider: null,
     projectConfigModel: null,
     projectConfigExtensions: [],
+    delegateSettings: resolveSettings(cwd),
     extensionWarnings: [],
     leanChildren: true,
     askParentPackage: piSidePackageDir(),
@@ -2491,6 +2508,7 @@ function printSetupResult(summary, json) {
     }
   }
 
+  lines.push(settingsLabel(summary.delegateSettings));
   console.log(lines.join("\n"));
 }
 
@@ -2544,7 +2562,9 @@ async function main() {
       process.exit(2);
       return;
     }
-    const result = runWriteConfig(opts.provider, opts.model);
+    const result = Object.keys(opts.settings).length
+      ? (opts.provider || opts.model ? { ok: false, errorMessage: "write settings separately from provider/model" } : writeSettings(resolveCwd(), opts.scope, opts.settings))
+      : opts.scope !== "project" ? { ok: false, errorMessage: "provider/model config is project-only" } : runWriteConfig(opts.provider, opts.model);
     printWriteConfigResult(result, opts.json);
     process.exit(result.ok ? 0 : 1);
     return;

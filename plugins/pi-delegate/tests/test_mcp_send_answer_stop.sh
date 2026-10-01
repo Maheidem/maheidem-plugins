@@ -10,7 +10,7 @@
 #     done; a late pi_answer -> already resolved (how, HH:MM)
 #   D two questions: no question_id refused (lists both), the first answer
 #     says "still blocked on <q2> (same batch)", the second holds the wake
-#   E budget per turn (PI_MCP_ASK_MAX_PER_TURN=2): the 3rd question is answered
+#   E budget per turn (project questions_per_turn=2): the 3rd question is answered
 #     at once by the server, question_expired{budget} rides on DONE; the next
 #     turn counts from 1 again; pi_stop on a waiting child pre-answers it
 #   F expiry: the child gets the 4h hard cap / out-of-reach budget; the soft
@@ -192,7 +192,9 @@ export -f now_ms
 # ---------------------------------------------------------------------------
 {
   PE="$(make_scratch)"; OUT="$(make_scratch)/e.jsonl"; CD="$(child_dir "$PE" b)"; Q1="$(qid call_1_1)"; Q2="$(qid call_1_2)"; Q3="$(qid call_1_3)"
-  CLAUDE_PROJECT_DIR="$PE" PI_MCP_ASK_MAX_PER_TURN=2 PI_STUB_ASKS=3 PI_STUB_ASK_WAIT_MS=20000 feed "$OUT" \
+  mkdir -p "$PE/.claude"
+  printf -- "---\nquestions_per_turn: 2\n---\n" > "$PE/.claude/pi-delegate.local.md"
+  CLAUDE_PROJECT_DIR="$PE" PI_STUB_ASKS=3 PI_STUB_ASK_WAIT_MS=20000 feed "$OUT" \
     "$(call 2 pi_agent '{"name":"b","prompt":"go","run_in_background":false}')" "WAIT_FOR \"id\":2 10" "SLEEP 0.5" \
     "$(call 3 pi_answer "$(json_obj to b question_id "$Q1" answer one)")" "WAIT_FOR \"id\":3 10" \
     "$(call 4 pi_answer "$(json_obj to b question_id "$Q2" answer two)")" "WAIT_FOR \"id\":4 10" \
@@ -216,7 +218,7 @@ export -f now_ms
 # ---------------------------------------------------------------------------
 {
   PF="$(make_scratch)"; OUT="$(make_scratch)/f.jsonl"; CD="$(child_dir "$PF" x)"; ARGS="$(make_scratch)/args.json"; Q="$(qid call_1_1)"
-  CLAUDE_PROJECT_DIR="$PF" PI_MCP_ASK_TIMEOUT_MS=1500 PI_STUB_ASKS=1 PI_STUB_ASK_DELAY_MS=1500 PI_STUB_ASK_WAIT_MS=30000 PI_STUB_ARGS_FILE="$ARGS" feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PF" PI_MCP_TEST=1 PI_MCP_ASK_TIMEOUT_MS=1500 PI_STUB_ASKS=1 PI_STUB_ASK_DELAY_MS=1500 PI_STUB_ASK_WAIT_MS=30000 PI_STUB_ARGS_FILE="$ARGS" feed "$OUT" \
     "$(call_tok 2 pi_agent '{"name":"x","prompt":"go"}' t2)" "WAIT_FOR agent_start 10" \
     "$(cancel 2)" "WAIT_FOR \"event\":\"question\" 10" "SLEEP 2.5" \
     "SH grep -cE 'question_expired|answered' '$CD/events.jsonl' > '$PF/pre'" \
@@ -330,7 +332,7 @@ export -f now_ms
 # ---------------------------------------------------------------------------
 {
   PK="$(make_scratch)"; OUT="$(make_scratch)/k.jsonl"; PIDS="$(make_scratch)/pids"; : > "$PIDS"; CD="$(child_dir "$PK" p)"
-  CLAUDE_PROJECT_DIR="$PK" PI_MCP_TTL_MS=400 PI_MCP_REAP_INTERVAL_MS=200 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PK" PI_MCP_TEST=1 PI_MCP_TTL_MS=400 PI_MCP_REAP_INTERVAL_MS=200 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
     "$(call 2 pi_agent '{"name":"p","prompt":"one","run_in_background":false}')" "WAIT_FOR \"id\":2 10" "SLEEP 1.5" \
     "$(call 3 pi_send_message '{"to":"p","message":"two"}')" "WAIT_FOR \"id\":3 10"
   J="$(res_json "$OUT" 3)"
@@ -484,7 +486,7 @@ orphan_run() { # orphan_run <project> <out> <pids> <log> [extra env...] : spawn 
 # ---------------------------------------------------------------------------
 {
   PQ="$(make_scratch)"; OUT="$(make_scratch)/q.jsonl"; PIDS="$(make_scratch)/pids"; : > "$PIDS"; CB="$(child_dir "$PQ" b)"
-  CLAUDE_PROJECT_DIR="$PQ" PI_MCP_REGISTRY_CAP=1 PI_DELEGATE_WAKE=channel PI_STUB_SETTLE_MS=8000 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PQ" PI_MCP_TEST=1 PI_MCP_REGISTRY_CAP=1 PI_DELEGATE_WAKE=channel PI_STUB_SETTLE_MS=8000 PI_STUB_PID_FILE="$PIDS" feed "$OUT" \
     "$(call 2 pi_agent '{"name":"b","prompt":"one"}')" "WAIT_FOR \"id\":2 10" \
     "$(call 3 pi_stop '{"name":"b"}')" "WAIT_FOR \"id\":3 10" \
     "$(call 4 pi_agent '{"name":"a","prompt":"long"}')" "WAIT_FOR \"id\":4 10" \
@@ -495,7 +497,7 @@ orphan_run() { # orphan_run <project> <out> <pids> <log> [extra env...] : spawn 
   [ "$(event_types "$CB")" = "spawned,stopped" ] && [ "$(meta_eval "$CB" 'm.state')" = stopped ] && [ "$(wc -l < "$PIDS" | tr -d ' ')" = 2 ] \
     && pass "Q: b not spawned or parked (events spawned,stopped)" || fail "Q: b events $(event_types "$CB") state $(meta_eval "$CB" 'm.state') pids $(wc -l < "$PIDS")"
   OUT="$(make_scratch)/q2.jsonl"; PQ2="$(make_scratch)"; CA="$(child_dir "$PQ2" a)"
-  CLAUDE_PROJECT_DIR="$PQ2" PI_MCP_REGISTRY_CAP=1 feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PQ2" PI_MCP_TEST=1 PI_MCP_REGISTRY_CAP=1 feed "$OUT" \
     "$(call 2 pi_agent '{"name":"b","prompt":"one","run_in_background":false}')" "WAIT_FOR \"id\":2 10" \
     "$(call 3 pi_stop '{"name":"b"}')" "WAIT_FOR \"id\":3 10" \
     "$(call 4 pi_agent '{"name":"a","prompt":"one","run_in_background":false}')" "WAIT_FOR \"id\":4 10" \
@@ -621,7 +623,7 @@ orphan_run() { # orphan_run <project> <out> <pids> <log> [extra env...] : spawn 
 # ---------------------------------------------------------------------------
 {
   PX="$(make_scratch)"; OUT="$(make_scratch)/x.jsonl"; CD="$(child_dir "$PX" x)"; Q="$(qid call_1_1)"
-  CLAUDE_PROJECT_DIR="$PX" PI_MCP_ASK_TIMEOUT_MS=1500 PI_STUB_ASKS=1 PI_STUB_ASK_WAIT_MS=30000 feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PX" PI_MCP_TEST=1 PI_MCP_ASK_TIMEOUT_MS=1500 PI_STUB_ASKS=1 PI_STUB_ASK_WAIT_MS=30000 feed "$OUT" \
     "$(call 2 pi_agent '{"name":"x","prompt":"go","run_in_background":false}')" "WAIT_FOR \"id\":2 10" "SLEEP 4" \
     "SNAP $CD $PX/snap" \
     "$(call 3 pi_answer '{"to":"x","answer":"late"}')" "WAIT_FOR \"id\":3 10" \
@@ -646,7 +648,7 @@ orphan_run() { # orphan_run <project> <out> <pids> <log> [extra env...] : spawn 
 # ---------------------------------------------------------------------------
 {
   PY="$(make_scratch)"; OUT="$(make_scratch)/y.jsonl"; CD="$(child_dir "$PY" y)"; Q1="$(qid call_1_1)"; Q2="$(qid call_1_2)"
-  CLAUDE_PROJECT_DIR="$PY" PI_MCP_ASK_TIMEOUT_MS=1500 PI_STUB_ASKS=2 PI_STUB_ASK_SEQ=1 PI_STUB_ASK_WAIT_MS=30000 feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PY" PI_MCP_TEST=1 PI_MCP_ASK_TIMEOUT_MS=1500 PI_STUB_ASKS=2 PI_STUB_ASK_SEQ=1 PI_STUB_ASK_WAIT_MS=30000 feed "$OUT" \
     "$(call 2 pi_agent '{"name":"y","prompt":"go","run_in_background":false}')" "WAIT_FOR \"id\":2 10" "SLEEP 4" \
     "$(call 3 pi_answer "$(json_obj to y question_id "$Q1" answer late)")" "WAIT_FOR \"id\":3 10" \
     "$(call 4 pi_answer '{"to":"y","answer":"second"}')" "WAIT_FOR \"id\":4 10"
@@ -664,7 +666,7 @@ orphan_run() { # orphan_run <project> <out> <pids> <log> [extra env...] : spawn 
 # ---------------------------------------------------------------------------
 {
   PZ="$(make_scratch)"; OUT="$(make_scratch)/z.jsonl"; CD="$(child_dir "$PZ" z)"; Q1="$(qid call_1_1)"; Q2="$(qid call_1_2)"
-  CLAUDE_PROJECT_DIR="$PZ" PI_MCP_ASK_TIMEOUT_MS=30000 PI_STUB_ASKS=2 PI_STUB_ASK_GAP_MS=300 PI_STUB_ASK_WAIT_MS=30000 feed "$OUT" \
+  CLAUDE_PROJECT_DIR="$PZ" PI_MCP_TEST=1 PI_MCP_ASK_TIMEOUT_MS=30000 PI_STUB_ASKS=2 PI_STUB_ASK_GAP_MS=300 PI_STUB_ASK_WAIT_MS=30000 feed "$OUT" \
     "$(call 2 pi_agent '{"name":"z","prompt":"go","run_in_background":false}')" "WAIT_FOR \"id\":2 10" "SLEEP 0.6" \
     "$(call 3 pi_answer "$(json_obj to z question_id "$Q1" answer a1)")" "WAIT_FOR \"id\":3 10" "SLEEP 0.3" \
     "SH meta_of '$CD' consumed_seq > '$PZ/mid'" \

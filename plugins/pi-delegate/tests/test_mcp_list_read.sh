@@ -84,7 +84,7 @@ pushes_of() { # pushes_of <out> <agent> <event> -> count of channel pushes
     "SH echo \$(meta_of '$CA' consumed_seq) \$(last_seq_of '$CA' done) > '$OUT.read'" \
     "$(call 9 pi_list_agents '{}')" "WAIT_FOR \"id\":9 10"
   H3="$(res_head "$OUT" 3)"
-  printf '%s\n' "$H3" | head -1 | grep -qE '^pi 0\.99\.1 · pin none · wake fallback · live 1/4 · wait armed: no$' \
+  printf '%s\n' "$H3" | head -1 | grep -qE '^pi 0\.99\.1 · pin none · questions_per_turn 5 \(default\) · .* · wake fallback · live 1/4 · wait armed: no$' \
     && pass "A: header: pi version, pin, wake, live n/cap, wait armed" || fail "A: header ($(printf '%s' "$H3" | head -1))"
   printf '%s\n' "$H3" | grep -qE '^aa  idle  turn 1  gen 1  [0-9]+s  turn 1 done ok$' && pass "A: row for aa (idle, turn 1, gen 1, done ok)" || fail "A: row ($H3)"
   printf '%s\n' "$H3" | grep -qE '^\[pi:aa\] DONE turn 1 ok .*\(also pushed [0-9:]{8}\)$' && pass "A: the pushed-but-unconfirmed DONE is inlined, marked (also pushed)" || fail "A: inline ($H3)"

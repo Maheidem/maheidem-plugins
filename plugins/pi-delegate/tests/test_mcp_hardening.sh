@@ -45,7 +45,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/mcp.sh"
   use_stub pi-rpc-lab
   PIDFILE_B="$(make_scratch)/pids"; : > "$PIDFILE_B"
   OUT_B="$(make_scratch)/b.jsonl"
-  PI_STUB_PID_FILE="$PIDFILE_B" PI_STUB_SETTLE_MS=3000 PI_MCP_TTL_MS=800 PI_MCP_REAP_INTERVAL_MS=200 \
+  PI_STUB_PID_FILE="$PIDFILE_B" PI_STUB_SETTLE_MS=3000 PI_MCP_TEST=1 PI_MCP_TTL_MS=800 PI_MCP_REAP_INTERVAL_MS=200 \
     feed "$OUT_B" "$(call 2 pi_agent '{"name":"hreap","prompt":"slow","run_in_background":false}')" "SLEEP 4"
   IN_B="$(json_for_id "$OUT_B" 2)"
   [ "$(field_of "$IN_B" status)" = "done" ] && pass "B: 3s turn survived a 0.8s TTL" || fail "B: turn survived reaper (inner=$IN_B)"
