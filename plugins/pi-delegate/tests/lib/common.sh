@@ -58,15 +58,35 @@ make_scratch() {
   echo "$d"
 }
 
+# The server's event store lives under $CLAUDE_PLUGIN_DATA (fallback: the real
+# ~/.claude/plugins/data): point it at scratch so tests never touch a profile.
+CLAUDE_PLUGIN_DATA="$(make_scratch)/plugin-data"
+export CLAUDE_PLUGIN_DATA
+# The store's stable id goes into every pi session id (<name>-g<gen>-<id>):
+# seeded so tests can name the session ids a launch uses.
+STORE_ID=teststore
+mkdir -p "$CLAUDE_PLUGIN_DATA"
+printf '%s\n' "$STORE_ID" > "$CLAUDE_PLUGIN_DATA/store-id"
+
 # use_stub <stub-name> — installs stubs/<stub-name> as `pi` in a fresh bin dir
 # and prepends it to PATH. Exports STUB_BIN.
 use_stub() {
   local name="$1"
   STUB_BIN="$(make_scratch)/bin"
   mkdir -p "$STUB_BIN"
-  cp "$TESTS_DIR/stubs/$name" "$STUB_BIN/pi"
+  cp "$TESTS_DIR/stubs/$name" "$STUB_BIN/pi-stub"
+  chmod +x "$STUB_BIN/pi-stub"
+  # The launch path gates on `pi --version` >= 0.99.0; stubs only speak rpc,
+  # so a wrapper answers --version ($PI_STUB_VERSION, default 0.99.1).
+  cat > "$STUB_BIN/pi" <<WRAP
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then echo "\${PI_STUB_VERSION:-0.99.1}"; exit 0; fi
+exec "$STUB_BIN/pi-stub" "\$@"
+WRAP
   chmod +x "$STUB_BIN/pi"
   export PATH="$STUB_BIN:$PATH"
+  # A stub can't answer --list-models: skip the provider->extension probe.
+  export PI_DELEGATE_PROVIDER_EXTENSIONS=none
 }
 
 pass() {
@@ -142,7 +162,7 @@ pi_session_slug() {
 # pi_sessions_dir <cwd> -> prints the on-disk session directory for that cwd
 pi_sessions_dir() {
   local dir
-  dir="$HOME/.pi/agent/sessions/$(pi_session_slug "$1")"
+  dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/sessions/$(pi_session_slug "$1")"
   echo "$dir" >> "$_SCRATCH_REGISTRY.pi_dirs"
   echo "$dir"
 }
@@ -158,7 +178,7 @@ cleanup_pi_dirs() {
   if [ -f "${_SCRATCH_REGISTRY}.pi_dirs" ]; then
     while IFS= read -r d; do
       case "$d" in
-        "$HOME/.pi/agent/sessions/"*) rm -rf "$d" ;;
+        "$HOME/.pi/agent/sessions/"*|"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/sessions/"*) rm -rf "$d" ;;
       esac
     done < "${_SCRATCH_REGISTRY}.pi_dirs"
     rm -f "${_SCRATCH_REGISTRY}.pi_dirs"

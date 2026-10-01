@@ -25,7 +25,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_TIMEOUT_MS = 600000; // 600s
-const PI_SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
+// Resolved through piAgentDir() (hoisted) so PI_CODING_AGENT_DIR moves it, as it moves pi.
+const PI_SETTINGS_PATH = path.join(piAgentDir(), "settings.json");
+const STATUS_TIMEOUT_MS = 30000;
 const RAW_TAIL_LIMIT = 10240; // last 10KB of raw stdout/stderr in results
 const STEER_MESSAGE_MAX_BYTES = 4096; // cap for steer/interrupt envelope message
 const FIFO_POLL_INTERVAL_MS = 200; // poll interval for the send-side control FIFO
@@ -293,15 +295,15 @@ function loadProjectConfig(cwd) {
   try {
     raw = fs.readFileSync(configPath, "utf8");
   } catch {
-    return { provider: null, model: null };
+    return { provider: null, model: null, extensions: [] };
   }
 
   const lines = raw.split("\n");
   if (lines.length === 0 || lines[0].trim() !== "---") {
-    return { provider: null, model: null };
+    return { provider: null, model: null, extensions: [] };
   }
 
-  const config = { provider: null, model: null };
+  const config = { provider: null, model: null, extensions: [] };
   let closed = false;
 
   // lines[0] is already confirmed "---" above, so everything from index 1
@@ -324,14 +326,360 @@ function loadProjectConfig(cwd) {
     if (/^(['"]).*\1$/.test(value)) value = value.slice(1, -1);
     if (key === "provider" && value) config.provider = value;
     if (key === "model" && value) config.model = value;
+    if (key === "extensions" && value) {
+      config.extensions = value.split(",").map((s) => s.trim()).filter(Boolean);
+    }
   }
 
   // Unterminated frontmatter block => treat as no frontmatter at all.
   if (!closed) {
-    return { provider: null, model: null };
+    return { provider: null, model: null, extensions: [] };
   }
 
   return config;
+}
+
+// ---------------------------------------------------------------------------
+// Lean children: every spawned pi gets --no-extensions/--no-skills/
+// --no-prompt-templates/--no-context-files, then explicit -e paths for
+// (1) whatever extension supplies the provider it runs on (pi's providers can
+// come from extensions, e.g. model-discovery -- dropping it breaks the pin),
+// (2) the project pin's opt-in `extensions:` list, (3) the pi-side
+// @maheidem/pi-delegate package for ask_parent (conversations only).
+// ---------------------------------------------------------------------------
+
+const LEAN_FLAGS = ["--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files"];
+
+// Mirrors pi's getAgentDir(): $PI_CODING_AGENT_DIR (leading ~ expanded,
+// resolved against the cwd) or ~/.pi/agent. Sessions, settings and packages
+// all hang off it, so every path we derive must go through here.
+function piAgentDir() {
+  const env = process.env.PI_CODING_AGENT_DIR;
+  if (!env) return path.join(os.homedir(), ".pi", "agent");
+  if (env === "~") return os.homedir();
+  return path.resolve(env.startsWith("~/") ? path.join(os.homedir(), env.slice(2)) : env);
+}
+
+// ---------------------------------------------------------------------------
+// Child env scrub (0.11 §6.3). A pi child is a worker, not a Claude session:
+// none of Claude's messaging/session/plugin plumbing or its OAuth token may
+// reach it. ANTHROPIC_* goes too unless the child may run on the anthropic
+// provider (pi reads ANTHROPIC_API_KEY / ANTHROPIC_OAUTH_TOKEN itself --
+// docs/providers.md). Besides the spec's five patterns, any secret-shaped
+// CLAUDE_CODE_* name (refresh/gateway/API tokens, key passphrases, credential
+// file descriptors -- names taken from the 2.1.286 binary) and Claude's
+// remote/bridge/host session plumbing are dropped. Numeric knobs such as
+// CLAUDE_CODE_MAX_OUTPUT_TOKENS don't match and still pass.
+// ---------------------------------------------------------------------------
+
+const CHILD_ENV_DENY = [
+  /^CLAUDE_CODE_MESSAGING_/, /^CLAUDE_CODE_SESSION/, /^CLAUDECODE$/, /^CLAUDE_PLUGIN_/, /^CLAUDE_CODE_OAUTH_TOKEN$/,
+  /^CLAUDE_CODE_\w*(_TOKEN|_KEY|_PASSPHRASE|_CREDS_FILE|_FILE_DESCRIPTOR)$/, /^CLAUDE_CODE_\w*SECRET/,
+  /^CLAUDE_CODE_(REMOTE|BRIDGE|HOST)_/
+];
+
+function scrubChildEnv(env, { keepAnthropic = false } = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (CHILD_ENV_DENY.some((re) => re.test(k))) continue;
+    if (!keepAnthropic && k.startsWith("ANTHROPIC_")) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// pi version gate: the lean flags only disable pi's built-in extensions from
+// 0.99.0 on, so an older pi would start non-lean children silently. Checked
+// once per process: the in-flight/successful promise is shared (the MCP server
+// warms it at startup), and a failure is re-checked on the next launch.
+// ENOENT passes through so the spawn reports "pi CLI not found" as before.
+// ---------------------------------------------------------------------------
+
+const MIN_PI_VERSION = "0.99.0";
+let piVersionGate = null;
+
+function parsePiVersion(text) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(text || ""));
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+function versionAtLeast(v, min) {
+  for (let i = 0; i < 3; i++) if (v[i] !== min[i]) return v[i] > min[i];
+  return true;
+}
+
+function checkPiVersion() {
+  if (!piVersionGate) {
+    piVersionGate = probePiVersion().then((r) => {
+      if (!r.ok || r.skipped) piVersionGate = null;
+      return r;
+    });
+  }
+  return piVersionGate;
+}
+
+function probePiVersion() {
+  return new Promise((resolve) => {
+    let child;
+    let out = "";
+    let err = "";
+    let settled = false;
+    const finish = (r) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(t);
+      resolve(r);
+    };
+    try {
+      child = spawn("pi", ["--version"], { stdio: ["ignore", "pipe", "pipe"], env: scrubChildEnv(process.env, { keepAnthropic: true }) });
+    } catch (e) {
+      finish(e && e.code === "ENOENT" ? { ok: true, skipped: "ENOENT" } : { ok: false, error: `failed to run 'pi --version': ${e && e.message ? e.message : String(e)}` });
+      return;
+    }
+    const t = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* gone */ }
+      finish({ ok: false, error: "'pi --version' did not answer within 15s" });
+    }, 15000);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (c) => { out += c; });
+    child.stderr.on("data", (c) => { err += c; });
+    child.on("error", (e) => {
+      // Not found: no gate to apply; the real spawn reports it the usual way.
+      if (e && e.code === "ENOENT") finish({ ok: true, skipped: "ENOENT" });
+      else finish({ ok: false, error: `failed to run 'pi --version': ${e && (e.code || e.message)}` });
+    });
+    child.on("close", (code) => {
+      const text = out.trim();
+      const v = parsePiVersion(text);
+      if (code !== 0 || !v) {
+        finish({ ok: false, error: `could not determine the pi version ('pi --version' exited ${code}: ${(text || err.trim()).slice(0, 200) || "no output"})` });
+        return;
+      }
+      const version = v.join(".");
+      if (!versionAtLeast(v, parsePiVersion(MIN_PI_VERSION))) {
+        finish({ ok: false, version, error: `pi ${version} is too old: pi-delegate needs pi >= ${MIN_PI_VERSION} (lean children rely on it to switch off built-in extensions). Upgrade pi, then retry.` });
+        return;
+      }
+      finish({ ok: true, version });
+    });
+  });
+}
+
+function piNodeModulesDir() {
+  return path.join(piAgentDir(), "npm", "node_modules");
+}
+
+// "npm:@scope/name@1.2.3" | "@scope/name" | "name@1" -> "@scope/name" | "name"
+function packageNameOf(spec) {
+  let s = spec.startsWith("npm:") ? spec.slice(4) : spec;
+  const at = s.lastIndexOf("@");
+  if (at > 0) s = s.slice(0, at);
+  return s;
+}
+
+// One opt-in / configured extension spec -> an absolute path pi can -e, or
+// "builtin:<name>". Returns { ok, value } | { ok:false, error }.
+function resolveExtensionSpec(spec) {
+  if (typeof spec !== "string" || !spec) return { ok: false, error: "empty extension spec" };
+  if (spec.startsWith("builtin:")) {
+    return /^builtin:[A-Za-z0-9._-]+$/.test(spec) ? { ok: true, value: spec } : { ok: false, error: `invalid builtin spec ${spec}` };
+  }
+  if (path.isAbsolute(spec)) {
+    return fs.existsSync(spec) ? { ok: true, value: spec } : { ok: false, error: `extension path not found: ${spec}` };
+  }
+  if (!isSafeArgValue(spec)) return { ok: false, error: `invalid extension spec ${JSON.stringify(spec)}` };
+  const dir = path.join(piNodeModulesDir(), packageNameOf(spec));
+  return fs.existsSync(dir) ? { ok: true, value: dir } : { ok: false, error: `extension package not installed: ${spec} (looked in ${dir})` };
+}
+
+// The pi-side delegate package that registers ask_parent in child mode.
+function piSidePackageDir() {
+  const dir = process.env.PI_DELEGATE_PI_PACKAGE || path.join(piNodeModulesDir(), "@maheidem", "pi-delegate");
+  return fs.existsSync(path.join(dir, "package.json")) ? dir : null;
+}
+
+function readJsonFile(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function readPiSettings() {
+  return readJsonFile(path.join(piAgentDir(), "settings.json"));
+}
+
+// Which provider(s) a child launched with this --provider/--model could run
+// on, mirroring pi's resolveCliModel (dist/core/model-resolver.js):
+//   - an explicit --provider wins;
+//   - else a "prefix/id" model means provider <prefix> (pi matches it
+//     case-insensitively);
+//   - else a bare model pattern ("sonnet") is matched across EVERY provider,
+//     so the provider is unknown until pi resolves it (ambiguous);
+//   - else pi's default: defaultProvider from <cwd>/.pi/settings.json merged
+//     over the global settings. Project settings only apply when pi trusts
+//     the project, so both candidates are returned.
+function childProviderCandidates({ provider, model, cwd }) {
+  if (provider) return { providers: [String(provider).toLowerCase()], ambiguous: false };
+  if (model) {
+    const slash = String(model).indexOf("/");
+    if (slash > 0) return { providers: [String(model).slice(0, slash).toLowerCase()], ambiguous: false };
+  }
+  const global = readPiSettings().defaultProvider;
+  const project = cwd ? readJsonFile(path.join(cwd, ".pi", "settings.json")).defaultProvider : undefined;
+  const providers = [...new Set([project, global].filter((p) => typeof p === "string" && p).map((p) => p.toLowerCase()))];
+  return { providers, ambiguous: !!model };
+}
+
+// Settles on 'exit' (+ a short drain), not 'close': an extension that starts
+// a daemon hands it our stdout pipe, and 'close' then never fires.
+function listProviders(args, timeoutMs = 20000) {
+  return new Promise((resolve) => {
+    let out = "";
+    let done = false;
+    let child;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      try { process.kill(-child.pid, "SIGKILL"); } catch { /* group already gone */ }
+      const providers = new Set();
+      for (const line of out.split("\n").slice(1)) {
+        const first = line.trim().split(/\s+/)[0];
+        if (first) providers.add(first);
+      }
+      resolve(providers);
+    };
+    try {
+      child = spawn("pi", [...args, "--list-models"], { stdio: ["ignore", "pipe", "ignore"], detached: true, env: scrubChildEnv(process.env, { keepAnthropic: true }) });
+    } catch {
+      resolve(new Set());
+      return;
+    }
+    const t = setTimeout(finish, timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (c) => { out += c; });
+    child.on("error", finish);
+    child.on("exit", () => setTimeout(finish, 200));
+    child.on("close", finish);
+  });
+}
+
+// provider -> [extension paths] (in-memory, per process: never persisted, so
+// a stub pi in tests can't poison a real cache).
+const providerExtensionCache = new Map();
+let builtinProvidersPromise = null;
+
+async function providerExtensions(provider) {
+  // Explicit override (also the test harness's switch): "none" or a
+  // comma-separated list of extension specs, instead of probing.
+  const override = process.env.PI_DELEGATE_PROVIDER_EXTENSIONS;
+  if (override !== undefined) {
+    if (override.trim() === "" || override.trim() === "none") return { paths: [], warning: null };
+    const resolved = override.split(",").map((s) => resolveExtensionSpec(s.trim()));
+    return {
+      paths: resolved.filter((r) => r.ok).map((r) => r.value),
+      warning: resolved.filter((r) => !r.ok).map((r) => r.error).join("; ") || null
+    };
+  }
+  if (!provider) return { paths: [], warning: null };
+  if (providerExtensionCache.has(provider)) return providerExtensionCache.get(provider);
+  if (!builtinProvidersPromise) builtinProvidersPromise = listProviders(["--no-extensions"]);
+  const builtin = await builtinProvidersPromise;
+  let entry;
+  if (builtin.has(provider)) {
+    entry = { paths: [], warning: null };
+  } else {
+    const specs = Array.isArray(readPiSettings().packages) ? readPiSettings().packages : [];
+    const candidates = specs
+      .map((s) => resolveExtensionSpec(s))
+      .filter((r) => r.ok && !r.value.startsWith("builtin:"))
+      .map((r) => r.value)
+      .filter((p) => p !== piSidePackageDir());
+    const probes = await Promise.all(candidates.map(async (p) => ((await listProviders(["--no-extensions", "-e", p])).has(provider) ? p : null)));
+    const paths = probes.filter(Boolean);
+    entry = {
+      paths,
+      warning: paths.length ? null : `provider "${provider}" is not built in and no installed pi package provides it -- the child may fail to resolve its model`
+    };
+  }
+  providerExtensionCache.set(provider, entry);
+  return entry;
+}
+
+// Builds the lean flag set + env for a child. `ask` = { dir, timeoutMs, max }
+// enables the pi-side ask_parent channel (conversations only: a blocking
+// one-shot task can't be answered mid-call, same rule as the pi-side package).
+// Returns { error } instead of a launch when the pi version gate fails.
+// `provider` / `model` are exactly what the caller puts on pi's argv (null
+// when omitted); `cwd` is the child's cwd (for pi's project settings).
+// `tools` / `excludeTools` (string arrays, or null) become -t / -xt, kept
+// consistent with ask_parent (0.11 §2.1 step 5): -t applies to extension
+// tools too, so ask_parent is appended to an explicit allowlist; excluding
+// ask_parent switches ask off (with a warning). askEnabled reflects the
+// effective tool set, not just whether the pi-side package exists.
+async function buildChildLaunch({ provider = null, model = null, cwd = null, projectConfig, ask = null, tools = null, excludeTools = null }) {
+  const gate = await checkPiVersion();
+  if (!gate.ok) return { error: gate.error };
+  const target = childProviderCandidates({ provider, model, cwd });
+  const loaded = [];
+  const warnings = [];
+  const add = (p) => { if (!loaded.includes(p)) loaded.push(p); };
+
+  for (const p of target.providers.length ? target.providers : [null]) {
+    const prov = await providerExtensions(p);
+    prov.paths.forEach(add);
+    if (prov.warning) warnings.push(prov.warning);
+  }
+
+  for (const spec of projectConfig.extensions || []) {
+    const r = resolveExtensionSpec(spec);
+    if (r.ok) add(r.value);
+    else warnings.push(r.error);
+  }
+
+  // An ambiguous bare model pattern may resolve to anthropic, and stripping
+  // the key then breaks the child mid-turn; keep ANTHROPIC_* in that case.
+  const env = scrubChildEnv(process.env, { keepAnthropic: target.ambiguous || target.providers.includes("anthropic") });
+  let askEnabled = false;
+  const excluded = Array.isArray(excludeTools) ? excludeTools.slice() : [];
+  if (ask && excluded.includes("ask_parent")) {
+    warnings.push("exclude_tools contains ask_parent: ask is off for this child");
+    ask = null;
+  }
+  if (ask) {
+    const pkg = piSidePackageDir();
+    if (pkg) {
+      add(pkg);
+      fs.mkdirSync(ask.dir, { recursive: true, mode: 0o700 });
+      Object.assign(env, {
+        PI_DELEGATE_CHILD: "1",
+        PI_DELEGATE_ASK_DIR: ask.dir,
+        PI_DELEGATE_ASK_TIMEOUT_MS: String(ask.timeoutMs),
+        PI_DELEGATE_ASK_MAX: String(ask.max)
+      });
+      askEnabled = true;
+    } else {
+      warnings.push("pi-side @maheidem/pi-delegate package not installed -- ask_parent unavailable");
+    }
+  }
+
+  const args = [...LEAN_FLAGS];
+  for (const p of loaded) args.push("-e", p);
+  if (Array.isArray(tools)) {
+    const allow = tools.slice();
+    if (askEnabled && !allow.includes("ask_parent")) allow.push("ask_parent");
+    args.push("--tools", allow.join(","));
+  }
+  // Child mode also registers the pi-side `handoff` tool, whose contract ends
+  // the turn without a final message; our completion reads the last assistant
+  // text, so keep it out. One -xt list: a repeated flag would not merge.
+  if (askEnabled && !excluded.includes("handoff")) excluded.push("handoff");
+  if (excluded.length) args.push("--exclude-tools", excluded.join(","));
+  return { args, env, extensions: loaded, askEnabled, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -374,16 +722,26 @@ function sessionSlugForCwd(cwd) {
   return `--${replaced}--`;
 }
 
+// pi's getDefaultSessionDirPath: <agentDir>/sessions/<slug>, where agentDir
+// honours PI_CODING_AGENT_DIR (the children inherit it, so they write there).
 function piSessionsDir(cwd) {
-  return path.join(os.homedir(), ".pi", "agent", "sessions", sessionSlugForCwd(cwd));
+  return path.join(piAgentDir(), "sessions", sessionSlugForCwd(cwd));
 }
 
 function lockDir() {
   return path.join(os.tmpdir(), "pi-delegate-locks");
 }
 
+// A session name as one path component: encodes "/", ":", "." so a name can
+// never leave its parent dir, and uppercase ("Foo" -> "%5Efoo") so two names
+// that differ only in case never share a file on a case-insensitive
+// filesystem (APFS). Identity for [a-z0-9_-] names.
+function fsSafeName(name) {
+  return encodeURIComponent(String(name).replace(/[A-Z]/g, (c) => `^${c.toLowerCase()}`)).replace(/\./g, "%2E");
+}
+
 function lockPathFor(cwd, sessionName) {
-  return path.join(lockDir(), `${sessionSlugForCwd(cwd)}__${sessionName}.lock`);
+  return path.join(lockDir(), `${sessionSlugForCwd(cwd)}__${fsSafeName(sessionName)}.lock`);
 }
 
 // Turn-scoped control FIFO, colocated with the lockfile so a single
@@ -396,11 +754,19 @@ function fifoPathFor(cwd, sessionName) {
 
 // Shared by runConversationEnd and readConversation -- do not duplicate the
 // glob logic. Returns absolute paths, in readdirSync's (unspecified) order.
+// pi names a session file "<timestamp>_<sessionId>.jsonl" and the timestamp
+// has no "_", so the id is everything after the FIRST "_" and must equal
+// sessionName exactly: a suffix match would hand "x-g1" the files of "y_x-g1"
+// (names may contain "_"), and pi_stop {forget:true} would delete them.
 function findSessionFiles(dir, sessionName) {
+  const want = `${sessionName}.jsonl`;
   try {
     const entries = fs.readdirSync(dir);
     return entries
-      .filter((f) => f.endsWith(`_${sessionName}.jsonl`))
+      .filter((f) => {
+        const i = f.indexOf("_");
+        return i > 0 && f.slice(i + 1) === want;
+      })
       .map((f) => path.join(dir, f));
   } catch (err) {
     if (err && err.code === "ENOENT") return [];
@@ -419,19 +785,145 @@ function isPidAlive(pid) {
   }
 }
 
-// PID-liveness-only lock: dead lock owner => reclaim (one retry); alive
-// owner => fail loud, no wait, no wall-clock timeout (owner decision D-B).
-function acquireLock(lockPath) {
+// A lockfile holds either a bare pid (per-turn CLI/legacy locks) or, for an
+// MCP server's lifetime lock (0.11 §4.3), a JSON stamp
+// {serverPid, serverStart, ...}. Returns { pid, start, stamp } (pid null when
+// unreadable).
+function readLockOwner(lockPath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(lockPath, "utf8").trim();
+  } catch {
+    return { pid: null, start: null, stamp: null, missing: true };
+  }
+  if (raw.startsWith("{")) {
+    try {
+      const stamp = JSON.parse(raw);
+      const pid = Number(stamp.serverPid);
+      return { pid: Number.isInteger(pid) && pid > 0 ? pid : null, start: typeof stamp.serverStart === "string" ? stamp.serverStart : null, stamp };
+    } catch {
+      return { pid: null, start: null, stamp: null };
+    }
+  }
+  const pid = Number(raw);
+  return { pid: Number.isInteger(pid) && pid > 0 ? pid : null, start: null, stamp: null };
+}
+
+function procStartOf(pid) {
+  try {
+    // LC_ALL=C: ps prints lstart in the user's locale otherwise.
+    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+  } catch {
+    return "";
+  }
+}
+
+// The lock's owner is gone: pid dead, or (stamped locks) pid reused, i.e. its
+// start time differs from the stamp.
+function lockOwnerGone(owner) {
+  if (!owner.pid) return false;
+  if (!isPidAlive(owner.pid)) return true;
+  return !!owner.start && procStartOf(owner.pid) !== owner.start;
+}
+
+// A lock is reclaimed (deleted because its owner is dead) only under a short
+// reclaim mutex, and only while the file still holds exactly the dead owner's
+// content that was read: a plain read-unlink-create lets two callers both see
+// the same dead owner, the first unlink and create its own lock, and the
+// second unlink that live lock (then both hold it, or nobody does). mkdir is
+// atomic, so `${lockPath}.reclaim` admits one reclaimer at a time; one left by
+// a crashed reclaimer is broken after RECLAIM_MUTEX_STALE_MS. Creating a lock
+// (open wx) needs no mutex: only a delete can steal one.
+const RECLAIM_MUTEX_STALE_MS = 5000;
+
+function readLockRaw(lockPath) {
+  try {
+    return fs.readFileSync(lockPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// Deletes the lock only if it still reads `seenRaw` (a dead owner's content).
+// Returns true when the path is free afterwards (deleted here, or already
+// gone), false when it changed or another reclaimer is at work.
+function reclaimStaleLock(lockPath, seenRaw) {
+  const mutex = `${lockPath}.reclaim`;
+  try {
+    fs.mkdirSync(mutex);
+  } catch (err) {
+    if (err && err.code === "EEXIST") {
+      try {
+        if (Date.now() - fs.statSync(mutex).mtimeMs > RECLAIM_MUTEX_STALE_MS) fs.rmdirSync(mutex);
+      } catch {
+        /* someone else broke or released it */
+      }
+    }
+    return false;
+  }
+  try {
+    const raw = readLockRaw(lockPath);
+    if (raw === null) return true;
+    if (raw !== seenRaw) return false;
+    try {
+      fs.unlinkSync(lockPath);
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") return false;
+    }
+    return true;
+  } finally {
+    try {
+      fs.rmdirSync(mutex);
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+// Releases a lock whose owner is dead (a dead server's lifetime lock, a dead
+// CLI's turn lock), atomically against a live caller taking the path at the
+// same moment. Never touches a live owner's lock. Returns true when it was
+// released.
+function reclaimIfDead(lockPath) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const raw = readLockRaw(lockPath);
+    if (raw === null) return false;
+    const owner = readLockOwner(lockPath);
+    if (owner.missing || readLockRaw(lockPath) !== raw) continue;
+    if (!lockOwnerGone(owner)) return false;
+    if (reclaimStaleLock(lockPath, raw)) return true;
+    if (readLockRaw(lockPath) !== raw) return false; // changed hands: not ours to judge again
+    sleepSync(5);
+  }
+  return false;
+}
+
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* no Atomics.wait: spin is not worth it, just retry */
+  }
+}
+
+// PID-liveness-only lock: dead lock owner => reclaim (compare-and-swap, see
+// reclaimStaleLock); alive owner => fail loud, no wait, no wall-clock timeout
+// (owner decision D-B).
+// `stamp` (an object) is written as JSON instead of the bare pid: the MCP
+// server's lifetime lock records {serverPid, serverStart} so a reused pid is
+// recognised as stale too. heldBy carries the holder's stamp, when it has one.
+function acquireLock(lockPath, stamp = null) {
   try {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   } catch {
     /* best-effort -- openSync below will surface any real problem */
   }
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const content = stamp ? JSON.stringify(stamp) : String(process.pid);
+  for (let attempt = 0; attempt < 20; attempt++) {
     try {
       const fd = fs.openSync(lockPath, "wx");
-      fs.writeSync(fd, String(process.pid));
+      fs.writeSync(fd, content);
       fs.closeSync(fd);
       return { acquired: true, heldByPid: null };
     } catch (err) {
@@ -439,31 +931,34 @@ function acquireLock(lockPath) {
         return { acquired: false, heldByPid: null, error: err && err.message ? err.message : String(err) };
       }
 
-      let ownerPid = null;
-      try {
-        ownerPid = Number(fs.readFileSync(lockPath, "utf8").trim());
-      } catch {
-        ownerPid = null;
+      const raw = readLockRaw(lockPath);
+      if (raw === null) continue; // released between our open and read
+      const owner = readLockOwner(lockPath);
+      // A creator writes after open: an empty/partial file is a live
+      // acquirer mid-write, never a dead owner. Re-read until it settles.
+      if (owner.missing || readLockRaw(lockPath) !== raw || (!owner.pid && raw.trim() === "")) {
+        sleepSync(2);
+        continue;
       }
-
-      if (ownerPid && Number.isFinite(ownerPid) && !isPidAlive(ownerPid)) {
-        // Stale -- reclaim and retry once.
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          /* another caller may have already reclaimed it -- retry will tell */
-        }
+      if (lockOwnerGone(owner)) {
+        // Stale: reclaim only if it still holds what we judged dead, then retry.
+        if (!reclaimStaleLock(lockPath, raw)) sleepSync(5);
         continue;
       }
 
-      return { acquired: false, heldByPid: ownerPid || null };
+      return { acquired: false, heldByPid: owner.pid || null, heldBy: owner.stamp };
     }
   }
 
   return { acquired: false, heldByPid: null, error: "lock contention after stale-reclaim retry" };
 }
 
-function releaseLock(lockPath) {
+// `stamp` given: unlink only while the file still holds exactly that stamp
+// (a takeover or another server may own the path now). Without it, the
+// caller's own per-turn lock is released unconditionally, as before.
+function releaseLock(lockPath, stamp = null) {
+  if (!lockPath) return;
+  if (stamp && readLockRaw(lockPath) !== JSON.stringify(stamp)) return;
   try {
     fs.unlinkSync(lockPath);
   } catch {
@@ -502,7 +997,7 @@ function releaseLock(lockPath) {
 // responses have all arrived). If onStdoutChunk never calls settleEarly, the
 // promise resolves the same way spawnManaged always has: on 'close', or on an
 // 'exit' + ~1s drain grace if 'close' never fires (open grandchild pipes).
-async function spawnManaged(cmd, args, { cwd, timeout, stdio, onStdoutChunk, onStderrChunk, onSpawn }) {
+async function spawnManaged(cmd, args, { cwd, timeout, stdio, env, onStdoutChunk, onStderrChunk, onSpawn }) {
   return new Promise((resolve) => {
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -554,6 +1049,7 @@ async function spawnManaged(cmd, args, { cwd, timeout, stdio, onStdoutChunk, onS
 
     const child = spawn(cmd, args, {
       cwd,
+      env: env || scrubChildEnv(process.env, { keepAnthropic: true }),
       stdio: stdio || ["ignore", "pipe", "pipe"],
       detached: true
     });
@@ -672,7 +1168,7 @@ function newlineFramed(buffer, chunk) {
 // agent_settled -- only on the one that follows the reprompt. This is tracked
 // with a `turnGeneration` counter, bumped each time a fresh prompt is injected
 // via interrupt, and a `settledGeneration` compared against it.
-async function rpcRoundtrip(sessionArgs, initialCommands, { cwd, timeout, onReady }) {
+async function rpcRoundtrip(sessionArgs, initialCommands, { cwd, timeout, onReady, env }) {
   let pendingLine = "";
   const events = [];
   const responsesByCommand = new Map();
@@ -734,6 +1230,7 @@ async function rpcRoundtrip(sessionArgs, initialCommands, { cwd, timeout, onRead
   const result = await spawnManaged("pi", ["--mode", "rpc", ...sessionArgs], {
     cwd,
     timeout,
+    env,
     stdio: ["pipe", "pipe", "pipe"],
     onSpawn: (ctx) => {
       ctx.inject = (cmd) => inject(ctx, cmd);
@@ -864,15 +1361,19 @@ async function rpcRoundtrip(sessionArgs, initialCommands, { cwd, timeout, onRead
 // Conversation subcommands: start | send | status | end
 // ---------------------------------------------------------------------------
 
-function buildSessionArgs(opts, projectConfig) {
-  const args = [];
+// The --provider / --model a session child gets: explicit opts, else the
+// project pin (validated before it enters argv).
+function sessionProviderModel(opts, projectConfig) {
   let configProvider = projectConfig.provider;
   let configModel = projectConfig.model;
   if (configProvider && !isSafeArgValue(configProvider)) configProvider = null;
   if (configModel && !isSafeArgValue(configModel)) configModel = null;
+  return { provider: opts.provider || configProvider || null, model: opts.model || configModel || null };
+}
 
-  const effectiveProvider = opts.provider || configProvider;
-  const effectiveModel = opts.model || configModel;
+function buildSessionArgs(opts, projectConfig) {
+  const args = [];
+  const { provider: effectiveProvider, model: effectiveModel } = sessionProviderModel(opts, projectConfig);
 
   if (effectiveProvider) args.push("--provider", effectiveProvider);
   if (effectiveModel) args.push("--model", effectiveModel);
@@ -1007,7 +1508,9 @@ async function runConversationSend(sessionName, messageText, opts) {
 
   try {
     const projectConfig = loadProjectConfig(cwd);
-    const sessionArgs = ["--session-id", sessionName, ...buildSessionArgs(opts, projectConfig)];
+    const launch = await buildChildLaunch({ ...sessionProviderModel(opts, projectConfig), cwd, projectConfig });
+    if (launch.error) return taskResult({ sessionName, errorMessage: launch.error });
+    const sessionArgs = ["--session-id", sessionName, ...launch.args, ...buildSessionArgs(opts, projectConfig)];
     const roundtrip = await rpcRoundtrip(
       sessionArgs,
       [
@@ -1019,6 +1522,7 @@ async function runConversationSend(sessionName, messageText, opts) {
       {
         cwd,
         timeout: opts.timeout,
+        env: launch.env,
         onReady: (ctx) => {
           fifoRelay = startFifoRelay(fifoPath, ctx);
         }
@@ -1125,7 +1629,7 @@ async function runConversationStart(sessionName, opts) {
     }
     try {
       const projectConfig = loadProjectConfig(cwd);
-      const sessionArgs = ["--session-id", sessionName, ...buildSessionArgs(opts, projectConfig)];
+      const sessionArgs = ["--session-id", sessionName, ...LEAN_FLAGS, ...buildSessionArgs(opts, projectConfig)];
       const roundtrip = await rpcRoundtrip(sessionArgs, [{ type: "get_state" }], { cwd, timeout: opts.timeout });
       if (roundtrip.error) {
         return taskResult({
@@ -1159,11 +1663,14 @@ async function runConversationStatus(sessionName, opts) {
   // Read-only: deliberately does NOT acquire the lock (see architecture.md
   // D-B follow-up) -- safe to run concurrently with an in-flight send.
   const cwd = resolveCwd();
-  const sessionArgs = ["--session-id", sessionName];
+  // State/stats need no model or extensions: lean spawn, and a real default
+  // timeout (an undefined one armed a ~1ms kill timer -- every status failed).
+  const sessionArgs = ["--session-id", sessionName, ...LEAN_FLAGS];
+  const timeout = Number.isInteger(opts.timeout) && opts.timeout > 0 ? opts.timeout : STATUS_TIMEOUT_MS;
   const roundtrip = await rpcRoundtrip(
     sessionArgs,
     [{ type: "get_state" }, { type: "get_session_stats" }],
-    { cwd, timeout: opts.timeout }
+    { cwd, timeout }
   );
 
   if (roundtrip.error) {
@@ -1439,13 +1946,9 @@ function validateSteerMessage(message) {
 // lockfile's PID (the same file acquireLock/isPidAlive already parse) is the
 // actual liveness oracle.
 function isConversationLive(lockPath) {
-  let ownerPid = null;
-  try {
-    ownerPid = Number(fs.readFileSync(lockPath, "utf8").trim());
-  } catch {
-    return false; // no lockfile -- idle
-  }
-  return Number.isFinite(ownerPid) && ownerPid > 0 && isPidAlive(ownerPid);
+  const owner = readLockOwner(lockPath);
+  if (owner.missing) return false; // no lockfile -- idle
+  return !!owner.pid && isPidAlive(owner.pid);
 }
 
 async function writeToFifo(sessionName, kind, messageText) {
@@ -1507,7 +2010,51 @@ async function runConversationInterrupt(sessionName, messageText) {
   return writeToFifo(sessionName, "interrupt", messageText);
 }
 
+// pi get_session_stats -> the numbers worth surfacing (tokens drive the
+// lean-children before/after measurement).
+function usageFrom(statsResponse) {
+  const d = statsResponse && statsResponse.success !== false ? statsResponse.data : null;
+  if (!d) return null;
+  const t = d.tokens || {};
+  return {
+    inputTokens: t.input ?? null,
+    outputTokens: t.output ?? null,
+    cacheReadTokens: t.cacheRead ?? null,
+    totalTokens: t.total ?? null,
+    contextTokens: (d.contextUsage && d.contextUsage.tokens) ?? null,
+    cost: d.cost ?? null
+  };
+}
+
 // One-shot RPC completion for the task verb (sole contract since 0.7.0; the legacy marker path was removed in Phase 3, ADR §3).
+// The project pin (.claude/pi-delegate.local.md) wins over a caller's
+// provider/model (0.11 §2.1 step 2, §6.2): with a pin, an explicit value that
+// differs from it is refused (same rule as orchestrator-mode's pi-mode hook:
+// a key the pin leaves unset may not be given either). Returns the refusal
+// text, or null.
+// Pin values that fail isSafeArgValue are ignored everywhere (they never
+// reach argv), so they don't count as a pin here either.
+function validPin(projectConfig) {
+  const pc = projectConfig || {};
+  const pin = {
+    provider: pc.provider && isSafeArgValue(pc.provider) ? pc.provider : null,
+    model: pc.model && isSafeArgValue(pc.model) ? pc.model : null
+  };
+  return pin.provider || pin.model ? pin : null;
+}
+function pinLabel(projectConfig) {
+  const pin = validPin(projectConfig);
+  return pin ? [pin.provider, pin.model].filter(Boolean).join("/") : null;
+}
+function pinConflict(projectConfig, provider, model) {
+  const pin = validPin(projectConfig);
+  if (!pin) return null;
+  const asked = { provider: provider || null, model: model || null };
+  const bad = Object.keys(asked).filter((k) => asked[k] && asked[k] !== pin[k]);
+  if (!bad.length) return null;
+  return `model is pinned to ${pinLabel(projectConfig)} for this project; omit provider/model (asked for ${bad.map((k) => `${k}=${asked[k]}`).join(", ")})`;
+}
+
 async function runTaskRpc(opts) {
   if (!opts.text) {
     return taskResult({ errorMessage: "no task text provided" });
@@ -1515,6 +2062,8 @@ async function runTaskRpc(opts) {
 
   const cwd = resolveCwd();
   const projectConfig = loadProjectConfig(cwd);
+  const pinned = pinConflict(projectConfig, opts.provider, opts.model);
+  if (pinned) return taskResult({ errorMessage: pinned });
 
   // Values loaded from project config are validated before entering pi's argv
   // (a leading '-' could be interpreted as a flag). Explicit CLI flags are the
@@ -1533,7 +2082,9 @@ async function runTaskRpc(opts) {
   const effectiveProvider = opts.provider || configProvider;
   const effectiveModel = opts.model || configModel;
 
-  const args = ["--no-session"];
+  const launch = await buildChildLaunch({ provider: effectiveProvider, model: effectiveModel, cwd, projectConfig });
+  if (launch.error) return taskResult({ errorMessage: launch.error });
+  const args = ["--no-session", ...launch.args];
   if (effectiveProvider) args.push("--provider", effectiveProvider);
   if (effectiveModel) args.push("--model", effectiveModel);
   if (opts.thinking) args.push("--thinking", opts.thinking);
@@ -1544,14 +2095,21 @@ async function runTaskRpc(opts) {
     args,
     [
       { type: "prompt", message: opts.text },
-      { type: "get_last_assistant_text" }
+      { type: "get_last_assistant_text" },
+      { type: "get_session_stats" }
     ],
-    { cwd, timeout: opts.timeout }
+    { cwd, timeout: opts.timeout, env: launch.env }
   );
+  const childInfo = {
+    childExtensions: launch.extensions,
+    warning: launch.warnings.length ? launch.warnings.join("; ") : null,
+    usage: usageFrom(roundtrip.responsesByCommand.get("get_session_stats"))
+  };
 
   if (roundtrip.error) {
     const code = roundtrip.error.code;
     return taskResult({
+      ...childInfo,
       errorMessage:
         code === "ENOENT"
           ? "pi CLI not found on PATH — run /pi-delegate:setup"
@@ -1567,6 +2125,7 @@ async function runTaskRpc(opts) {
   const textResponse = roundtrip.responsesByCommand.get("get_last_assistant_text");
   if (!roundtrip.settled || !textResponse) {
     return taskResult({
+      ...childInfo,
       errorMessage: "pi rpc stream ended without agent_settled + get_last_assistant_text response",
       rawStdout: roundtrip.rawStdout,
       rawStderr: roundtrip.rawStderr,
@@ -1576,6 +2135,7 @@ async function runTaskRpc(opts) {
 
   if (textResponse.success === false) {
     return taskResult({
+      ...childInfo,
       errorMessage: textResponse.error || "get_last_assistant_text reported failure",
       rawStdout: roundtrip.rawStdout,
       rawStderr: roundtrip.rawStderr,
@@ -1586,6 +2146,7 @@ async function runTaskRpc(opts) {
   const turnError = detectErrorTurn(roundtrip.events);
   if (turnError) {
     return taskResult({
+      ...childInfo,
       errorMessage: turnError,
       rawStdout: roundtrip.rawStdout,
       rawStderr: roundtrip.rawStderr,
@@ -1594,6 +2155,7 @@ async function runTaskRpc(opts) {
   }
 
   return taskResult({
+      ...childInfo,
     ok: true,
     finalText: (textResponse.data && textResponse.data.text) || "",
     rawStdout: roundtrip.rawStdout,
@@ -1629,6 +2191,7 @@ function runListModels() {
   let result;
   try {
     result = spawnSync("pi", ["--list-models"], {
+      env: scrubChildEnv(process.env, { keepAnthropic: true }),
       encoding: "utf8",
       timeout: 15000
     });
@@ -1832,12 +2395,17 @@ function runSetup() {
     projectConfigFound: false,
     projectConfigProvider: null,
     projectConfigModel: null,
+    projectConfigExtensions: [],
+    extensionWarnings: [],
+    leanChildren: true,
+    askParentPackage: piSidePackageDir(),
+    askParentAvailable: piSidePackageDir() !== null,
     errorMessage: null
   };
 
   let versionResult;
   try {
-    versionResult = spawnSync("pi", ["--version"], { encoding: "utf8", timeout: 15000 });
+    versionResult = spawnSync("pi", ["--version"], { encoding: "utf8", timeout: 15000, env: scrubChildEnv(process.env, { keepAnthropic: true }) });
   } catch (err) {
     versionResult = { error: err };
   }
@@ -1854,6 +2422,12 @@ function runSetup() {
   } else {
     summary.piInstalled = true;
     summary.piVersion = (versionResult.stdout || "").trim() || null;
+    const v = parsePiVersion(summary.piVersion);
+    summary.minPiVersion = MIN_PI_VERSION;
+    summary.piVersionOk = !!(v && versionAtLeast(v, parsePiVersion(MIN_PI_VERSION)));
+    if (!summary.piVersionOk) {
+      summary.errorMessage = `pi ${summary.piVersion || "(unknown version)"} is too old: pi-delegate needs pi >= ${MIN_PI_VERSION}`;
+    }
   }
 
   try {
@@ -1869,15 +2443,17 @@ function runSetup() {
     }
   }
 
-  summary.ok = summary.piInstalled;
+  summary.ok = summary.piInstalled && summary.piVersionOk !== false;
 
   // Load project config (only meaningful when pi is installed)
   if (summary.piInstalled) {
     const pc = loadProjectConfig(cwd);
-    if (pc.provider || pc.model) {
+    if (pc.provider || pc.model || pc.extensions.length) {
       summary.projectConfigFound = true;
       summary.projectConfigProvider = pc.provider;
       summary.projectConfigModel = pc.model;
+      summary.projectConfigExtensions = pc.extensions;
+      summary.extensionWarnings = pc.extensions.map((e) => resolveExtensionSpec(e)).filter((r) => !r.ok).map((r) => r.error);
     }
   }
 
@@ -2063,6 +2639,18 @@ if (_isDirectRun) main().catch((err) => {
 });
 
 export {
+  buildChildLaunch,
+  pinConflict,
+  pinLabel,
+  validPin,
+  readLockOwner,
+  checkPiVersion,
+  scrubChildEnv,
+  piAgentDir,
+  piSidePackageDir,
+  resolveExtensionSpec,
+  usageFrom,
+  sessionSlugForCwd,
   readConversation,
   taskResult,
   detectErrorTurn,
@@ -2082,8 +2670,10 @@ export {
   isSafeArgValue,
   sanitizeSessionName,
   lockPathFor,
+  fsSafeName,
   acquireLock,
   releaseLock,
+  reclaimIfDead,
   isPidAlive,
   findSessionFiles,
   piSessionsDir,

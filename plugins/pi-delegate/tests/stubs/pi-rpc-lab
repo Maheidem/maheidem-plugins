@@ -1,0 +1,236 @@
+#!/usr/bin/env node
+// Configurable stub `pi --mode rpc` for the server-hardening and ask_parent
+// tests. Env knobs:
+//   PI_STUB_PID_FILE     append own pid (spawn counting)
+//   PI_STUB_ARGS_FILE    write {argv, env subset} as JSON (lean flags / ask env)
+//   PI_STUB_SETTLE_MS    delay before agent_settled (slow turns)
+//   PI_STUB_STDERR_KB    write this many KB to stderr per prompt (pipe drain)
+//   PI_STUB_ASKS         ask_parent questions to raise per prompt (call_1..N);
+//                        waits for $PI_DELEGATE_ASK_DIR/<id>.json, then the
+//                        turn's text is "got:<answer>@<answeredBy>|..."
+//   PI_STUB_BAD_ASK=1    raise one invalid ask_parent call (bad topic) first
+//   PI_STUB_ASK_IDS      comma-separated toolCallIds to ask with instead of
+//                        call_<turn>_<n> (e.g. "call_x|fc_y,a/1")
+//   PI_STUB_ASK_WAIT_MS  how long each question waits for its answer (60000)
+//   PI_STUB_ASK_DELAY_MS wait this long (abortable) before raising the asks
+//   PI_STUB_NOTE         "<topic>:<text>": raise one ask_parent note per prompt
+//                        before any question (notes never block)
+//   PI_STUB_ONE_READ=1   the prompt response, agent_start and the turn's first
+//                        ask_parent line go out in ONE write, so the server
+//                        reads the question with the prompt's response
+//   PI_STUB_REJECT_FIRST=1  answer the first prompt with success:false
+//   PI_STUB_MODEL        get_state's model as "provider/id", or "none" (no
+//                        model); default: what --provider/--model asked for
+//                        (stub/stub-model when neither was given)
+//   PI_STUB_UNKNOWN_MODEL=1  get_available_models leaves that model out (pi's
+//                        "custom model id" case: get_state still reports it)
+//   PI_STUB_LOG_FILE     append "prompt:<msg>" per prompt and "steer:<msg>" /
+//                        "follow_up:<msg>" when a queued message is delivered
+//   PI_STUB_IGNORE_ABORT=1  answer abort but keep running (forces the kill path)
+//   PI_STUB_MODEL_FILE   if this file exists at launch, its content replaces
+//                        PI_STUB_MODEL (a later launch can come back on another model)
+//   PI_STUB_EOF_FINISH=1 stdin EOF mid-turn: finish the turn first, then exit
+//                        (an orphan that outlives its server; pi 0.99 itself
+//                        shuts down on EOF); default: exit at once
+//   PI_STUB_TEXT_DELAY_MS  delay the get_last_assistant_text response (widens
+//                        the window between agent_settled and the turn's end)
+//   PI_STUB_ASK_END_EXPIRED=1  read the answer file, then end the ask_parent
+//                        call as ask.ts does on its own timeout (isError,
+//                        details.askTimedOut): the answer expired before pickup
+//   PI_STUB_ASK_SEQ=1    ask the questions one after another (each waits for its
+//                        answer before the next is raised), not as one batch
+//   PI_STUB_ASK_GAP_MS   in a batch, pause this long between the questions'
+//                        tool_execution_start lines (separate stdout reads)
+//   PI_STUB_ASK_FROM_TURN  raise the asks only from this turn on (default 1)
+//   PI_STUB_STATE_DELAY_MS  once a prompt was accepted, answer get_state this
+//                        long late (a call still dispatching when pushes confirm)
+//   PI_STUB_PROMPT_DELAY_MS  acknowledge every prompt after the first this long late
+//   PI_STUB_ASK_END_DELAY_MS  after reading an answer file, wait this long
+//                        before ending the ask_parent call (a pi_answer still
+//                        waiting for pickup)
+// Like real pi (cli/setup.js), the stub sets its process title to "pi", so
+// ps shows neither its argv nor --session-id.
+// get_state reports isStreaming (true while a prompt's run is in progress);
+// get_messages returns a user and an assistant message per finished turn.
+// steer / follow_up queue (delivered when the turn's work ends; abort still
+// delivers what is queued, as pi does), clear_queue returns and drops them.
+// The settle sleep is abortable; an ask_parent end carries details like ask.ts
+// ({askAnswered, answeredBy} or {askTimedOut}).
+const fs = require("fs");
+const path = require("path");
+process.title = "pi";
+
+if (process.env.PI_STUB_PID_FILE) fs.appendFileSync(process.env.PI_STUB_PID_FILE, `${process.pid}\n`);
+if (process.env.PI_STUB_ARGS_FILE) {
+  const env = {};
+  for (const k of ["PI_DELEGATE_CHILD", "PI_DELEGATE_ASK_DIR", "PI_DELEGATE_ASK_TIMEOUT_MS", "PI_DELEGATE_ASK_MAX"]) env[k] = process.env[k] ?? null;
+  // envKeys: names only (never values) of the Claude/Anthropic vars that reached us.
+  const envKeys = Object.keys(process.env).filter((k) => /^(CLAUDE|ANTHROPIC)/.test(k)).sort();
+  fs.writeFileSync(process.env.PI_STUB_ARGS_FILE, JSON.stringify({ argv: process.argv.slice(2), env, envKeys }));
+}
+
+const argOf = (flag) => { const i = process.argv.indexOf(flag); return i > 0 ? process.argv[i + 1] : null; };
+let launchModel = process.env.PI_STUB_MODEL;
+try { if (process.env.PI_STUB_MODEL_FILE) launchModel = fs.readFileSync(process.env.PI_STUB_MODEL_FILE, "utf8").trim() || launchModel; } catch { /* absent */ }
+function stubModel() {
+  const forced = launchModel;
+  if (forced === "none") return undefined;
+  let spec = forced || null;
+  if (!spec) {
+    const p = argOf("--provider");
+    let m = argOf("--model");
+    if (m && m.includes("/") && !p) spec = m;
+    else spec = `${p || "stub"}/${m || "stub-model"}`;
+  }
+  const slash = spec.indexOf("/");
+  return { provider: spec.slice(0, slash), id: spec.slice(slash + 1).replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "") };
+}
+
+let held = null; // PI_STUB_ONE_READ: lines waiting for the first ask_parent line
+const out = (o) => {
+  const line = JSON.stringify(o) + "\n";
+  if (held === null) { process.stdout.write(line); return; }
+  held += line;
+  if (o.toolName === "ask_parent" || o.type === "turn_end") { process.stdout.write(held); held = null; }
+};
+let rejectNext = process.env.PI_STUB_REJECT_FIRST === "1";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let lastText = "";
+let turns = 0;
+let aborted = false;
+let inTurn = false;
+let eof = false;
+const queue = { steering: [], followUp: [] };
+const messages = []; // get_messages: one user + one assistant message per turn
+const log = (line) => { if (process.env.PI_STUB_LOG_FILE) fs.appendFileSync(process.env.PI_STUB_LOG_FILE, line + "\n"); };
+async function abortableSleep(ms) {
+  for (const until = Date.now() + ms; Date.now() < until && !aborted;) await sleep(Math.min(50, until - Date.now()));
+}
+
+async function waitAnswer(id) {
+  const file = path.join(process.env.PI_DELEGATE_ASK_DIR || "/nonexistent", `${id}.json`);
+  const polls = Math.ceil((Number(process.env.PI_STUB_ASK_WAIT_MS) || 60000) / 100);
+  for (let i = 0; i < polls; i++) {
+    try {
+      const a = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (typeof a.answer === "string") return a;
+    } catch { /* not yet */ }
+    if (aborted) return null;
+    await sleep(100);
+  }
+  return null;
+}
+
+async function runPrompt(message) {
+  if (rejectNext) {
+    rejectNext = false;
+    out({ type: "response", command: "prompt", success: false, error: "stub rejected the prompt" });
+    return;
+  }
+  turns++;
+  aborted = false;
+  inTurn = true;
+  log(`prompt:${message}`);
+  messages.push({ role: "user", content: [{ type: "text", text: message }], timestamp: Date.now() });
+  if (turns > 1) await sleep(Number(process.env.PI_STUB_PROMPT_DELAY_MS) || 0);
+  if (process.env.PI_STUB_ONE_READ === "1") held = "";
+  out({ type: "response", command: "prompt", success: true });
+  out({ type: "agent_start" });
+  const kb = Number(process.env.PI_STUB_STDERR_KB) || 0;
+  // Blocking write through an inherited fd: stalls exactly like a real
+  // process would when nobody drains the pipe (process.stderr is async on macOS).
+  if (kb) require("child_process").execSync(`head -c ${kb * 1024} /dev/zero | tr '\\000' x >&2`, { stdio: ["ignore", "ignore", "inherit"] });
+  if (process.env.PI_STUB_BAD_ASK === "1") {
+    out({ type: "tool_execution_start", toolCallId: "call_bad", toolName: "ask_parent", args: { kind: "question", topic: "nonsense", text: "bad" } });
+    out({ type: "tool_execution_end", toolCallId: "call_bad", toolName: "ask_parent", result: { content: [{ type: "text", text: "ask_parent REJECTED" }] }, isError: true });
+  }
+  if (process.env.PI_STUB_NOTE) {
+    const [topic, ...rest] = process.env.PI_STUB_NOTE.split(":");
+    out({ type: "tool_execution_start", toolCallId: `note_${turns}`, toolName: "ask_parent", args: { kind: "note", topic, text: rest.join(":") } });
+    out({ type: "tool_execution_end", toolCallId: `note_${turns}`, toolName: "ask_parent", result: { content: [{ type: "text", text: "noted" }] } });
+  }
+  await abortableSleep(Number(process.env.PI_STUB_ASK_DELAY_MS) || 0);
+  const asking = turns >= (Number(process.env.PI_STUB_ASK_FROM_TURN) || 1);
+  const n = asking ? Number(process.env.PI_STUB_ASKS) || 0 : 0;
+  const ids = asking && process.env.PI_STUB_ASK_IDS
+    ? process.env.PI_STUB_ASK_IDS.split(",")
+    : Array.from({ length: n }, (_, i) => `call_${turns}_${i + 1}`);
+  const startAsk = (id) => out({ type: "tool_execution_start", toolCallId: id, toolName: "ask_parent", args: { kind: "question", topic: "blocked", text: `question ${id}?` } });
+  const seqAsks = process.env.PI_STUB_ASK_SEQ === "1";
+  const gap = Number(process.env.PI_STUB_ASK_GAP_MS) || 0;
+  if (!seqAsks) for (let i = 0; i < ids.length; i++) { if (i && gap) await sleep(gap); startAsk(ids[i]); }
+  const askOne = async (id) => {
+    if (seqAsks) startAsk(id);
+    const a = await waitAnswer(id);
+    if (a) await sleep(Number(process.env.PI_STUB_ASK_END_DELAY_MS) || 0);
+    if (a && process.env.PI_STUB_ASK_END_EXPIRED === "1") {
+      out({ type: "tool_execution_end", toolCallId: id, toolName: "ask_parent", isError: true,
+        result: { content: [{ type: "text", text: "fallback" }], details: { askTimedOut: true } } });
+      return "got:expired";
+    }
+    out({ type: "tool_execution_end", toolCallId: id, toolName: "ask_parent",
+      result: { content: [{ type: "text", text: a ? `[parent answered · by ${a.answeredBy}]\n${a.answer}` : "fallback" }], details: a ? { askAnswered: true, answeredBy: a.answeredBy } : { askTimedOut: true } } });
+    return a ? `got:${a.answer}@${a.answeredBy}` : "got:timeout";
+  };
+  const answers = [];
+  if (seqAsks) for (const id of ids) answers.push(await askOne(id));
+  else answers.push(...await Promise.all(ids.map(askOne)));
+  await abortableSleep(Number(process.env.PI_STUB_SETTLE_MS) || 0);
+  const wasAborted = aborted;
+  const delivered = [];
+  for (const m of queue.steering.splice(0)) { log(`steer:${m}`); delivered.push(`steer:${m}`); }
+  for (const m of queue.followUp.splice(0)) { log(`follow_up:${m}`); delivered.push(`follow_up:${m}`); }
+  lastText = [answers.length ? answers.join("|") : `reply-${turns}`, ...delivered].join("|");
+  messages.push({ role: "assistant", content: [{ type: "text", text: lastText }], timestamp: Date.now() });
+  out({ type: "turn_end" });
+  out({ type: "agent_end", messages: [{ role: "assistant", stopReason: wasAborted && !delivered.length ? "aborted" : "stop" }] });
+  out({ type: "agent_settled" });
+  inTurn = false;
+  if (eof) process.exit(0);
+}
+
+function handle(line) {
+  let evt;
+  try { evt = JSON.parse(line); } catch { return; }
+  if (evt.type === "prompt") runPrompt(evt.message);
+  else if (evt.type === "abort") { if (process.env.PI_STUB_IGNORE_ABORT !== "1") aborted = true; out({ type: "response", command: "abort", success: true }); }
+  else if (evt.type === "steer" || evt.type === "follow_up") {
+    (evt.type === "steer" ? queue.steering : queue.followUp).push(evt.message);
+    out({ type: "response", command: evt.type, success: true, data: { disposition: "queued" } });
+  }
+  else if (evt.type === "clear_queue") {
+    const data = { steering: queue.steering.splice(0), followUp: queue.followUp.splice(0) };
+    out({ type: "response", command: "clear_queue", success: true, data });
+  }
+  else if (evt.type === "get_last_assistant_text") {
+    const reply = { type: "response", command: "get_last_assistant_text", success: true, data: { text: lastText } };
+    const delay = Number(process.env.PI_STUB_TEXT_DELAY_MS) || 0;
+    if (delay) setTimeout(() => out(reply), delay); else out(reply);
+  }
+  else if (evt.type === "get_state") {
+    const sid = argOf("--session-id") || "lab-session";
+    const delay = turns ? Number(process.env.PI_STUB_STATE_DELAY_MS) || 0 : 0;
+    const reply = () => out({ type: "response", command: "get_state", success: true, data: { sessionId: "lab-session", model: stubModel(), isStreaming: inTurn, messageCount: turns * 2, sessionFile: turns ? path.join(process.cwd(), ".stub-sessions", `${sid}.jsonl`) : undefined } });
+    if (delay) setTimeout(reply, delay); else reply();
+  }
+  else if (evt.type === "get_available_models") {
+    const m = stubModel();
+    out({ type: "response", command: "get_available_models", success: true, data: { models: m && process.env.PI_STUB_UNKNOWN_MODEL !== "1" ? [m, { provider: "stub", id: "other" }] : [{ provider: "stub", id: "other" }] } });
+  }
+  else if (evt.type === "get_messages") out({ type: "response", command: "get_messages", success: true, data: { messages } });
+  else if (evt.type === "get_session_stats") out({ type: "response", command: "get_session_stats", success: true, data: { userMessages: turns, tokens: { input: 1000 * turns, output: 10, cacheRead: 0, total: 1000 * turns + 10 }, cost: 0 } });
+}
+
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (c) => {
+  buf += c;
+  let i;
+  while ((i = buf.indexOf("\n")) !== -1) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) handle(l); }
+});
+process.stdin.on("end", () => {
+  eof = true;
+  if (!(process.env.PI_STUB_EOF_FINISH === "1" && inTurn)) process.exit(0);
+});
+// A dead parent's pipe: keep going (as pi does) instead of dying on EPIPE.
+process.stdout.on("error", () => {});

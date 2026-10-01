@@ -1,6 +1,6 @@
 # ADR-003: MCP-Only Delegation -- Remove the Subagent, Relocate the Phrasing Contract
 
-**Status:** Implemented, 2026-07-29.
+**Status:** Implemented, 2026-07-29. Still holds in 0.11; the tool names it mentions were replaced by ADR-006 (`adr-006-native-surface.md`).
 **Owner:** maheidem
 **Depends on:** ADR-002 (`adr-002-mcp-facade.md`) -- the MCP facade shipped in 0.8.0.
 

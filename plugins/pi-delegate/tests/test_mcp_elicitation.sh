@@ -1,96 +1,62 @@
 #!/usr/bin/env bash
-# MCP elicitation tests -- ADR-002 stage 5.3c / §7: pi extension_ui_request
-# mapped to MCP elicitation/create when the client declares the capability;
-# parked as pendingQuestion + answered via pi_respond otherwise.
+# MCP elicitation tests -- ADR-002 §7: a pi extension_ui_request is mapped to
+# MCP elicitation/create when the client declares the capability; otherwise
+# it is parked as a d_* dialog and answered with pi_answer (0.11 §2.3; the
+# former pi_respond).
+#   A elicitation round trip: the client accepts "red", the turn ends picked:red
+#   B no elicitation: status shows the d_* dialog; pi_answer {question_id:d_*,
+#     value} delivers it while pi_agent still holds the wake; picked:blue
+#   C pi_answer for a dialog with nothing pending fails cleanly
 set -uo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mcp.sh"
+export PI_DELEGATE_PI_PACKAGE=/nonexistent
+use_stub pi-rpc-dialog
 
-SERVER="$PLUGIN_ROOT/scripts/pi-mcp-server.mjs"
-
-inner_for_id() {
-  node -e '
-    const fs = require("fs");
-    const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").filter(Boolean);
-    let found = null;
-    for (const l of lines) {
-      try { const o = JSON.parse(l); if (o.id === Number(process.argv[2]) && o.result) found = o; } catch {}
-    }
-    process.stdout.write(found ? found.result.content[0].text : "{}");
-  ' "$1" "$2"
+feed_raw() { # feed_raw <out> <init-json> <entries...>: like feed, with a custom initialize
+  local out="$1" init="$2"; shift 2
+  local script; script="$(make_scratch)/raw.sh"
+  {
+    echo '{'
+    printf "  printf '%%s\\\\n' '%s'\n" "$init"
+    echo '  sleep 0.2'
+    for e in "$@"; do case "$e" in SLEEP\ *) echo "  sleep ${e#SLEEP }" ;; *) printf "  printf '%%s\\\\n' '%s'\n" "$e" ;; esac; done
+    echo '  sleep 1'
+    echo "} | timeout 60 node '$SERVER' > '$out' 2>/dev/null || true"
+  } > "$script"
+  bash "$script"
 }
 
-field_of() {
-  node -e '
-    const d = JSON.parse(process.argv[1] || "{}");
-    const v = eval("d." + process.argv[2]);
-    process.stdout.write(typeof v === "string" ? v : JSON.stringify(v === undefined ? null : v));
-  ' "$1" "$2"
-}
-
-# ---------------------------------------------------------------------------
-# A. Elicitation round-trip -- client declares the elicitation capability;
-#    server emits elicitation/create (server-initiated id 1); client accepts
-#    with value "red"; send settles with finalText picked:red.
-# ---------------------------------------------------------------------------
 {
-  use_stub pi-rpc-dialog
-  OUT_A="$(make_scratch)/elicit_roundtrip.jsonl"
-  {
-    printf '%s\n' '{"jsonrpc":"2.0","id":10,"method":"initialize","params":{"capabilities":{"elicitation":{}}}}'
-    sleep 0.2
-    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pi_conversation_send","arguments":{"name":"ea","message":"go","timeout_ms":20000}}}'
-    sleep 0.6
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"action":"accept","content":{"value":"red"}}}'
-    sleep 3.0
-  } | timeout 60 node "$SERVER" > "$OUT_A" 2>/dev/null || true
-  grep -q '"method":"elicitation/create"' "$OUT_A" && pass "A: server emitted elicitation/create" || fail "A: server emitted elicitation/create (out=$(head -c 400 "$OUT_A"))"
-  IN_A="$(inner_for_id "$OUT_A" 3)"
-  [ "$(field_of "$IN_A" ok)" = "true" ] && pass "A: send ok:true" || fail "A: send ok:true (inner=$IN_A)"
-  [ "$(field_of "$IN_A" finalText)" = "picked:red" ] && pass "A: finalText picked:red" || fail "A: finalText picked:red (got '$(field_of "$IN_A" finalText)')"
+  PA="$(make_scratch)"; OUT="$(make_scratch)/a.jsonl"
+  CLAUDE_PROJECT_DIR="$PA" feed_raw "$OUT" '{"jsonrpc":"2.0","id":10,"method":"initialize","params":{"capabilities":{"elicitation":{}}}}' \
+    "$(call 3 pi_agent '{"name":"ea","prompt":"go","run_in_background":false}')" "SLEEP 0.8" \
+    '{"jsonrpc":"2.0","id":1,"result":{"action":"accept","content":{"value":"red"}}}' "SLEEP 2"
+  grep -q '"method":"elicitation/create"' "$OUT" && pass "A: server emitted elicitation/create" || fail "A: no elicitation/create ($(head -c 400 "$OUT"))"
+  J="$(json_for_id "$OUT" 3)"
+  [ "$(field_of "$J" status)" = done ] && case "$(field_of "$J" text)" in *picked:red*) true ;; *) false ;; esac \
+    && pass "A: turn ends picked:red" || fail "A: id3 ($J)"
 } || true
 
-# ---------------------------------------------------------------------------
-# B. pi_respond fallback -- client does NOT declare elicitation; question is
-#    parked (status shows pendingQuestion); pi_respond delivers the answer.
-# ---------------------------------------------------------------------------
 {
-  use_stub pi-rpc-dialog
-  OUT_B="$(make_scratch)/elicit_fallback.jsonl"
-  {
-    printf '%s\n' '{"jsonrpc":"2.0","id":10,"method":"initialize","params":{}}'
-    sleep 0.2
-    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pi_conversation_send","arguments":{"name":"eb","message":"go","timeout_ms":20000}}}'
-    sleep 0.6
-    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"pi_conversation_status","arguments":{"name":"eb"}}}'
-    sleep 0.2
-    printf '%s\n' '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"pi_respond","arguments":{"name":"eb","value":"blue"}}}'
-    sleep 3.0
-  } | timeout 60 node "$SERVER" > "$OUT_B" 2>/dev/null || true
-  IN_B4="$(inner_for_id "$OUT_B" 4)"
-  IN_B5="$(inner_for_id "$OUT_B" 5)"
-  IN_B3="$(inner_for_id "$OUT_B" 3)"
-  case "$(field_of "$IN_B4" 'pendingQuestion.method')" in select) pass "B: status shows pendingQuestion (select)" ;; *) fail "B: status shows pendingQuestion (inner=$IN_B4)" ;; esac
-  [ "$(field_of "$IN_B5" ok)" = "true" ] && pass "B: pi_respond ok:true" || fail "B: pi_respond ok:true (inner=$IN_B5)"
-  [ "$(field_of "$IN_B3" ok)" = "true" ] && pass "B: send ok:true" || fail "B: send ok:true (inner=$IN_B3)"
-  [ "$(field_of "$IN_B3" finalText)" = "picked:blue" ] && pass "B: finalText picked:blue" || fail "B: finalText picked:blue (got '$(field_of "$IN_B3" finalText)')"
+  PB="$(make_scratch)"; OUT="$(make_scratch)/b.jsonl"; D="$(node -e 'process.stdout.write("d_" + require("crypto").createHash("sha1").update("q1").digest("hex").slice(0, 6))')"
+  CLAUDE_PROJECT_DIR="$PB" feed_raw "$OUT" '{"jsonrpc":"2.0","id":10,"method":"initialize","params":{}}' \
+    "$(call 3 pi_agent '{"name":"eb","prompt":"go","run_in_background":false}')" "SLEEP 0.8" \
+    "$(call 4 pi_list_agents '{"name":"eb"}')" "SLEEP 0.3" \
+    "$(call 5 pi_answer "$(json_obj to eb question_id "$D" value blue)")" "SLEEP 2"
+  [ "$(field_of "$(json_for_id "$OUT" 4)" 'pendingQuestion.method + ":" + d.pendingQuestion.dialogId')" = "select:$D" ] && pass "B: status shows the d_* dialog" || fail "B: status ($(json_for_id "$OUT" 4))"
+  [ "$(head_for_id "$OUT" 5)" = "answered dialog $D (select) for pi:eb" ] && pass "B: pi_answer delivered the dialog value" || fail "B: id5 ($(inner_for_id "$OUT" 5))"
+  J="$(json_for_id "$OUT" 3)"
+  [ "$(field_of "$J" status)" = done ] && case "$(field_of "$J" text)" in *picked:blue*) true ;; *) false ;; esac \
+    && pass "B: pi_agent held the wake; turn ends picked:blue" || fail "B: id3 ($J)"
 } || true
 
-# ---------------------------------------------------------------------------
-# C. pi_respond with nothing pending -- ok:false "no pending question".
-# ---------------------------------------------------------------------------
 {
-  use_stub pi-rpc-dialog
-  OUT_C="$(make_scratch)/elicit_nopending.jsonl"
-  {
-    printf '%s\n' '{"jsonrpc":"2.0","id":10,"method":"initialize","params":{}}'
-    sleep 0.2
-    printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pi_respond","arguments":{"name":"ec","value":"x"}}}'
-    sleep 1.0
-  } | timeout 60 node "$SERVER" > "$OUT_C" 2>/dev/null || true
-  IN_C="$(inner_for_id "$OUT_C" 3)"
-  [ "$(field_of "$IN_C" ok)" = "false" ] && pass "C: pi_respond ok:false" || fail "C: pi_respond ok:false (inner=$IN_C)"
-  case "$(field_of "$IN_C" errorMessage)" in *"no pending question"*) pass "C: errorMessage no pending question" ;; *) fail "C: errorMessage no pending question (inner=$IN_C)" ;; esac
+  PC="$(make_scratch)"; OUT="$(make_scratch)/c.jsonl"
+  CLAUDE_PROJECT_DIR="$PC" feed_raw "$OUT" '{"jsonrpc":"2.0","id":10,"method":"initialize","params":{}}' \
+    "$(call 3 pi_answer '{"to":"ec","question_id":"d_abcdef","value":"x"}')" "SLEEP 0.5"
+  [ "$(field_of "$(json_for_id "$OUT" 3)" errorMessage)" = "no pending dialog on pi:ec" ] && pass "C: no pending dialog" || fail "C: ($(json_for_id "$OUT" 3))"
 } || true
 
 finish

@@ -15,31 +15,35 @@ check "handshake: protocolVersion present" grep -q '"protocolVersion":"2025-06-1
 check "handshake: server name pi-delegate" grep -q '"name":"pi-delegate"' "$out1"
 
 # ---------------------------------------------------------------------------
-# 2. tools/list — initialize + tools/list should return pi_task and pi_setup.
+# 2. tools/list — initialize + tools/list should return pi_agent, pi_list_agents and pi_read
+#    (pi_task was renamed in 0.11 and is not listed).
 # ---------------------------------------------------------------------------
 out2="$(make_scratch)/toolslist.json"
 timeout 60 node "$CLIENT" "$SERVER" \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' > "$out2" 2>&1
-check "tools/list: contains pi_task" grep -q '"pi_task"' "$out2"
-check "tools/list: contains pi_setup" grep -q '"pi_setup"' "$out2"
+check "tools/list: contains pi_agent" grep -q '"pi_agent"' "$out2"
+check "tools/list: contains pi_list_agents" grep -q '"pi_list_agents"' "$out2"
+check "tools/list: contains pi_read" grep -q '"pi_read"' "$out2"
+check "tools/list: pi_setup not listed (renamed)" bash -c "! grep -q '\"pi_setup\"' '$out2'"
+check "tools/list: pi_task not listed" bash -c "! grep -q '\"pi_task\"' '$out2'"
 
 # ---------------------------------------------------------------------------
-# 3. tools/call happy path — pi_task with a simple message.
+# 3. tools/call happy path — pi_agent run in the foreground with a stub pi.
 # ---------------------------------------------------------------------------
-use_stub pi-conv-send-happy
+use_stub pi-rpc-lab
+export PI_DELEGATE_PI_PACKAGE=/nonexistent
 out3="$(make_scratch)/call_happy.json"
-timeout 60 node "$CLIENT" "$SERVER" \
+CLAUDE_PROJECT_DIR="$(make_scratch)" timeout 60 node "$CLIENT" "$SERVER" \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pi_task","arguments":{"text":"say ok","timeout_ms":15000}}}' > "$out3" 2>&1
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pi_agent","arguments":{"name":"basic","prompt":"say ok","run_in_background":false}}}' > "$out3" 2>&1
 check "tools/call happy: isError:false in response" grep -q '"isError":false' "$out3"
-check "tools/call happy: ok:true in response" node -e '
+check "tools/call happy: ok:true, status done" node -e '
   const fs = require("fs");
   const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n");
   const msg = JSON.parse(lines[lines.length - 1]);
-  const resultText = msg.result.content[0].text;
-  const inner = JSON.parse(resultText);
-  process.exit(inner.ok === true ? 0 : 1);
+  const inner = JSON.parse(msg.result.content[0].text.split("\n").pop());
+  process.exit(inner.ok === true && inner.status === "done" ? 0 : 1);
 ' "$out3"
 
 # ---------------------------------------------------------------------------

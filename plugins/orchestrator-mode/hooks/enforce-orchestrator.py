@@ -7,8 +7,13 @@ With mode on/pi/wf active (see _state.py for where the config comes from):
      denied. The one exception is the main thread's Write to the project or
      user-wide config, which falls through to the normal permission prompt
      (/mode).
+     pi-delegate's model pin (.claude/pi-delegate.local.md) is protected the
+     same way.
   2. with "allowed-models" set, every delegation call (Task/Agent, Workflow
-     agent() calls, pi_task) from ANY caller must name an allowed model.
+     agent() calls, a pi spawn: pi_agent or the legacy pi_task) from ANY
+     caller must name an allowed model. In pi mode a pi spawn is instead
+     locked to the pin (explicit provider/model must equal it; with no pin,
+     none may be given).
   3. subagents (payload has agent_id) otherwise keep full access.
   4. the main thread may write only to .remember/ and its auto-memory dir;
      everything else must be in the mode's tool set or match a core/user-wide/
@@ -28,7 +33,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _state import (CONFIG_NAME, CORE_PATTERNS, MODE_TOOLS, config_dir,  # noqa: E402
                     find_config, get_config, global_config_path, matches,
-                    model_allowed, project_dir, project_slug)
+                    model_allowed, pin_label, pin_path, project_dir,
+                    project_slug, read_pin)
 
 GUIDANCE = (" If you are a delegated agent, do not touch orchestrator-mode "
             "config to unblock yourself -- report the blocker to your caller.")
@@ -39,13 +45,25 @@ MODE_DENY = {
     "wf": "The main agent is read-only and orchestrates via the Workflow tool; "
           "Agent/Task may only spawn the Explore scout.",
     "pi": "The main agent is read-only and cannot spawn subagents: code changes "
-          "go through the pi-delegate MCP tools (pi_task, pi_conversation_*, "
-          "pi_respond) or /pi-delegate:delegate <task>.",
+          "go through the pi-delegate MCP tools (pi_agent, pi_send_message, "
+          "pi_answer, pi_list_agents) or /pi-delegate:delegate <task>.",
 }
 COMMAND_TOOLS = ("Bash", "Monitor", "PowerShell")
 PATH_KEYS = {"Write": "file_path", "Edit": "file_path",
              "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
-PROTECTED_RE = re.compile(r"orchestrator-mode\.", re.I)
+# Shell text (Bash/Monitor/PowerShell): any non-space after the dot, so globs,
+# brace expansion, quote splitting and $vars can't reach the config or pin.
+COMMAND_PROTECTED_RE = re.compile(r"orchestrator-mode\.(?=\S)|pi-delegate\.(?=\S)"
+                                  r"|pi-companion\.mjs\W+(write|remove)-config", re.I)
+# mcp__ JSON text (prompts, answers): a path-ish start (j/s, l for the pin) or a
+# glob/brace/$ char after the dot, so a sentence ending in "orchestrator-mode."
+# (followed by a space, a JSON quote or an escaped newline) is not a config file.
+MCP_PROTECTED_RE = re.compile(r"orchestrator-mode\.(?:j|s|[*?\[{$])"
+                              r"|pi-delegate\.(?:l|[*?\[{$])"
+                              r"|pi-companion\.mjs\W+(write|remove)-config", re.I)
+PARAPHRASE = (" If you only need to mention one of these files in a prompt or "
+              "answer, paraphrase it, e.g. \"the pin file\".")
+PIN_NAME = "pi-delegate.local.md"
 AGENT_CALL_RE = re.compile(r"(?<![\w$.])agent\s*\(")
 MODEL_KEY_RE = re.compile(r"""(?<![\w$])(['"]?)model\1\s*:\s*""")
 LITERAL_RE = re.compile(r"""(['"`])([^'"`\\$]*)\1""")
@@ -84,14 +102,16 @@ def _same(a, b):
 
 
 def is_protected(path):
-    names = (os.path.basename(path), os.path.basename(os.path.realpath(path)))
-    return (any(n.lower().startswith(".orchestrator-mode.") for n in names)
+    names = [n.lower() for n in (os.path.basename(path),
+                                 os.path.basename(os.path.realpath(path)))]
+    return (any(n.startswith(".orchestrator-mode.") or n == PIN_NAME for n in names)
             or _same(path, global_config_path()))
 
 
 def is_toggle_target(path, data):
     found = find_config(data)
-    candidates = [os.path.join(project_dir(data), CONFIG_NAME), global_config_path()]
+    candidates = [os.path.join(project_dir(data), CONFIG_NAME),
+                  global_config_path(), pin_path(data)]
     if found and found.endswith(CONFIG_NAME):
         candidates.append(found)
     return any(_same(path, c) for c in candidates)
@@ -202,6 +222,39 @@ def check_workflow(tool_input, allowed, base):
                  % (line, bad[0], ", ".join(allowed)) + GUIDANCE)
 
 
+def is_pi_spawn(tool):
+    """A pi-delegate call that starts a pi child on a model it may name."""
+    return matches(tool, CORE_PATTERNS) and (tool.endswith("__pi_agent")
+                                             or tool.endswith("__pi_task"))
+
+
+def short_name(tool):
+    return tool.rsplit("__", 1)[-1]
+
+
+def check_pi_pin(tool, tool_input, data):
+    """pi mode: a pi spawn runs on the project pin. An explicit provider/model
+    that differs from it (or any explicit one with no pin) is denied."""
+    asked = {k: tool_input[k] for k in ("provider", "model") if tool_input.get(k)}
+    if not asked:
+        return
+    name = short_name(tool)
+    pin = read_pin(data)
+    if not pin:
+        deny("orchestrator-mode (PI): no pi model is pinned for this project, so "
+             "%s may not pick one (asked for %s). Omit provider/model to use "
+             "pi's default, or run /orchestrator-mode:mode pi to pin one."
+             % (name, ", ".join("%s=%s" % kv for kv in sorted(asked.items())))
+             + GUIDANCE)
+    bad = {k: v for k, v in asked.items() if v != pin.get(k)}
+    if bad:
+        deny("orchestrator-mode (PI): %s is locked to this project's pinned "
+             "model %s; it asked for %s. Omit provider/model (the pin applies), "
+             "or change the pin with /orchestrator-mode:mode pi."
+             % (name, pin_label(pin), ", ".join("%s=%s" % kv for kv in sorted(bad.items())))
+             + GUIDANCE)
+
+
 def check_models(tool, tool_input, allowed, base):
     if not allowed:
         return
@@ -221,11 +274,10 @@ def check_models(tool, tool_input, allowed, base):
                  % (model, listed) + GUIDANCE)
     elif tool == "Workflow":
         check_workflow(tool_input, allowed, base)
-    elif (matches(tool, CORE_PATTERNS) and tool.endswith("__pi_task")
-          and tool_input.get("model")
+    elif (is_pi_spawn(tool) and tool_input.get("model")
           and not model_allowed(tool_input["model"], allowed)):
-        deny("orchestrator-mode: pi_task model %r is not in the allowlist (%s)."
-             % (tool_input["model"], listed) + GUIDANCE)
+        deny("orchestrator-mode: %s model %r is not in the allowlist (%s)."
+             % (short_name(tool), tool_input["model"], listed) + GUIDANCE)
 
 
 def gate(data, cfg):
@@ -237,18 +289,26 @@ def gate(data, cfg):
     mode = cfg["mode"]
 
     if tool in COMMAND_TOOLS or tool.startswith("mcp__"):
-        text = tool_input.get("command") if tool in COMMAND_TOOLS else json.dumps(tool_input, default=str)
-        if PROTECTED_RE.search(str(text)):
-            deny("orchestrator-mode: its config files change only through "
-                 "/orchestrator-mode:mode." + GUIDANCE)
+        if tool in COMMAND_TOOLS:
+            text, rx = tool_input.get("command"), COMMAND_PROTECTED_RE
+        else:
+            text, rx = json.dumps(tool_input, default=str), MCP_PROTECTED_RE
+        if rx.search(str(text)):
+            deny("orchestrator-mode: its config files and the pi-delegate model "
+                 "pin change only through /orchestrator-mode:mode." + PARAPHRASE
+                 + GUIDANCE)
     target = target_path(tool, tool_input, base)
     if target and is_protected(target):
         if not agent_id and tool == "Write" and is_toggle_target(target, data):
-            noop("main-thread Write to orchestrator-mode config -> normal permission prompt")
-        deny("orchestrator-mode: its config files change only through "
-             "/orchestrator-mode:mode on the main thread." + GUIDANCE)
+            noop("main-thread Write to orchestrator-mode config or pi pin -> normal permission prompt")
+        deny("orchestrator-mode: its config files and the pi-delegate model pin "
+             "change only through /orchestrator-mode:mode on the main thread."
+             + GUIDANCE)
 
-    check_models(tool, tool_input, cfg["allowed_models"], base)
+    if mode == "pi" and is_pi_spawn(tool):
+        check_pi_pin(tool, tool_input, data)  # the pin, not a family list, governs pi
+    else:
+        check_models(tool, tool_input, cfg["allowed_models"], base)
     if agent_id:
         noop("subagent %s -> full access" % agent_id)
 

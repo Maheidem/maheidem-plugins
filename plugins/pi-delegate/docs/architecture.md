@@ -4,6 +4,21 @@
 **Owner:** maheidem
 **Scope:** `plugins/pi-delegate` (`pi-companion.mjs`, `delegate` agent, skills)
 
+> **Current state (2026-10-01).** This record is history. The RPC engine it
+> describes is still the core, but several of its premises no longer hold:
+> there IS an MCP server now (ADR-002, keep-alive children, 0.8.0); the
+> `delegate` subagent and skills relay were removed (ADR-003, 0.9.0); and the
+> "no resident process" invariant applies only to the CLI path. From 0.11
+> (ADR-006, `adr-006-native-surface.md`) each pi child is a named background
+> agent driven by `pi_agent`, `pi_send_message`, `pi_answer`, `pi_stop`,
+> `pi_list_agents`, `pi_read` and the recovery-only `pi_wait`. The lock is
+> held for the child's process lifetime rather than per call (§2's lock
+> policy now applies to the CLI path only), state is journaled under the
+> plugin data dir, children launch lean (`--no-extensions` + explicit `-e`),
+> and a child can ask Claude questions through `ask_parent`. The CLI
+> `conversation` verbs below still exist unchanged. See `../README.md` for
+> the current shape.
+
 ## 1. Verdict on the old design
 
 The pre-RPC design used a marker-file contract: spawn `pi`, poll a progress log, wait for a

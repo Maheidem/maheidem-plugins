@@ -1,7 +1,7 @@
 ---
 description: Set orchestrator-mode (off/on/pi/wf), manage the main-thread allowlist, or show status for this project
-argument-hint: "on | off | pi | wf [sonnet, haiku ...] | models <which, in words> | allow [<pattern> | <what you want, in words>] | disallow [...] | status"
-allowed-tools: Read, Write, AskUserQuestion, ToolSearch, Bash(python3 *_state.py* status)
+argument-hint: "on | off | pi [pi model] | wf [sonnet, haiku ...] | models <which, in words> | allow [<pattern> | <what you want, in words>] | disallow [...] | status"
+allowed-tools: Read, Write, AskUserQuestion, ToolSearch, Bash(python3 *_state.py* status *)
 ---
 
 You are managing **orchestrator-mode** for the current project.
@@ -9,14 +9,16 @@ You are managing **orchestrator-mode** for the current project.
 Effective configuration right now, as the plugin's hooks compute it:
 
 ```json
-!`python3 "${CLAUDE_PLUGIN_ROOT}/hooks/_state.py" status`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/hooks/_state.py" status "$0"`
 ```
 
 Fields: `mode`; `config` (the file the hooks read, `null` if none);
 `global_config` (the user-wide file); `allowed-models`; `core-tools` (built-in
 main-thread tools for this mode); `core-mcp` (always-allowed pi-delegate
 patterns); `global-main-allow` and `project-main-allow` (extra main-thread
-patterns).
+patterns); `pi-pin` (pi-delegate's project model pin, `null` if unset). For
+`pi`, or `models` while in pi mode, it also has a `pi` object (see "pi mode:
+the model pin" below).
 
 The project config is `<project root>/.orchestrator-mode.json`, shaped as
 `{"mode": <mode>, "allowed-models": [<model>...], "main-allow": [<pattern>...]}`
@@ -28,7 +30,7 @@ the file itself once you Read it.
 - `wf`: read-only; delegates via the Workflow tool; Agent/Task only for the
   Explore scout.
 - `pi`: read-only; no subagents; code changes through the pi-delegate MCP
-  tools or `/pi-delegate:delegate`.
+  tools or `/pi-delegate:delegate`, locked to the project's pinned pi model.
 - `off`: normal behavior.
 - `main-allow`: extra tools the main thread may use in this project. Each
   entry is an exact tool name, or a prefix ending in `*`
@@ -44,7 +46,8 @@ even if an orchestration reminder says to. Use the ABSOLUTE path
 or the working directory). Writing it triggers the normal permission prompt
 even while the lock is active; that is expected. It is the only file you may
 write, except that `allow`/`disallow` may write the user-wide file (the
-absolute `global_config` path above) when the rules below say so. Never write
+absolute `global_config` path above), and `pi`/`models` in pi mode write the
+pi-delegate pin (the absolute `pi.pin_file`), when the rules below say so. Never write
 the legacy `.orchestrator-mode.state`, and never use Edit or a shell on
 either config (the hook denies it; only Write is exempt).
 
@@ -57,8 +60,8 @@ from that line: the first word is the mode, and the words after
 Write the file as pretty JSON (2-space indent) with keys in the order
 `mode`, `allowed-models`, `main-allow`; leave a key out when its list is empty.
 
-### `on` / `pi` / `wf` [models] and `models [...]`
-`on`/`pi`/`wf` set `mode`; `models` keeps the current mode and changes only
+### `on` / `wf` [models] and `models [...]` (outside pi mode)
+`on`/`wf` set `mode`; `models` keeps the current mode and changes only
 `allowed-models` (if the mode is `off`, say the list only applies once a mode
 is on, and still save it). Keep `main-allow` as is.
 
@@ -83,11 +86,64 @@ same thing. Valid entries are the families `opus`, `sonnet`, `haiku`,
 - **No model request:** keep the stored list, so switching modes never
   drops it. If there is no stored list AND the previous mode was `off` (or
   there was no config), write the default `["sonnet", "haiku"]` and say so
-  in the report.
+  in the report. Never for `pi`: pi mode has its own section below.
 With a list set, every Agent/Task call and workflow `agent()` call must
 declare an allowed model, and fork subagents are denied.
 
-**Quick confirm** (used by `models` and `allow`). Multi-select options start
+### `pi` [pi model] and `models [...]` while in pi mode: the model pin
+In pi mode the model is pi's, not a Claude family: `pi_agent` is locked to
+pi-delegate's project pin (`.claude/pi-delegate.local.md`), and the enforcer
+ignores `allowed-models`. Never add or change `allowed-models` here (leave a
+stored list as it is), and never write the `["sonnet", "haiku"]` default.
+
+The status JSON's `pi` object: `pin` (`{provider, model}` or null),
+`pin_valid` (the pin is in pi's model list), `pin_file` (absolute path to
+write), `default` (pi's own default, when it's in the list), `scoped` (pi's
+scoped models from `enabledModels`, already checked against
+`pi --list-models`), `unmatched` (scoped patterns that matched nothing),
+`all` (`{provider: [model, ...]}`, the whole list) and `error`.
+
+1. `error` set: report it (for a missing pi, suggest `/pi-delegate:setup`)
+   and stop without writing anything.
+2. **Pick the model.**
+   - Words after the verb name a model (`pi glm 5.3`, `models the flash
+     one`): match them against `scoped`, then `all`. One exact
+     `provider/model` hit: use it with no question. Otherwise quick confirm
+     the closest match (below); "Let me choose" opens the picker.
+   - No words and `pin_valid`: quick confirm `Use <provider>/<model>
+     (Recommended)` / `Pick another`. "Pick another" opens the picker.
+   - No words and a pin that isn't valid: say it's not in pi's model list
+     any more, then open the picker. No pin at all: open the picker.
+3. **Picker**, from `scoped` first. Options are labelled `provider/model`;
+   put `default` first with "(Recommended)" when it's in `scoped`. With 1-3
+   scoped models, show them all plus `Browse all models`. With more, show 3
+   per page plus `More...`; the last page gets `Browse all models` instead.
+   An empty `scoped` goes straight to browsing.
+4. **Browse all** follows `/pi-delegate:setup`'s provider -> model picker
+   over `all`: providers first (2-4 remaining: ask them all; 5 or more:
+   pages of 3 plus `More providers...`; exactly one: state it and use it),
+   then that provider's models the same way. A provider with more than about
+   8 models first asks `Browse all (paged)` or `Filter by name`; a filter
+   only narrows the list.
+5. **Validate** before writing: the chosen `provider` and `model` must be a
+   pair in `all`, and each must match `^[A-Za-z0-9._/:@-]+$`, not start with
+   `-` and not contain `---`. A name typed via "Other" is only a search
+   term; never write anything that isn't in `all`. Cancelled: write nothing.
+6. **Write the pin** with Write to the absolute `pin_file`, exactly
+   (pi-delegate's own format):
+   ```
+   ---
+   provider: <provider>
+   model: <model>
+   ---
+   ```
+   Skip this write when the user kept the existing pin.
+7. For `pi`, write the project config with `mode` `pi` (keep `main-allow`
+   and any stored `allowed-models` untouched). `models` changes only the pin.
+8. Read back what you wrote and report `pi model pin: <provider>/<model>`
+   plus the `Config:` lines.
+
+**Quick confirm** (used by `models`, `allow` and pi mode). Multi-select options start
 unticked, so accepting a guess that way takes several keys. Instead ask ONE
 single-select `AskUserQuestion` with two options: `Use <the resolved list>
 (Recommended)` first, then `Let me choose`. On "Use", take that list as-is.
@@ -159,7 +215,7 @@ Don't write or Read anything. Report only values from the computed JSON above.
 One result line, then:
 - after a write: `Config: <absolute path> -> <exact JSON read back>` (one
   line per file written)
-- for `status`: `Config: <config, or (no file)>`, `Mode: <mode>`, `Allowed models: <allowed-models, or none>`
+- for `status`: `Config: <config, or (no file)>`, `Mode: <mode>`, `Allowed models: <allowed-models, or none>` (in pi mode instead: `pi model pin: <pi-pin as provider/model, or none (pi's default; pi_agent may not pick a model)>`)
 - `Main thread may also use: <core-mcp + global-main-allow + project-main-allow>`
 - for `status` only: `Core tools (<mode>): <core-tools, comma-separated>`
 If a legacy `.orchestrator-mode.state` sits next to the JSON, add: `Legacy

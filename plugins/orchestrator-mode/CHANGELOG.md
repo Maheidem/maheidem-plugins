@@ -2,6 +2,41 @@
 
 Earlier versions have no changelog; see `git log -- plugins/orchestrator-mode`.
 
+## 0.12.0 (2026-10-01)
+
+### Added
+- **pi model pin.** `/orchestrator-mode:mode pi` with no model named offers
+  pi's scoped models (validated against `pi --list-models`, pi's default
+  first), a paged "Browse all", or a one-Enter confirm of an existing pin,
+  and saves the choice to pi-delegate's project pin
+  `.claude/pi-delegate.local.md`. `models` does the same while in pi mode.
+  The status helper only runs pi for these verbs.
+- **pi spawns locked to the pin** in pi mode (`pi_agent`, and the legacy
+  `pi_task`): a different explicit provider/model is denied; none may be
+  named while no pin exists.
+- The pin file is protected like the orchestrator-mode config.
+
+### Changed
+- **pi-delegate 0.11 tool names (ship together with pi-delegate 0.11).**
+  The pi spawn check (`is_pi_spawn`) matches `pi_agent` as well as the
+  legacy `pi_task`, for both the model allowlist (`on`/`wf`) and the pin
+  lock (`pi`). The pi-mode deny text names `pi_agent`, `pi_send_message`,
+  `pi_answer` and `pi_list_agents`; the per-prompt reminder explains
+  `pi_agent`, `pi_send_message`, `pi_answer` and `pi_stop`. No
+  allowlist change: the new tools match the core pi-delegate patterns.
+- **Config-name check in MCP input only fires on file-like names.** A pi
+  prompt or answer is denied for `orchestrator-mode.json`/`.state`,
+  `pi-delegate.local.md`, a glob/brace/`$` after the dot, or
+  `pi-companion.mjs write-config|remove-config`; a sentence that ends in
+  "orchestrator-mode." now passes. Shell commands keep the strict check.
+  The deny text says to paraphrase ("the pin file").
+
+### Fixed
+- **0.11.0 regression:** `/mode pi` from off wrote the `["sonnet", "haiku"]`
+  default, which then denied every explicit local pi_task model. pi mode no
+  longer writes it, and the enforcer no longer applies a family list to
+  pi_task in pi mode.
+
 ## 0.11.0 (2026-09-30)
 
 ### Added

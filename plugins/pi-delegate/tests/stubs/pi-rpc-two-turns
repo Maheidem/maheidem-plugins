@@ -31,8 +31,11 @@ function handleLine(trimmed) {
         '{"type":"agent_settled"}\n'
       );
     }, DELAY_MS);
-  } else if (evt.type === "steer" || evt.type === "abort") {
-    // acknowledged silently; server does not await a response for these
+  } else if (evt.type === "steer" || evt.type === "abort" || evt.type === "clear_queue") {
+    const data = evt.type === "clear_queue" ? { steering: [], followUp: [] } : evt.type === "steer" ? { disposition: "queued" } : undefined;
+    process.stdout.write(JSON.stringify({ type: "response", command: evt.type, success: true, data }) + "\n");
+  } else if (evt.type === "get_available_models") {
+    process.stdout.write('{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"stub","id":"stub-model"}]}}\n');
   } else if (evt.type === "get_last_assistant_text") {
     process.stdout.write(
       JSON.stringify({
@@ -44,7 +47,7 @@ function handleLine(trimmed) {
     );
   } else if (evt.type === "get_state") {
     process.stdout.write(
-      '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2}}\n'
+      '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2,"model":{"provider":"stub","id":"stub-model"}}}\n'
     );
   } else if (evt.type === "get_session_stats") {
     process.stdout.write(

@@ -19,9 +19,12 @@ A config file that can't be read or parsed, or breaks the schema, prints a
 stderr warning and counts as OFF. A broken user-wide file is ignored (fewer
 tools allowed, never more). Nothing here raises.
 """
+import fnmatch
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 MODES = ("on", "pi", "wf")
@@ -55,6 +58,11 @@ MODE_TOOLS = {
 }
 # pi mode can't work without pi-delegate, so its tools are core everywhere.
 CORE_PATTERNS = ("mcp__plugin_pi-delegate_pi-delegate__*", "mcp__pi-delegate__*")
+# pi-delegate's per-project provider/model pin; in pi mode pi_agent is locked
+# to it. Same value rule as pi-companion.mjs isSafeArgValue.
+PIN_REL = os.path.join(".claude", "pi-delegate.local.md")
+SAFE_ARG_RE = re.compile(r"^(?!-)[A-Za-z0-9._/:@-]+$")
+THINKING = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
 _SLUG_MAX = 200
 OFF = {"mode": "off", "allowed_models": [], "main_allow": [],
@@ -196,7 +204,120 @@ def get_config(data):
     return cfg
 
 
-def effective(cfg):
+def pin_path(data):
+    return os.path.join(project_dir(data), PIN_REL)
+
+
+def read_pin(data):
+    """pi-delegate's project pin, parsed the way pi-companion.mjs
+    loadProjectConfig does: a '---' block, provider:/model: keys, one pair
+    of surrounding quotes stripped, unsafe values dropped. None if unset."""
+    try:
+        with open(pin_path(data)) as f:
+            lines = f.read().split("\n")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if lines[0].strip() != "---":
+        return None
+    pin = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return pin or None
+        key, sep, value = line.partition(":")
+        value = re.sub(r"""^(['"])(.*)\1$""", r"\2", value.strip())
+        if sep and key.strip() in ("provider", "model") and SAFE_ARG_RE.match(value):
+            pin[key.strip()] = value
+    return None
+
+
+def pin_label(pin):
+    return "/".join(pin[k] for k in ("provider", "model") if pin.get(k))
+
+
+def _pi_catalog():
+    """{provider: [model, ...]} from `pi --list-models` (same parse as
+    pi-companion.mjs runListModels: columns split on 2+ spaces, header row
+    skipped). Raises on any failure."""
+    exe = shutil.which("pi")
+    if not exe:
+        raise RuntimeError("pi CLI not found on PATH (npm install -g "
+                           "@earendil-works/pi-coding-agent)")
+    run = subprocess.run([exe, "--list-models"], capture_output=True,
+                         text=True, timeout=30, stdin=subprocess.DEVNULL)
+    if run.returncode:
+        raise RuntimeError("'pi --list-models' exited %d: %s"
+                           % (run.returncode, run.stderr.strip()[-300:]))
+    catalog = {}
+    for i, line in enumerate(run.stdout.strip().split("\n")):
+        parts = re.split(r"\s{2,}", line.strip())
+        if (i == 0 and re.match(r"provider\s+model", line.strip(), re.I)) or len(parts) < 2:
+            continue
+        catalog.setdefault(parts[0], []).append(parts[1])
+    if not catalog:
+        raise RuntimeError("'pi --list-models' listed no models")
+    return catalog
+
+
+def _pi_settings():
+    """Only the model keys of pi's settings.json; nothing else is read out."""
+    agent_dir = os.environ.get("PI_CODING_AGENT_DIR") or os.path.expanduser("~/.pi/agent")
+    try:
+        with open(os.path.join(agent_dir, "settings.json")) as f:
+            obj = json.load(f)
+    except Exception:
+        return [], None
+    enabled = obj.get("enabledModels")
+    enabled = [e for e in enabled if isinstance(e, str)] if isinstance(enabled, list) else []
+    default = {"provider": obj.get("defaultProvider"), "model": obj.get("defaultModel")}
+    return enabled, default if all(isinstance(v, str) for v in default.values()) else None
+
+
+def _resolve_scope(pattern, catalog):
+    """pi's enabledModels uses the --models format: exact provider/model,
+    bare model, case-insensitive globs, optional :<thinking> suffix. Fuzzy
+    matching isn't reproduced; such entries come back unmatched."""
+    head, _, tail = pattern.rpartition(":")
+    if head and tail.lower() in THINKING:
+        pattern = head
+    prov, _, model = pattern.partition("/") if "/" in pattern else ("", "", pattern)
+    pairs = [(p, m) for p, ms in catalog.items() for m in ms]
+    if any(c in pattern for c in "*?["):
+        return [(p, m) for p, m in pairs
+                if fnmatch.fnmatch(("%s/%s" % (p, m)).lower(), pattern.lower())
+                or (not prov and fnmatch.fnmatch(m.lower(), pattern.lower()))]
+    for fold in (False, True):
+        eq = (lambda a, b: a.lower() == b.lower()) if fold else (lambda a, b: a == b)
+        hits = [(p, m) for p, m in pairs
+                if eq(m, model) and (not prov or eq(p, prov))]
+        if hits:
+            return hits
+    return []
+
+
+def pi_models(data):
+    out = {"pin_file": pin_path(data), "pin": read_pin(data), "pin_valid": False,
+           "default": None, "scoped": [], "unmatched": [], "all": {}, "error": None}
+    try:
+        catalog = _pi_catalog()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+    enabled, default = _pi_settings()
+    known = lambda p: bool(p) and p.get("model") in catalog.get(p.get("provider"), ())
+    for pattern in enabled:
+        hits = _resolve_scope(pattern, catalog)
+        if not hits:
+            out["unmatched"].append(pattern)
+        for p, m in hits:
+            if {"provider": p, "model": m} not in out["scoped"]:
+                out["scoped"].append({"provider": p, "model": m})
+    out["pin_valid"] = known(out["pin"])
+    out["default"] = default if known(default) else None
+    out["all"] = catalog
+    return out
+
+
+def effective(cfg, data):
     mode = cfg["mode"]
     return {
         "mode": mode,
@@ -207,8 +328,19 @@ def effective(cfg):
         "core-mcp": list(CORE_PATTERNS),
         "global-main-allow": cfg["global_allow"] or _global_allow(),
         "project-main-allow": cfg["main_allow"],
+        "pi-pin": read_pin(data),
     }
 
 
-if __name__ == "__main__" and sys.argv[1:] == ["status"]:
-    print(json.dumps(effective(get_config({"cwd": os.getcwd()})), indent=2))
+if __name__ == "__main__" and sys.argv[1:2] == ["status"]:
+    # `status <first word of /mode's arguments>`: the pi catalog is fetched
+    # (about 1s) only for `pi`, or `models` while already in pi mode.
+    data = {"cwd": os.getcwd()}
+    cfg = get_config(data)
+    result = effective(cfg, data)
+    verb = (sys.argv[2:3] or [""])[0].strip().lower()
+    if verb == "pi" or (verb == "models" and cfg["mode"] == "pi"):
+        result["pi"] = pi_models(data)
+        print(json.dumps(result, separators=(",", ":")))  # ~5 KB catalog
+    else:
+        print(json.dumps(result, indent=2))

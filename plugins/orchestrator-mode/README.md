@@ -10,7 +10,7 @@ that project. Everything else is denied. **Subagents keep full access.**
 | `off` | (normal behavior) | default |
 | `on` | Agent/Task (any subagent), Workflow | |
 | `wf` | Workflow; Agent/Task only for the built-in `Explore` scout | setting it is your standing opt-in to the Workflow tool |
-| `pi` | nothing: no Agent/Task, no Workflow | code changes go through the pi-delegate MCP tools or `/pi-delegate:delegate` |
+| `pi` | nothing: no Agent/Task, no Workflow | code changes go through the pi-delegate MCP tools or `/pi-delegate:delegate`, locked to the project's pinned pi model |
 
 A short reminder, generated from the same tables the enforcer uses, is
 injected into the main thread on every prompt while a mode is active.
@@ -171,8 +171,31 @@ or subagent, must name an allowed model:
   `agent(` inside a prompt, or a `// model: sonnet` comment don't count.
   `scriptPath` must be a regular file under 1 MiB; a named/saved workflow
   (no `script` or `scriptPath`) is denied because it can't be checked.
-- **pi_task:** an explicit `model` must match. Omitting it is allowed,
-  because pi then uses its own project config, not a choice Claude made.
+- **pi_agent (`on`/`wf` only):** an explicit `model` must match. Omitting it
+  is allowed, because pi then uses its own project config, not a choice
+  Claude made. The legacy name `pi_task` is held to the same rule.
+
+### pi mode: the model pin
+
+In `pi` mode the model allowlist is ignored; pi_agent (the call that starts
+a pi child) is locked to pi-delegate's project pin, `.claude/pi-delegate.local.md`:
+
+- `/orchestrator-mode:mode pi` with nothing after it offers pi's scoped
+  models (`enabledModels` in `~/.pi/agent/settings.json`, checked against
+  `pi --list-models`), with pi's default first and a paged "Browse all"
+  over every provider. An existing valid pin gets a one-Enter "Use ..."
+  confirm. `pi <model words>` and `models` (while in pi mode) do the same.
+  It never writes `allowed-models`.
+- pi_agent with a `provider` or `model` different from the pin is denied;
+  with neither, the pin applies. With no pin, pi_agent may not name either.
+  `pi_send_message`, `pi_answer` and the other pi tools take no model and are
+  unaffected (a resumed child keeps the model it was launched on).
+- The pin file gets the same protection as the orchestrator-mode config:
+  only the main thread's Write from `/mode` reaches it (Claude Code still
+  asks, since it's under `.claude/`); Edit, subagent writes, and shell or
+  MCP input naming it (or `pi-companion.mjs write-config`) are denied.
+- Limitation: pi itself isn't gated by these hooks. A pi_agent prompt naming
+  the pin file is denied, but pi's own tools could still edit it unprompted.
 
 **Matching:** an entry equals the model id, or is a family name (`opus`,
 `sonnet`, `haiku`, `fable`) that appears as a whole token of the id
@@ -185,9 +208,16 @@ non-alphanumeric boundary (`claude-opus-5` matches `claude-opus-5-5`, not
 
 While a mode is active the hook denies, for main thread and subagents alike:
 
-- Bash, Monitor or PowerShell commands, and MCP tool inputs, whose text
-  contains `orchestrator-mode.` (case-insensitive). A read-only `cat` of the
-  config is denied too.
+- Bash, Monitor or PowerShell commands whose text contains
+  `orchestrator-mode.` or `pi-delegate.` followed by any non-space character
+  (case-insensitive), or `pi-companion.mjs write-config|remove-config`. A
+  read-only `cat` of the config is denied too.
+- MCP tool inputs (for example a pi prompt or answer) only when the name looks
+  like a file: `orchestrator-mode.j…`/`.s…` (`.json`, `.state`),
+  `pi-delegate.l…` (the pin, `pi-delegate.local.md`), a glob, brace or `$`
+  right after the dot, or `pi-companion.mjs write-config|remove-config`. A
+  sentence that ends in "orchestrator-mode." passes. The deny tells the
+  caller to paraphrase instead, e.g. "the pin file".
 - Write/Edit/MultiEdit/NotebookEdit to any file whose name starts with
   `.orchestrator-mode.` (case-insensitive, in any directory, also when
   reached through a symlink), and to the user-wide config.

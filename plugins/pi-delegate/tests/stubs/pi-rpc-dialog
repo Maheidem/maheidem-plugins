@@ -42,8 +42,10 @@ function handleLine(trimmed) {
     );
   } else if (evt.type === "get_state") {
     process.stdout.write(
-      '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2}}\n'
+      '{"type":"response","command":"get_state","success":true,"data":{"sessionId":"stub-session-id","sessionFile":"/tmp/stub/session.jsonl","messageCount":2,"model":{"provider":"stub","id":"stub-model"}}}\n'
     );
+  } else if (evt.type === "get_available_models") {
+    process.stdout.write('{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"stub","id":"stub-model"}]}}\n');
   } else if (evt.type === "get_session_stats") {
     process.stdout.write(
       JSON.stringify({

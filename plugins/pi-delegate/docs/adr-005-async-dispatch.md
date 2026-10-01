@@ -1,6 +1,6 @@
 # ADR-005: Async Conversation Dispatch + Progress Notifications
 
-**Status:** Implemented, 2026-07-29.
+**Status:** Implemented, 2026-07-29. Superseded in 0.11 by ADR-006 (`adr-006-native-surface.md`): `pi_conversation_send_async` and `pi_wait_event` are gone; `pi_agent` and the channel/fallback wake replace them.
 **Owner:** maheidem
 **Depends on:** ADR-002 (`adr-002-mcp-facade.md`) -- the MCP facade and
 keep-alive conversation registry this builds on. Deferred by ADR-003

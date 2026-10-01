@@ -127,7 +127,8 @@ if kill -0 "$steer_send_pid" 2>/dev/null; then
   kill -9 "$steer_send_pid" 2>/dev/null || true
   echo "  NOTE: e2e steer send did not finish within bound -- treated as environment flakiness, not asserted"
 else
-  wait "$steer_send_pid" 2>/dev/null
+  # A failed send (ok:false exits 1) is reported below, not fatal under set -e.
+  wait "$steer_send_pid" 2>/dev/null || true
   echo "  transcript: e2e steer send finalText = $(json_get "$out_steer_send" 'r.finalText' 2>/dev/null || echo '(unparseable)')"
   if node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.exit(r.ok===true && Array.isArray(r.steered) && r.steered.length>0 ? 0 : 1)' "$out_steer_send" 2>/dev/null; then
     pass "e2e steer: send result carries the steered message"
@@ -180,7 +181,7 @@ if kill -0 "$int_send_pid" 2>/dev/null; then
   kill -9 "$int_send_pid" 2>/dev/null || true
   echo "  NOTE: e2e interrupt send did not finish within bound -- treated as environment flakiness, not asserted"
 else
-  wait "$int_send_pid" 2>/dev/null
+  wait "$int_send_pid" 2>/dev/null || true
   echo "  transcript: e2e interrupt send finalText = $(json_get "$out_int_send" 'r.finalText' 2>/dev/null || echo '(unparseable)')"
   if node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.exit(r.ok===true && r.interrupted===true && /epsilon/i.test(r.finalText||"") ? 0 : 1)' "$out_int_send" 2>/dev/null; then
     pass "e2e interrupt: send result reflects the reprompt (EPSILON), not the original"

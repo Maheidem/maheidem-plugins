@@ -1,6 +1,6 @@
 # ADR-002: MCP Facade over the pi RPC Runtime (Phase 5)
 
-**Status:** Planned, 2026-07-28. Owner decisions recorded below; build not started.
+**Status:** Shipped in 0.8.0 (2026-07-29); extended since (async dispatch 0.10.0, ask_parent channel + hardening unreleased — see `../CHANGELOG.md`). Text below is the original plan; corrections are marked *(2026-09-30)*. Its tool surface is superseded by ADR-006 (`adr-006-native-surface.md`, 0.11).
 **Owner:** maheidem
 **Depends on:** ADR-001 (`architecture.md`) Phases 1-3 — the RPC-only runtime shipped as 0.7.0 (`dee83eb`).
 
@@ -81,7 +81,7 @@ the protocol validates what the skills used to teach.
 | `pi_conversation_interrupt` | `name` (req), `message` (req) | `abort` + fresh `prompt` on the live child; generation tracking per ADR-001. |
 | `pi_conversation_end` | `name` (req) | Kills the registered child if alive, deletes session file(s) + lock. |
 | `pi_respond` | `name` (req), `value?`, `confirmed?`, `cancelled?` | Answers a pending `extension_ui_request` (fallback path for D5-C). |
-| `pi_setup` | — | Readiness report (pi version, provider/model pin, model list). |
+| `pi_setup` | — | Readiness report (pi version, provider/model pin, model list). *(2026-09-30: it never returned a model list; `/pi-delegate:setup` gets that from `list-models`.)* |
 
 ## 5. Concurrency model
 
@@ -154,7 +154,7 @@ UI events (`setStatus` etc.) stay ignored.
   client-lib tests mitigate; revisit SDK adoption if the surface grows.
 - TTL children hold local-model memory while warm; the reaper and a
   registry cap (default: 4 concurrent conversations, oldest-idle evicted)
-  bound it. Cap + TTL are config knobs in `.claude/pi-delegate.local.md`.
+  bound it. Cap + TTL are config knobs in `.claude/pi-delegate.local.md`. *(2026-09-30: they shipped as env vars `PI_MCP_REGISTRY_CAP` / `PI_MCP_TTL_MS`, not pin keys.)*
 - Elicitation client support is uneven — fallback path is first-class, not an
   afterthought (both paths tested).
 - Claude Code restarts the MCP server on `/reload-plugins`; children die with
