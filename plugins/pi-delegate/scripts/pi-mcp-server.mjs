@@ -22,7 +22,16 @@ import {
 
 // MCP spec revision this server implements (ADR-002 §6: pinned in one constant).
 const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_INFO = { name: "pi-delegate", version: "0.10.0" };
+// Version comes from the plugin manifest so the handshake can't drift from the release.
+const SERVER_INFO = { name: "pi-delegate", version: readPluginVersion() };
+function readPluginVersion() {
+  try {
+    const manifest = new URL("../.claude-plugin/plugin.json", import.meta.url);
+    return JSON.parse(fs.readFileSync(manifest, "utf8")).version || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 // Cap for a wait that has no progressToken (no heartbeat can keep the client's
 // 30-min stdio idle abort away). With a token there is no cap while a child runs.
 const MAX_WAIT_MS = 1500000;

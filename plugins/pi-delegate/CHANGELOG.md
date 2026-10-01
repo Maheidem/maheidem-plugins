@@ -2,6 +2,11 @@
 
 Earlier versions have no changelog; see `git log -- plugins/pi-delegate`.
 
+## 0.11.1 (2026-10-01)
+
+### Fixed
+- The MCP handshake reported `serverInfo.version` 0.10.0 (hardcoded). It now reads the version from `.claude-plugin/plugin.json`, so it always matches the release.
+
 ## 0.11.0 (2026-10-01)
 
 pi children now behave like Claude's own background agents. Design and
