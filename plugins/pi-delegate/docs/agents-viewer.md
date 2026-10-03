@@ -1,4 +1,4 @@
-# Native pi children viewer
+# Native pi agents pane
 
 ## Supported surface and command
 
@@ -27,54 +27,101 @@ name is letters, digits, _ or...
 The command hook itself is documented at:
 https://code.claude.com/docs/en/plugins/mods/reference#commands-and-configuration
 
+## Reload safety
+
+Initialization is lazy and idempotent from `session.start`, command, render and
+press/input hooks. Project/session identity and the two-second refresh timer do
+not depend on `session.start` having fired; one timer starts per loaded module.
+Render/interaction exceptions are logged to the debug log and displayed briefly
+in the pane. Reopen `/pi-delegate:agents` to retry after an error.
+
+Native element text has a 10,000-character limit, validated **after** the
+render hook returns, so an oversized child blanks the whole pane. Every long
+text is cut or split ahead of time (see Data and safety):
+https://code.claude.com/docs/en/plugins/mods/reference#limits
+
+Regression tests mount freshly loaded modules without `session.start` and cover
+command/direct-render entry, every detail tab, Settings and back navigation,
+long results, and visible errors. A separate initialization test checks
+concurrent/repeated calls start one timer.
+The installed directory-source plugin was also opened, actually reloaded after
+a source change, reopened, and navigated through all five tabs in a real 2.1.287
+session. That build did emit `session.start` for the rebuilt module; the tests
+cover reload paths where it does not.
+
 ## Data and safety
 
-Child reads use only `$.fs.list/read`: child `meta.json`, `events.jsonl`,
+Reads use only `$.fs.list/stat/read` (plus `tail -c` through `$.process.run`
+for session files past 1 MiB): agent `meta.json`, `events.jsonl`,
 `results/<gen>-<turn>.md`, and the recorded pi session JSONL. No MCP server is
-started by the viewer, no events are acknowledged, and nothing is written by
-viewing. Claude Code itself normally starts a plugin's configured MCP server;
-this viewer does not create an additional one. The scope is project-wide, not
-just the current Claude session. State is the last persisted state, not an
-independent process-liveness diagnosis. Age is the child's creation age.
+started by the pane, no events are acknowledged, and nothing is written by
+viewing. The scope is project-wide, not just the current Claude session.
 
-Journal questions are restricted to the current generation/turn and exclude
-answered/expired calls. Result is the most recently completed turn; transcript
-shows the last 20 messages, events the last 30. Detail text is capped at 24,000
-characters and control characters are stripped. Up to 200 child directories are
-considered. Reads tolerate partial JSONL tails, malformed metadata and deletion
-between refreshes. Full files are read before display truncation; very large
-sessions/journals can therefore slow refreshing.
+A two-second timer runs at module scope (the band, toasts and log lines need it
+while the pane is closed). Each tick lists every agent folder and re-reads a
+file only when its listed size/mtime changed; parsed results are cached. The
+session JSONL is read only while Activity is on screen, and after the first
+read only the bytes it grew by are parsed. Idle, the pane redraws once a minute
+(ages are minute-granular).
+
+Disk text is sanitised before any element sees it: ANSI escapes and control
+characters are stripped, and `api_key=`/`token:`-style values are redacted.
+Long text is cut ahead of the 10,000-character element limit, keeping the head:
+results are split into at most three Markdown blocks of 9,500 characters at
+blank lines outside code fences (a fence longer than that becomes a Code
+element), and every cut says how much was left out.
+
+## Layout and keys
+
+`/pi-delegate:agents` opens the list: agents grouped Needs input → Working →
+Idle → Ended (newest first; Ended collapses past three rows or 24 h), one line
+each: pointer, state glyph, name, summary, tail word, minute age. Every state
+has its own glyph and word (`? asking`, `✻ working`, `✓ done`, `∙ parked`,
+`◦ stopped`, `✕ failed`, `! can't read`); colour comes from one theme map
+(`C` in `hooks/agents-format.js`). A waiting agent gets an inline answer card
+under the list; others get a one-line peek. Lists taller than the pane are
+windowed around the selection with `… N above / below` edges.
+
+Enter opens the detail view: breadcrumb, facts line, question cards or a
+state-aware composer (Steer / Next turn / Wake and send / Restart and send),
+then tabs `1: Result  2: Activity  3: Log  4: Questions`. Result renders
+Markdown (`p`/`n` step between turns); Activity pairs each tool call with its
+result on one line and expands into Code or a diff; Log turns events into
+sentences; Questions holds the full history. In a docked pane at least 110
+columns wide the list and the focused agent's detail sit side by side; on a
+terminal of 240+ columns the pane asks the dock for 112 columns.
+
+Every letter or digit on screen is a hotkey Button: `a` answer, `m` message or
+steer, `x` stop (then `y`/`n`, Cancel focused), `s` settings, `b` back, `r`
+retry or reset. Inline, Esc leaves a field, cancels a confirm or goes back one
+level before it closes the pane; docked, Esc closes and `b` goes back.
+
+Outside the pane: while any agent is live, a one-line band above the prompt
+says what needs attention (warning colour when one is waiting) and an `Open`
+button. It has no hotkey: a band Button's digit hotkey answers a bare digit
+typed into an empty prompt, and live testing showed a human-paced `1` of
+`1. fix the parser` being swallowed (spec Open choice 3, option b). Reach the
+band with ctrl+x tab (or click it) and press Enter; with an agent waiting, the
+pane opens on its answer card. Done, failed and question events add one transcript
+log line each, and a toast while the pane is closed.
+
+View state (view, selection, tab, drafts per agent and question, notices) lives
+in `$.state` under the contract in `types/index.d.ts`, so it survives a hot
+reload; /clear, /resume and /branch reset it.
 
 ## Explicit actions
 
-Controls appear only when `meta.ownerClaudeSession` equals `$.session.id()`.
-Foreign or unknown owners show a read-only reason. Appropriate states offer Stop
-(with a second confirmation), message submission, or pending-question answers.
-Answers typed by the user set `relay_user:true`. No interrupt, forget, adoption,
-or ownership transfer control is provided. Extension dialogs without journaled
-`ask_parent` questions must be answered with the existing `pi_answer` tool.
-
-An action re-reads metadata and checks session ownership plus instance/gen/turn,
-resolves the already-registered pi-delegate tool, then uses `$.tool.call`. It
-never writes state or spawns a server. The server remains the final authority on
-ownership/locks/state; a server refusal is shown as the action result. A second
-server in the same Claude session is not independently diagnosed by the viewer.
-Permission prompts and fallback waits may take time, so the task is detached
-from the UI callback and reports busy/result/error status instead of holding
-`ui.press` past its 10-second budget.
-
-Runtime API reference:
-https://code.claude.com/docs/en/plugins/mods/reference#mods-api-methods
-
-Real MCP-from-pane experiment (2.1.287, default permission mode): a temporary
-button called `$.tool.check` then `$.tool.call` for existing
-`mcp__plugin_pi-delegate_pi-delegate__pi_read`, name `viewer-probe-missing`, in an
-isolated scratch project's inline store. Check returned `decision: "ask"`;
-Claude displayed its normal MCP permission dialog beside the pane. After Yes,
-the pane received `isError: true` and `No pi agent named "viewer-probe-missing".
-Known: none.` No existing child was read through MCP or changed. The temporary
-probe button was removed. Automated tests cover all three mutation routes with
-stubs, including confirmation, user attribution and refusal display.
+The pane never decides ownership. Controls are always shown for agents in this
+project; Stop (two-step), Send and Answer resolve the session's own
+pi-delegate MCP tool and call it with `$.tool.call`. Answers typed by the user
+set `relay_user:true`. The server is the authority: an "owned by another Claude
+session" refusal is shown in plain words, the draft is kept and the facts line
+gains `other session`; a declined permission prompt and other failures get
+their own messages, the latter with `r: retry`. (A pane-side comparison of
+`meta.ownerClaudeSession` with `$.session.id()` used to hide every control after
+a resume, because the server stamps `CLAUDE_CODE_SESSION_ID` while the pane
+read the transcript id.) Calls run detached from the UI callback, so
+permission prompts and wake waits do not hold `ui.press` past its budget.
 
 ## Development and live data
 
@@ -89,40 +136,38 @@ PI_DELEGATE_VIEW_PROJECT=/absolute/path/to/project
 ```
 
 These override only the viewer's read target, never the MCP server's store.
-Actions still require matching session ownership and route through this
-session's server, which may refuse a target from another store. Use a fresh
+Actions route through this session's server, which may refuse a target from
+another store; the pane shows that refusal. Use a fresh
 Claude process for overrides: during the 2.1.287 live experiment, hot reload
 reset custom environment visibility and the overridden list became empty.
 
-## Settings tab
+## Settings
 
-Press **5** from the agents pane to open Settings. It shows all six settings'
-effective values/sources and project/user values, plus a read-only provider/model
-pin and its source. Choose project or user scope, Tab to a field, type a value
-and press Enter. Each row also has a reset-to-inherit button (hotkeys 2–7 when
-not typing); **1** returns to agents. If permission dialogs move keyboard focus
-to chat, Ctrl+X then Tab returns focus to the pane.
-
-Settings always target the actual session project, not `PI_DELEGATE_VIEW_PROJECT`.
-User scope affects all projects; the UI explicitly warns that project values
-still take precedence. Invalid settings warnings and a conspicuous test-mode
-notice (including active overrides) appear above the controls.
+`s` opens Settings from the list or detail; `b` (or Esc inline) returns to
+where you came from. Rows follow `/config`: label, right-aligned value (bold
+when not the default), dim source. Enter edits a number inline (`Save`), and
+Default thinking is a Select. `Save to` (This project / Your user settings)
+sits below the rows. The focused row shows its description, the source chain
+`this project · your settings · default`, and where a save goes. `r` resets
+the focused setting after a confirm with Cancel focused. Invalid values are
+explained inline; a successful save is confirmed from a fresh read-back.
+Warnings and test-mode overrides show on one warning line.
 
 The mods sandbox cannot import the Node-based settings backend directly.
-`scripts/settings-view.mjs` is a read/validate-only adapter: it imports
-`SETTINGS`, `resolveSettings`, `parseSetting` and companion `loadProjectConfig`.
-The pane runs it with `$.process.run` to read or validate, reusing backend rules
-without copying ranges. Explicit writes go through `$.tool.call({tool:'Bash',
-command:...})` and the existing companion `write-config --scope ...` CLI, with
-normal permission prompts. All shell path/value arguments are quoted. Writes
-run detached so dialogs don't exceed a UI callback's 10-second budget. No
-backend/server/companion changes were required.
+`scripts/settings-view.mjs` is a read/validate-only adapter run with
+`$.process.run`; writes go through `$.tool.call({tool:'Bash', ...})` and the
+companion `write-config --scope ...` CLI, with normal permission prompts and
+every shell argument quoted. Settings always target the session project from
+`$.session.root()`, not `PI_DELEGATE_VIEW_PROJECT`.
 
-Fresh-session testing uncovered a viewer path bug: plugin root/data shell
-variables are not necessarily exposed to mods `$.env`. Settings uses the native
-`$.plugin.root` fallback. Child store paths fall back to the documented cache
-marketplace layout or the inline store for source loading; explicit data overrides
-still win. A missing child directory is an empty list rather than an error.
+Child data identity comes from read-only profile metadata:
+`plugins/installed_plugins.json`, `known_marketplaces.json`, and each relevant
+directory marketplace's `.claude-plugin/marketplace.json`. Exact installed-root
+matches or directory source entry matches identify the installed key, e.g.
+`pi-delegate@maheidem-plugins`; sanitizing that key gives its data directory.
+Multiple matches or an unmapped root with installed pi-delegate records fail
+visibly. With no installed identity, inline is used. Explicit
+`PI_DELEGATE_VIEW_DATA` still wins.
 
 ## Read-only fallback
 
@@ -165,6 +210,6 @@ bash tests/test_settings_view.sh
 ```
 
 Known limitations: no native pane in VS Code/headless or older/disabled mods;
-no inline tool-result streaming beyond busy status; no generation selector;
-no Markdown formatting of result text; transcript/journal reads are snapshots,
-not RPC reads of in-memory buffers; no extension-dialog controls.
+no generation selector; Activity and Log are disk snapshots, not RPC reads of
+in-memory buffers; no extension-dialog controls; the list summary for a working
+agent comes from its latest note, not its latest tool step.

@@ -1,5 +1,5 @@
 ---
-description: View pi children and delegation settings in a native pane (or read-only text snapshot)
+description: View pi agents and delegation settings in a native pane (or read-only text snapshot)
 disable-model-invocation: true
 allowed-tools: Bash(node *)
 ---

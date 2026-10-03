@@ -16,20 +16,19 @@ The 0.11 design and the decisions behind it are in
 ## Commands
 
 - `/pi-delegate:agents`: opens a native interactive pane (Claude Code >=
-  2.1.287, mods enabled, terminal/Desktop). Lists every child in this project,
-  including other Claude sessions' children, with state, model, generation/turn,
-  age, last event, and pending-question count. Tab selects controls; 1–4 switch
-  result/transcript/events/questions; Esc closes. Refreshes disk snapshots every
-  2 seconds while open. Reads never invoke MCP or consume events.
-  Press **5 (Settings)** for all six delegation settings: effective value and
-  source, project/user values, scope selection, validated edits and reset-to-inherit.
-  Settings writes use the existing companion CLI with normal Bash permission
-  prompts; the model pin is shown read-only. Without plugin hooks modules,
-  the same command displays a compact read-only children/settings snapshot.
-  Children owned by this Claude session offer confirmed Stop, a message field, and pending
-  question reply fields. Actions use the existing MCP tools and normal permission
-  prompts; foreign-session children remain read-only. Server ownership/lock
-  refusals are displayed unchanged. See [viewer design](docs/agents-viewer.md).
+  2.1.287, mods enabled, terminal/Desktop). Lists every pi agent in this
+  project grouped Needs input / Working / Idle / Ended, one line each, with an
+  inline answer card for a waiting agent. Enter opens Result (Markdown),
+  Activity (paired tool steps), Log (events as sentences) and Questions tabs;
+  `s` opens `/config`-style Settings for all six delegation settings (scope
+  select, validated inline edits, confirmed reset, read-back saves). Every key
+  shown is a hotkey; inline, Esc steps back before it closes. A band above the
+  prompt shows live agents (`ctrl+x tab` then Enter opens the pane), and done/failed/question events add a
+  transcript line and a toast. Reads never invoke MCP or consume events; Stop
+  (confirmed), messages and answers go through the existing MCP tools with
+  normal permission prompts, and the server decides ownership (its refusal is
+  shown in plain words). Without plugin hooks modules, the same command
+  displays a compact read-only snapshot. See [pane design](docs/agents-viewer.md).
 - `/pi-delegate:delegate <task>`: helps decompose `<task>` into
   independently-verifiable steps and dispatches each through the MCP tools.
   `pi` is often a smaller/local model: narrow, well-scoped steps succeed far

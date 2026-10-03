@@ -2,6 +2,52 @@
 
 Earlier versions have no changelog; see `git log -- plugins/pi-delegate`.
 
+## 0.13.0 (2026-10-02)
+
+### Changed
+- `/pi-delegate:agents` pane redesigned to match the built-in panes
+  (/agents, /workflows, /diff). The list is grouped by what needs attention:
+  Needs input, Working, Idle, Ended. Each agent is one line with a glyph and
+  a plain word for its state.
+- Detail view has four sections: Result (rendered as Markdown), Activity
+  (tool steps paired with their results, expand to see code or diff), Log
+  (events written as sentences, raw JSON on expand) and Questions (answer
+  cards inline, plus history).
+- Settings look like /config: Save to select, shows where each value comes
+  from, and Reset asks for confirmation.
+- Every key shown on screen is a real hotkey button. Esc steps back one
+  level inline. Stop and Reset ask for confirmation with Cancel focused.
+
+### Added
+- A band above the prompt while any agent is live. It turns the warning
+  colour when an agent is waiting for an answer. ctrl+x tab opens the pane.
+  There is no digit hotkey, because it swallowed digits typed in the prompt.
+- Toasts and transcript lines when an agent asks a question, fails or
+  finishes while the pane is closed.
+- Split view on wide terminals (110 columns or more): list on the left,
+  detail on the right.
+
+### Fixed
+- False "Read-only: owned by another Claude session" after resuming a
+  session. The pane compared the transcript id with the server's session id.
+  The pane no longer gates actions itself; if the server refuses, the reason
+  is shown in plain words.
+- Data path is now read from the installed plugin records.
+- Project root comes from `$.session.root()`.
+- Init is lazy with a single timer, which fixes a gray screen after reload.
+- Long text is cut before the 10k limit, with a note saying it was cut.
+
+### Verified
+- `claude plugin test`: 24 pass.
+- Live tmux renders at 60, 120 and 280 columns.
+- A real Send from the pane resumed the parked child piconfig (events seq 17
+  spawned resumed, seq 18 done ok).
+
+### Not verified
+- The message shown when a permission prompt is declined.
+- Themes without colour.
+- Tail reads on a session file that is growing past 1 MiB.
+
 ## 0.12.0 (2026-10-01)
 
 ### Added
