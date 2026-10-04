@@ -204,7 +204,7 @@ def plan(src, dst, apply, current, roots, force=False):
     lines.append("  target exists   : %s" % ("yes" if os.path.isdir(dst) else "no"))
     lines.append("  current global  : %s" % (current or "core.hooksPath is unset"))
     lines.append("")
-    lines.append("  files it %s copy (%d):" % ("would copy" if not apply else "copies",
+    lines.append("  files it %s copy (%d):" % ("would" if not apply else "will",
                                                  len(HOOK_FILES)))
     missing = []
     for name in HOOK_FILES:
