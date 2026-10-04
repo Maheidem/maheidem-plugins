@@ -113,30 +113,112 @@ The one thing chaining cannot fix: a repository that sets its **own** `core.hook
 shadows the global one, and git-guardrails then never runs there. Check a repo with
 `git config --local --get core.hooksPath`; if it is set, either move these hooks into
 that path or call them from the repo's own `reference-transaction` after its checks
-pass. `bin/install-git-guardrails` scans for exactly those repos.
+pass. `bin/install-git-guardrails` scans every root you give it and prints those repos
+by name - that is what its dry run is for.
 
 ## Install
 
-**These commands are for the human to run.** The Claude Code side of this plugin
-refuses `git config` writes to `core.hooksPath` and `guardrails.*` on purpose - see
-`hooks/hooks.json` - so an agent cannot move its own guardrails.
+**The human runs this.** The Claude Code side of this plugin refuses `git config`
+writes to `core.hooksPath` and `guardrails.*` on purpose (`hooks/hooks.json`), so an
+agent cannot move its own guardrails - and the installer is written to be run by you,
+once, for your own account.
 
-Point `core.hooksPath` at this `git-hooks/` directory. Per repository:
+```bash
+plugins/git-guardrails/bin/install-git-guardrails              # dry run, writes nothing
+plugins/git-guardrails/bin/install-git-guardrails --apply     # installs
+plugins/git-guardrails/bin/install-git-guardrails --uninstall # removes, if it is ours
+plugins/git-guardrails/bin/install-git-guardrails --roots ~/code ~/src   # extra scan roots
+```
+
+What it does:
+
+1. **copies** `git-hooks/` to a stable path, `~/.config/git-guardrails/hooks`
+   (`$GUARDRAILS_HOME` overrides the parent). Stable on purpose: a plugin lives in a
+   versioned cache that Claude Code replaces on update, and `core.hooksPath` must not
+   point into a directory that vanishes under git's feet. Files are copied byte-for-byte,
+   shims `chmod 755`, `guardrails.py` 644.
+2. **with `--apply` only**, sets `git config --global core.hooksPath` to that directory,
+   then reads it back and verifies the shims landed and are executable. The default is a
+   report: without `--apply` nothing is written anywhere.
+3. **scans** the roots you pass (default `~/Documents`, depth 6, skipping `node_modules`,
+   `Library`, `.git`, symlinks and friends) and lists every repository that a global
+   install would *not* protect:
+   - `SHADOWS` - the repo sets its own `core.hooksPath`, so git never looks at the
+     global one and the guardrails silently do not run there.
+   - `LOCAL` - the repo has its own `.git/hooks/reference-transaction`, which a global
+     path shadows (git-guardrails chains to it, so this one is usually fine - the line
+     is there so you notice a *copy* instead of a chain).
+   Those repos are reported, never touched.
+
+It writes exactly one config key, in `--apply`, in your own global gitconfig. It
+refuses to replace a `core.hooksPath` that already points somewhere else (husky,
+lefthook, a company profile) unless you pass `--force`, and then says so in the output.
+It never deletes anything: `--uninstall` unsets the key **only** when the value is this
+installer's own directory, prints the path of the leftovers, and leaves them for you.
+
+Per repository instead of globally, if you prefer:
 
 ```bash
 cd /path/to/repo
-git config core.hooksPath "$PWD/../path/to/plugins/git-guardrails/git-hooks"
-```
-
-Or for every repo of yours (global; **think first, it applies everywhere**):
-
-```bash
-git config --global core.hooksPath "$HOME/path/to/plugins/git-guardrails/git-hooks"
+git config core.hooksPath "$HOME/.config/git-guardrails/hooks"
 ```
 
 Because the shims chain, a global setting does not disable the hooks a repo has in
-`.git/hooks`. If you also want them inside linked worktrees, nothing extra is needed:
-hooks live in the common git dir.
+`.git/hooks`. Linked worktrees need nothing extra: hooks live in the common git dir.
+
+## Claude Code hooks
+
+`hooks/hooks.json` wires two hooks. They do not enforce R1-R4 - `core.hooksPath` and
+`git-hooks/guardrails.py` do that, inside git. These two protect the enforcement from
+the agent, and stop work from staying on the laptop.
+
+### `PreToolUse` on Bash - `hooks/guard-bash.py`
+
+Denies, with a one-line reason that names the rule first:
+
+| Rule | Refuses | Why |
+|------|---------|-----|
+| `guardrails-config` | `git config core.hooksPath ...`, `git -c core.hooksPath=...`, `git config guardrails.maxBranches 5`, `--unset core.hooksPath`; writing, copying or `rm` of a `guardrails.config` | the hooks path *is* the enforcement, and the budget is the human's decision in `~/.gitconfig` |
+| `quarantine` | any assignment to `GIT_QUARANTINE_PATH` (`export`, `NAME=... git ...`, `env ...`) | git's receive-side plumbing; exporting it only makes git refuse your own ref updates |
+| `no-verify` | `--no-verify`, `--no-gpg-sign` | the rules live in the hooks, so this is precisely the bypass |
+| `force-push` | `git push` with `--force`, `--force-with-lease`, `--force-if-includes`, `--mirror`, `-f` or a short bundle containing `f` (`-uf`), or a `+`-refspec (`git push origin +main`) | it rewrites history origin already has |
+| `force-delete` | `git branch -D`, `git branch --delete --force`, `git worktree remove --force`, `git push --delete` / `-d` | throws away commits, or a published branch other people may have built on |
+| `worktree-outside` | `git worktree add <path>` where `<path>` is not under `<repo>/.worktrees/` | worktrees stay in one git-excluded, findable place |
+
+Left alone, deliberately: `git push -u origin feat/x` (R3's own fix),
+`git push origin HEAD:refs/heads/feat/x`, `git pull --ff-only` (R4's fix), `git branch
+-d`, `git worktree add <repo>/.worktrees/one -b feat/one`, `git config --get --global
+guardrails.maxBranches`, `cat guardrails.config`, and every non-git command.
+
+How it reads a command line: split on `&&`, `;`, `|` and newlines, so a forbidden
+command at the end of a chain is still seen; each piece tokenised with `shlex` (quoting
+respected), looking through `sudo` / `env` / `command` / `time` wrappers and leading
+`NAME=value` prefixes, unpacking `eval "..."` and `$(...)`. If `shlex` cannot parse a
+piece it falls back to a whitespace split, which sees more and so can only deny more.
+`git config` is parsed as *config*, so `git grep --no-index -f patterns.txt` is not
+mistaken for `git push -f`.
+
+**Fails closed**: an internal error refuses the command, with the report URL. It never
+prints `"allow"` - that would suppress your normal permission prompts; silence means
+"not my business". The reason text never suggests forcing anything.
+
+### `Stop` - `hooks/check-unpushed.py`
+
+If the working directory is in a git repo with an `origin` remote and the current branch
+has commits its upstream does not have - or has no upstream while `origin/<default>`
+exists and lacks them - it blocks the turn **once**:
+
+```json
+{"decision": "block",
+ "reason": "unpushed commits on feat/x: push or tell the user why not - feat/x is 2 commits ahead of origin/feat/x. Push with `git push`; do not force-push ..."}
+```
+
+`stop_hook_active` is honoured: when Claude Code is continuing *because* this hook
+blocked, the hook allows, so it cannot loop. Silent for not-a-repo, no `origin`,
+nothing committed, detached HEAD, a branch level with its upstream, and a fresh clone
+nothing has been fetched from (R3 blocks that first commit anyway). Read-only -
+`rev-parse`, `show-ref`, `rev-list` - and its test asserts it wrote no refs and no
+config.
 
 ## Configuration
 
@@ -182,29 +264,49 @@ delete them yourself. Without `origin/D` present, nothing is pruned.
 ## Tests
 
 ```bash
-bash plugins/git-guardrails/tests/test_guardrails.sh
+bash plugins/git-guardrails/tests/test_guardrails.sh     # git side:    12 cases / 176
+bash plugins/git-guardrails/tests/test_claude_hooks.sh    # Claude Code:   6 cases / 123
+bash plugins/git-guardrails/tests/test_installer.sh       # installer:     7 cases /  54
 ```
 
-Each case builds a fresh sandbox under `mktemp`: a bare `remote.git`, a clone of it,
-`main` pushed and `origin/HEAD` fixed. `GIT_CONFIG_GLOBAL` points at a scratch
-gitconfig that sets `core.hooksPath` (absolute path to this `git-hooks/`),
-`user.name/email` and `init.defaultBranch`, and `GIT_CONFIG_SYSTEM=/dev/null` - the
-real `~/.gitconfig` and system config are never read or written. Covered: R1
-(accept/reject, `D` derived from `origin/HEAD` set to `trunk`), the full `D`
-resolution order **without** `refs/remotes/origin/HEAD` (fresh clone of an empty
-remote, master-default remote with no symref at all, remote added but never fetched),
-R2 (limit 1, configurable limit, re-allowed after a delete, fresh-init first-branch
-exception), R3 (rejected without upstream, allowed after `push -u`, rejected again
-after `--unset-upstream`), R4 (direct commit on `main` rejected, `git pull --ff-only`
-allowed, `update-ref` to an unpublished commit rejected), no-origin repos,
-`git worktree add -b` counting as a creation, deletions, other namespaces, detached
-HEAD, chaining (pre-commit / pre-push / commit-msg args / reference-transaction stdin,
-non-executable hooks skipped), every state argument, fail-closed paths, and all of
-`git-tidy` including never deleting `D`, the current branch, unmerged branches,
-branches checked out in a worktree or branches without upstream.
+353 assertions in total, exit code 0 only when every one passes; a failure names the
+assertion and quotes stderr. Every case builds a fresh sandbox under `mktemp`.
 
-Exit code is 0 only when every assertion passes; failures name the assertion and quote
-stderr.
+`test_guardrails.sh` - a bare `remote.git`, a clone, `main` pushed. `GIT_CONFIG_GLOBAL`
+points at a scratch gitconfig carrying `core.hooksPath` (absolute path to this
+`git-hooks/`), `user.name/email`, `init.defaultBranch`, and `GIT_CONFIG_SYSTEM=/dev/null`.
+It is rewritten per fixture, so a `git config --global` set by one case cannot leak into
+the next. Covers: R1 (accept/reject, `D` from `origin/HEAD` set to `trunk`), the full
+`D` resolution order **without** `refs/remotes/origin/HEAD` (fresh clone of an empty
+remote, master-default remote with no symref at all, remote added but never fetched),
+R2 (limit 1, user-global limit honoured, **repo-local ignored**, re-allowed after a
+delete, fresh-init first-branch exception), R3 (rejected without upstream, allowed
+after `push -u`, rejected again after `--unset-upstream`, enforced for a commit in a
+*linked* worktree), R4 (direct commit on `main` rejected, `git pull --ff-only` allowed,
+`update-ref` to an unpublished commit rejected), no-origin repos, `git worktree add -b`
+as a creation, deletions, other namespaces, detached HEAD, chaining (pre-commit /
+pre-push / commit-msg args / reference-transaction stdin, non-executable hooks skipped),
+every state argument, fail-closed output (no bypass command printed, and the
+quarantine marker is not a bypass), and all of `git-tidy` - never deleting `D`, the
+current branch, unmerged branches, branches checked out in a worktree, or branches
+without upstream.
+
+`test_claude_hooks.sh` - both hooks, fed the JSON Claude Code sends on stdin: every
+denial above (including chained `&&`/`;`, `eval`, `sudo`, `$(...)`, `-uf` bundles and
+`+`-refspecs), every allowed fix, the exact `hookSpecificOutput` JSON shape, malformed
+and empty payloads, and the `Stop` matrix - blocked ahead of upstream, blocked with no
+upstream, silent when level / detached / no origin / nothing committed, silent when
+`stop_hook_active`.
+
+`test_installer.sh` - `HOME` is a mktemp directory for the whole run, so the real home
+and the real global gitconfig are never in play. Dry run writes nothing and names the
+repos that would shadow a global install; `--apply` copies all 11 files, sets
+`core.hooksPath`, is idempotent, and **then enforcement is proven end-to-end from the
+installed path** - R1 refuses `bad_name`, R3 refuses the unpublished commit, `push -u`
+unblocks it, R4 refuses a commit on `main`. A foreign global `core.hooksPath` is
+refused without `--force` and replaced with it, `--uninstall` unsets only when the path
+is ours, leaves the files, and enforcement really stops. Nothing in the suite ever runs
+`--apply` against the real home.
 
 ## Known edges (decisions, not bugs)
 * **R3 means you publish before you commit.** `git switch -c feat/x` then
@@ -241,8 +343,17 @@ git-hooks/reference-transaction             exec python3 guardrails.py reference
 git-hooks/_chain.sh                         shared chain helper
 git-hooks/{pre-commit,commit-msg,prepare-commit-msg,pre-push,
            post-checkout,post-merge,pre-rebase,post-rewrite}   chain shims
+hooks/hooks.json                            Claude Code wiring: PreToolUse(Bash) + Stop
+hooks/_guard.py                             shared: payload/cwd, git plumbing, D resolution
+hooks/guard-bash.py                         refuses commands that defeat the guardrails
+hooks/check-unpushed.py                     Stop: blocks once on unpushed commits
 bin/git-tidy                                branch/worktree report + safe prune
-tests/test_guardrails.sh                  sandbox suite (mktemp, isolated GIT_CONFIG_GLOBAL)
+bin/install-git-guardrails                  copy to ~/.config/git-guardrails/hooks;
+                                            --apply sets core.hooksPath, --uninstall
+                                            removes it if it is ours, dry run by default
+tests/test_guardrails.sh                  git-side suite (mktemp, isolated GIT_CONFIG_GLOBAL)
+tests/test_claude_hooks.sh                PreToolUse + Stop, fed real hook JSON
+tests/test_installer.sh                   installer in a fake HOME, end-to-end enforcement
 ```
 
 ## Reporting
