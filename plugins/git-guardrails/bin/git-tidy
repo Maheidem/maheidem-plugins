@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""git-tidy - report (and clean up) local branches and worktrees.
+
+Part of the git-guardrails plugin. Read-only by default: it prints a table of
+every local branch and every worktree, and only touches the repository when
+given --prune.
+
+    git-tidy            dry run (default): show what is there and what would go
+    git-tidy --prune  delete safe branches, then `git worktree prune`
+    git-tidy --help
+
+Table columns
+    branch            local branch
+    upstream          branch.<name>.remote/merge if set, else "-"
+    ahead/behind     commits ahead of, and behind, the upstream; "gone" when the
+                     upstream ref no longer exists, "-" when there is no upstream
+    merged into D?   yes/no: is the branch tip an ancestor of the default branch
+                     (origin/D when it exists, else the local D; "self" for D)
+    worktree         path of the worktree that has it checked out, else "-"
+    last commit      committer date of the branch tip
+
+--prune deletes a local branch only when ALL of these hold:
+    * it is not the default branch D and not the currently checked-out branch
+    * it is not checked out in any worktree
+    * its tip is fully merged into origin/D (ancestor check, `git branch -d`)
+    * its upstream is gone, or equal to the branch (ahead 0 / behind 0)
+Anything else is reported and left alone. It never force-deletes (no -D), never
+deletes D, never deletes the current branch, and never prunes in a repository
+without origin/D. `git worktree prune` runs afterwards (prunable = worktrees
+whose directory is gone).
+
+Stdlib only. Python 3.8+.
+"""
+
+import argparse
+import subprocess
+import sys
+
+BRANCH_NS = "refs/heads/"
+ORIGIN_NS = "refs/remotes/origin/"
+SEP = "\x1f"  # unit separator: cannot appear in a ref name or a date
+
+
+def git(*args):
+    """Run git, return (exit_code, stdout_text)."""
+    proc = subprocess.run(
+        ["git"] + list(args),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return proc.returncode, proc.stdout.decode("utf-8", "replace")
+
+
+def ref_exists(ref):
+    rc, _ = git("show-ref", "--verify", "--quiet", ref)
+    return rc == 0
+
+
+def has_remote():
+    rc, out = git("remote")
+    return rc == 0 and "origin" in out.split()
+
+
+def default_branch(remote):
+    """Same resolution order as guardrails.py: origin/HEAD, main, master."""
+    if remote:
+        rc, out = git("symbolic-ref", "--quiet", ORIGIN_NS + "HEAD")
+        target = out.strip()
+        if rc == 0 and target.startswith(ORIGIN_NS):
+            name = target[len(ORIGIN_NS):]
+            if name:
+                return name
+    if ref_exists(BRANCH_NS + "main"):
+        return "main"
+    return "master"
+
+
+def current_branch():
+    rc, out = git("symbolic-ref", "--short", "--quiet", "HEAD")
+    if rc != 0:
+        return None  # detached HEAD
+    return out.strip() or None
+
+
+def worktrees():
+    """Parse `git worktree list --porcelain`.
+
+    Returns [(path, branch_short_or_None, prunable_reason_or_None)].
+    """
+    rc, out = git("worktree", "list", "--porcelain")
+    if rc != 0:
+        return []
+    rows, path, branch, prunable = [], None, None, None
+
+    def flush():
+        if path:
+            rows.append((path, branch, prunable))
+
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            flush()
+            path, branch, prunable = line[len("worktree "):].strip(), None, None
+        elif line.startswith("branch "):
+            ref = line[len("branch "):].strip()
+            branch = ref[len(BRANCH_NS):] if ref.startswith(BRANCH_NS) else ref
+        elif line == "detached":
+            branch = None
+        elif line.startswith("prunable"):
+            prunable = line[len("prunable"):].strip() or "prunable"
+    flush()
+    return rows
+
+
+def branches():
+    """Local branches: [(short, upstream_short, upstream_gone, tip, date)]."""
+    fmt = SEP.join(["%(refname:short)", "%(upstream:short)",
+                    "%(objectname:short)", "%(committerdate:short)"])
+    rc, out = git("for-each-ref", "--format=%(refname)" + SEP + fmt, "refs/heads")
+    if rc != 0:
+        raise SystemExit("git-tidy: `git for-each-ref` failed (exit %d)" % rc)
+    rows = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split(SEP)
+        if len(parts) < 4:
+            continue
+        ref, short, upstream, oid, date = parts[:5]
+        if not ref.startswith(BRANCH_NS):
+            continue
+        has_up = bool(upstream)
+        up_exists = ref_exists("refs/remotes/" + upstream) if has_up else False
+        rows.append({
+            "name": short,
+            "upstream": upstream,
+            # "gone" = it had an upstream and that remote-tracking ref is no
+            # longer there (deleted on origin, removed by fetch --prune). The
+            # trackshort field is empty brackets in that case on some git
+            # versions, so ask the ref store instead of parsing text.
+            "gone": has_up and not up_exists,
+            "oid": oid,
+            "date": date,
+        })
+    return rows
+
+
+def ahead_behind(branch, upstream, gone):
+    if not upstream:
+        return "-"
+    if gone or not ref_exists("refs/remotes/" + upstream):
+        return "gone"
+    rc, out = git("rev-list", "--left-right", "--count",
+                  "%s...%s" % (upstream, BRANCH_NS + branch))
+    if rc != 0:
+        return "?"
+    fields = out.split()
+    if len(fields) != 2:
+        return "?"
+    behind, ahead = fields  # left = in upstream only, right = in branch only
+    return "%s/%s" % (ahead, behind)
+
+
+def merged_into(branch, target_ref):
+    if not target_ref or not ref_exists(target_ref):
+        return "?"
+    rc, _ = git("merge-base", "--is-ancestor", BRANCH_NS + branch, target_ref)
+    return "yes" if rc == 0 else "no"
+
+
+def prune_candidates(rows, worktree_by_branch, default, current, target_ref):
+    """Branches that --prune may delete, with the reason for every skip."""
+    take, skip = [], []
+    for row in rows:
+        name = row["name"]
+        if name == default:
+            skip.append((name, "default branch, never deleted"))
+            continue
+        if name == current:
+            skip.append((name, "currently checked out"))
+            continue
+        if name in worktree_by_branch:
+            skip.append((name, "checked out in worktree %s"
+                         % worktree_by_branch[name]))
+            continue
+        if not ref_exists(target_ref):
+            skip.append((name, "no %s to check merge status against" % target_ref))
+            continue
+        if not row["upstream"]:
+            skip.append((name, "no upstream (publish it once with `git push -u origin "
+                                "%s`, or delete it by hand when you are sure)" % name))
+            continue
+        ab = ahead_behind(name, row["upstream"], row["gone"])
+        if merged_into(name, target_ref) != "yes":
+            skip.append((name, "not fully merged into %s" % target_ref))
+            continue
+        if row["gone"]:
+            take.append((name, "merged into %s, upstream %s is gone"
+                         % (target_ref, row["upstream"])))
+        elif ab == "0/0":
+            take.append((name, "merged into %s, equal to upstream %s"
+                         % (target_ref, row["upstream"])))
+        else:
+            skip.append((name, "upstream %s still exists and differs (ahead/behind %s)"
+                         % (row["upstream"], ab)))
+    return take, skip
+
+
+def print_table(header, rows):
+    widths = [len(h) for h in header]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+    fmt = "  ".join("%%-%ds" % w for w in widths[:-1]) + "  %s"
+    print(fmt % tuple(header))
+    if not rows:
+        return
+    print(fmt % tuple("-" * w for w in widths))
+    for row in rows:
+        print(fmt % tuple(str(c) for c in row))
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(
+        prog="git-tidy",
+        description="List local branches and worktrees; --prune deletes the ones that "
+                    "are provably safe (merged into origin/<default>, upstream gone or "
+                    "equal). Dry run by default, never force-deletes.",
+    )
+    parser.add_argument("--prune", action="store_true",
+                        help="actually delete the safe branches and run "
+                             "`git worktree prune` (default: dry run)")
+    args = parser.parse_args(argv[1:])
+
+    toplevel = git("rev-parse", "--show-toplevel")
+    if toplevel[0] != 0:
+        raise SystemExit("git-tidy: not inside a git repository")
+    top = toplevel[1].strip()
+
+    remote = has_remote()
+    default = default_branch(remote)
+    current = current_branch()
+    target_ref = ORIGIN_NS + default if ref_exists(ORIGIN_NS + default) else (
+        BRANCH_NS + default if ref_exists(BRANCH_NS + default) else None)
+
+    wt_rows = worktrees()
+    worktree_by_branch = {}
+    for path, branch, _prunable in wt_rows:
+        if branch:
+            worktree_by_branch[branch] = path
+
+    rows = branches()
+    table = []
+    for row in rows:
+        table.append((
+            "%s %s" % ("*" if row["name"] == current else "", row["name"]),
+            row["upstream"] or "-",
+            ahead_behind(row["name"], row["upstream"], row["gone"]),
+            "self" if row["name"] == default else merged_into(row["name"], target_ref),
+            worktree_by_branch.get(row["name"], "-"),
+            row["date"],
+        ))
+
+    print("git-tidy: %s" % top)
+    print("default branch: %s   target for merge checks: %s   HEAD: %s   remote origin: %s"
+          % (default, target_ref or "-", current or "(detached)",
+             "yes" if remote else "no"))
+    print_table(["branch", "upstream", "ahead/behind", "merged into %s?" % default,
+                 "worktree", "last commit"], table)
+
+    prunable = [(p, b, r) for p, b, r in wt_rows if r]
+    print("\nworktrees: %d registered, %d prunable" % (len(wt_rows), len(prunable)))
+    for path, branch, reason in prunable:
+        print("  PRUNABLE %s (%s) - %s" % (path, branch or "detached", reason))
+
+    take, skip = prune_candidates(rows, worktree_by_branch, default, current, target_ref)
+
+    print("\nbranches %s:" % ("to delete" if args.prune else "that would be deleted"))
+    if not take:
+        print("  (none - nothing provably safe to remove)")
+    for name, reason in take:
+        print("  %s %s  (%s)" % ("-" if args.prune else "*", name, reason))
+    print("branches kept:")
+    for name, reason in skip:
+        print("  = %s  (%s)" % (name, reason))
+
+    if not args.prune:
+        print("\ndry run: nothing was deleted. Re-run with --prune to delete the %d "
+              "branch(es) above (never the default branch, never the current branch, "
+              "never force)." % len(take))
+        return 0
+
+    deleted, refused = [], []
+    for name, reason in take:
+        rc, err = git("branch", "-d", name)
+        if rc == 0:
+            deleted.append(name)
+            print("deleted branch %s (%s)" % (name, reason))
+        else:
+            why = err.strip() or "exit %d" % rc
+            refused.append((name, why))
+            print("NOT deleted %s: %s" % (name, why))
+            print("  (git-tidy only ever uses `git branch -d`, so git's own "
+                  "merged-into-HEAD check applies too - if it refuses, run "
+                  "`git pull --ff-only` on %s and try again, or delete it "
+                  "yourself when you are sure)" % default)
+
+    rc, err = git("worktree", "prune")
+    prune_rc = rc
+    if rc == 0:
+        print("worktree prune: done (%d prunable worktree(s) before)" % len(prunable))
+    else:
+        print("worktree prune FAILED: %s" % (err.strip() or "exit %d" % rc))
+
+    print("\nremoved %d branch(es), %d refused by git, %d prunable worktree(s) handled"
+          % (len(deleted), len(refused), len(prunable)))
+    return 1 if prune_rc != 0 else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
