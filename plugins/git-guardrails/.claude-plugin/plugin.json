@@ -1,0 +1,17 @@
+{
+  "name": "git-guardrails",
+  "version": "0.1.0",
+  "description": "Git-level guardrails for local repos via core.hooksPath: a reference-transaction hook that aborts ref updates before they land - branch names must match fix|feat|chore|docs (R1), a cap on parallel local branches (R2, guardrails.maxBranches, default 1), commits on a branch with no upstream rejected until 'git push -u origin <branch>' (R3), and no direct commits to the default branch - only fast-forwards to what origin already has (R4). Deletions and all non-refs/heads namespaces always pass, repos without origin only get R1+R2, and internal errors fail closed with a report link. Every standard hook name (pre-commit, commit-msg, prepare-commit-msg, pre-push, post-checkout, post-merge, pre-rebase, post-rewrite) chains to the repo's own hook in $(git rev-parse --git-common-dir)/hooks so existing husky/lefthook/pre-commit setups keep working. Ships bin/git-tidy: branch/worktree table with upstream, ahead/behind, merged-into-default and prunable worktrees, dry-run by default, --prune deletes only provably safe branches (never the default, never the current, never force). Python 3 stdlib plus POSIX sh shims; sandbox-tested against a local bare remote in mktemp with GIT_CONFIG_GLOBAL isolated.",
+  "author": {
+    "name": "maheidem",
+    "email": "maheidem@users.noreply.github.com"
+  },
+  "keywords": [
+    "git",
+    "hooks",
+    "guardrails",
+    "branching",
+    "hygiene"
+  ],
+  "repository": "https://github.com/maheidem/maheidem-plugins"
+}

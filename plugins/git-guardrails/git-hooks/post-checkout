@@ -1,0 +1,4 @@
+#!/bin/sh
+# git-guardrails: chain the "post-checkout" hook to this repository's own copy, if it has one.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
+exec "$dir/_chain.sh" post-checkout "$@"
