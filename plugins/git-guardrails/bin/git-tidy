@@ -15,8 +15,7 @@ Table columns
     ahead/behind     commits ahead of, and behind, the upstream; "gone" when the
                      upstream ref no longer exists, "-" when there is no upstream
     merged into D?   yes/no: is the branch tip an ancestor of the default branch
-                     (origin/D when it exists, else the local D; "self" for D)
-    worktree         path of the worktree that has it checked out, else "-"
+                     (origin/D when it exists, else the local D; "self" for D)    worktree         path of the worktree that has it checked out, else "-"
     last commit      committer date of the branch tip
 
 --prune deletes a local branch only when ALL of these hold:
@@ -62,7 +61,12 @@ def has_remote():
 
 
 def default_branch(remote):
-    """Same resolution order as guardrails.py: origin/HEAD, main, master."""
+    """Same resolution order as guardrails.py:
+
+    origin/HEAD symref -> refs/remotes/origin/main -> refs/remotes/origin/master
+    -> refs/heads/main -> refs/heads/master -> "master". The remote-tracking refs
+    matter because a fresh clone of an empty remote has no refs/remotes/origin/HEAD.
+    """
     if remote:
         rc, out = git("symbolic-ref", "--quiet", ORIGIN_NS + "HEAD")
         target = out.strip()
@@ -70,8 +74,12 @@ def default_branch(remote):
             name = target[len(ORIGIN_NS):]
             if name:
                 return name
-    if ref_exists(BRANCH_NS + "main"):
-        return "main"
+        for candidate in ("main", "master"):
+            if ref_exists(ORIGIN_NS + candidate):
+                return candidate
+    for candidate in ("main", "master"):
+        if ref_exists(BRANCH_NS + candidate):
+            return candidate
     return "master"
 
 

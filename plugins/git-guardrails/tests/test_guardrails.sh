@@ -33,8 +33,16 @@ cleanup() {
 trap cleanup EXIT
 
 # --- isolation --------------------------------------------------------------- #
+# One scratch "user global" gitconfig for the whole run. Every fixture rewrites it
+# from scratch (see write_global), so a `git config --global guardrails.maxBranches`
+# set by one case can never leak into the next.
 GLOBAL="$ROOT/gitconfig"
-cat >"$GLOBAL" <<CFG
+
+write_global() {
+    # write_global [maxBranches] - reset $GLOBAL to the base config, optionally with
+    # a user-wide branch budget. Repo-local guardrails.* is never written here.
+    local lim=${1:-}
+    cat >"$GLOBAL" <<CFG
 [core]
 	hooksPath = $HOOKS
 [user]
@@ -45,6 +53,11 @@ cat >"$GLOBAL" <<CFG
 [protocol "file"]
 	allow = always
 CFG
+    if [ -n "$lim" ]; then
+        printf '[guardrails]\n\tmaxBranches = %s\n' "$lim" >>"$GLOBAL"
+    fi
+}
+write_global
 
 export GIT_CONFIG_GLOBAL="$GLOBAL"
 export GIT_CONFIG_SYSTEM=/dev/null
@@ -101,12 +114,43 @@ check_blocked() {
     fi
 }
 
+# check_stderr_absent <name> <forbidden-substring> <cmd> [args...]
+# - command must fail, and its stderr must NOT contain the substring.
+check_stderr_absent() {
+    local name=$1 needle=$2
+    shift 2
+    local out rc
+    out=$("$@" 2>&1 >/dev/null)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        no "$name: expected rejection, but it succeeded"
+    elif printf '%s' "$out" | grep -qF -- "$needle"; then
+        no "$name: stderr still contains '$needle': $(printf '%s' "$out" | tr '\n' ' ')"
+    else
+        ok "$name"
+    fi
+}
+
+# guard_out <cwd> <state> <stdin-line> - run guardrails.py directly in <cwd> with
+# GIT_QUARANTINE_PATH exported; prints everything it wrote. If <cwd> does not exist it
+# prints a FATAL line instead of nothing, so an empty "allowed" can never be a false
+# pass caused by a fixture that did not build.
+guard_out() {
+    local cwd=$1 state=$2 line=$3
+    if [ ! -d "$cwd" ]; then
+        printf 'FATAL: no such directory %s (fixture did not build)' "$cwd"
+        return 1
+    fi
+    ( cd "$cwd" && GIT_QUARANTINE_PATH="$cwd/quarantine" python3 "$GUARD" "$state" <<< "$line" 2>&1 )
+}
+
 # --- fixtures -------------------------------------------------------------- #
 
 # new_sandbox <name> -> prints the clone path: bare remote + clone, main pushed,
 # refs/remotes/origin/HEAD -> origin/main. The normal "day job" repo.
 new_sandbox() {
     local d="$ROOT/$1"
+    write_global "${2:-}"
     rm -rf "$d" >/dev/null 2>&1
     mkdir -p "$d" || return 1
     git init --bare -q "$d/remote.git" >/dev/null 2>&1 || return 1
@@ -120,11 +164,54 @@ new_sandbox() {
 # new_local_sandbox <name> -> plain repo with commits on main, no origin.
 new_local_sandbox() {
     local d="$ROOT/$1"
+    write_global "${2:-}"
     rm -rf "$d" >/dev/null 2>&1
     mkdir -p "$d" || return 1
     git init -q "$d/work" >/dev/null 2>&1 || return 1
     git -C "$d/work" commit -q --allow-empty -m "chore: bootstrap" >/dev/null 2>&1 || return 1
     git -C "$d/work" commit -q --allow-empty -m "chore: second" >/dev/null 2>&1 || return 1
+    printf '%s' "$d/work"
+}
+
+# new_sandbox_headless <name> -> like new_sandbox but refs/remotes/origin/HEAD is
+# NEVER created: cloning an empty remote does not create it and we do not run
+# `git remote set-head origin -a`. This is the real state of many fresh clones.
+new_sandbox_headless() {
+    local d="$ROOT/$1"
+    write_global "${2:-}"
+    rm -rf "$d" >/dev/null 2>&1
+    mkdir -p "$d" || return 1
+    git init --bare -q "$d/remote.git" >/dev/null 2>&1 || return 1
+    git clone -q "$d/remote.git" "$d/work" >/dev/null 2>&1 || return 1
+    git -C "$d/work" commit -q --allow-empty -m "chore: bootstrap" >/dev/null 2>&1 || return 1
+    git -C "$d/work" push -q origin main >/dev/null 2>&1 || return 1
+    printf '%s' "$d/work"
+}
+
+# new_sandbox_master_headless <name> -> master-default remote, cloned empty, first
+# commit pushed: refs/remotes/origin/master exists, refs/remotes/origin/HEAD does not.
+new_sandbox_master_headless() {
+    local d="$ROOT/$1"
+    write_global "${2:-}"
+    rm -rf "$d" >/dev/null 2>&1
+    mkdir -p "$d" || return 1
+    git init --bare -q "$d/remote.git" >/dev/null 2>&1 || return 1
+    git -C "$d/remote.git" symbolic-ref HEAD refs/heads/master || return 1
+    git clone -q "$d/remote.git" "$d/work" >/dev/null 2>&1 || return 1
+    git -C "$d/work" commit -q --allow-empty -m "chore: bootstrap" >/dev/null 2>&1 || return 1
+    git -C "$d/work" push -q origin master >/dev/null 2>&1 || return 1
+    printf '%s' "$d/work"
+}
+
+# new_unpushed_sandbox <name> -> clone of an empty remote, nothing pushed yet:
+# origin exists, refs/remotes/origin/* does not.
+new_unpushed_sandbox() {
+    local d="$ROOT/$1"
+    write_global "${2:-}"
+    rm -rf "$d" >/dev/null 2>&1
+    mkdir -p "$d" || return 1
+    git init --bare -q "$d/remote.git" >/dev/null 2>&1 || return 1
+    git clone -q "$d/remote.git" "$d/work" >/dev/null 2>&1 || return 1
     printf '%s' "$d/work"
 }
 
@@ -195,7 +282,7 @@ check_ok "deleting the first branch is allowed" git -C "$w" branch -d feat/one
 check_ok "feat/two allowed again after deleting feat/one" git -C "$w" branch feat/two
 
 w=$(new_sandbox r2limit) || { p "FATAL: fixture failed"; exit 1; }
-git -C "$w" config guardrails.maxBranches 3
+git config --global guardrails.maxBranches 3
 check_ok "limit 3: feat/a" git -C "$w" branch feat/a
 check_ok "limit 3: feat/b" git -C "$w" branch feat/b
 check_ok "limit 3: feat/c" git -C "$w" branch feat/c
@@ -226,7 +313,7 @@ check_blocked "commit rejected again once the upstream is gone" "R3" git -C "$w"
 case_begin "R4 - no direct commits to the default branch"
 # =========================================================================== #
 w=$(new_sandbox r4) || { p "FATAL: fixture failed"; exit 1; }
-git -C "$w" config guardrails.maxBranches 9
+git config --global guardrails.maxBranches 9
 before=$(git -C "$w" rev-parse main)
 check_blocked "direct commit on main rejected" "R4" git -C "$w" commit --allow-empty -m "chore: on main"
 check_blocked "R4 message offers branch + PR" "git switch -c feat/" git -C "$w" commit --allow-empty -m "chore: on main"
@@ -249,6 +336,149 @@ if [ "$(git -C "$w" rev-parse main)" = "$(git -C "$w" rev-parse origin/main)" ];
     ok "main still equals origin/main after the rejected update-ref"
 else
     no "main moved to an unpublished commit despite R4"
+fi
+
+# =========================================================================== #
+case_begin "default branch resolution - no refs/remotes/origin/HEAD"
+# =========================================================================== #
+# Cloning an empty remote does NOT create refs/remotes/origin/HEAD (only
+# `git remote set-head origin -a` does), and it can also be dangling or not a
+# symref. So D falls back to refs/remotes/origin/main, then refs/remotes/origin/
+# master, then local main, then local master - never `git ls-remote --symref`,
+# which would be a network round trip inside every ref transaction.
+w=$(new_sandbox_headless nohead) || { p "FATAL: fixture failed"; exit 1; }
+git config --global guardrails.maxBranches 9
+if git -C "$w" symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+    no "fixture was supposed to have NO refs/remotes/origin/HEAD"
+else
+    ok "clone has no refs/remotes/origin/HEAD (the fresh-clone reality)"
+fi
+check_ok "refs/remotes/origin/main exists (fallback anchor)" git -C "$w" show-ref --verify refs/remotes/origin/main
+check_blocked "R4 still guards main with no origin/HEAD" "R4" git -C "$w" commit --allow-empty -m "chore: on main"
+check_blocked "R4 message names the anchor it used" "refs/remotes/origin/main" git -C "$w" commit --allow-empty -m "chore: on main"
+check_blocked "main is D, so other names are policed by R1" "R1" git -C "$w" branch topic/nope
+check_ok "work goes to a branch" git -C "$w" checkout -q -b feat/one
+check_ok "publish the branch" git -C "$w" push -q -u origin feat/one
+check_ok "commit on the branch" git -C "$w" commit -q --allow-empty -m "feat: work"
+check_ok "push the branch" git -C "$w" push -q origin feat/one
+advance_remote "$w" feat/one
+check_ok "back on main" git -C "$w" checkout -q main
+check_ok "git pull --ff-only allowed with no origin/HEAD" in_repo "$w" "git pull --ff-only -q origin main"
+check_ok "main advanced" git -C "$w" merge-base --is-ancestor main origin/main
+printf '%s\n' "$(cd "$w" && python3 "$GIT_TIDY" 2>&1)" | grep -q "default branch: main" \
+    && ok "git-tidy resolves D = main with no origin/HEAD" \
+    || no "git-tidy did not resolve D = main without origin/HEAD"
+
+# remote default is master and there is no refs/remotes/origin/HEAD at all: D must
+# come from refs/remotes/origin/master (fallback 3), not from the "main" guesses.
+w=$(new_sandbox_master_headless masterd) || { p "FATAL: fixture failed"; exit 1; }
+git config --global guardrails.maxBranches 9
+if git -C "$w" symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+    no "fixture should have no refs/remotes/origin/HEAD"
+else
+    ok "no refs/remotes/origin/HEAD on a master-default remote"
+fi
+if git -C "$w" show-ref --verify --quiet refs/remotes/origin/main; then
+    no "fixture should have no refs/remotes/origin/main"
+else
+    ok "no refs/remotes/origin/main either (so the master fallback is what is tested)"
+fi
+check_ok "refs/remotes/origin/master exists -> D = master" git -C "$w" show-ref --verify refs/remotes/origin/master
+check_blocked "commit on master rejected by R4 (master really is D)" "R4" git -C "$w" commit --allow-empty -m "chore: on master"
+check_blocked "R4 message names refs/remotes/origin/master" "refs/remotes/origin/master" git -C "$w" commit --allow-empty -m "chore: on master"
+check_blocked "here refs/heads/main is NOT special: creating it is R1" "R1" git -C "$w" branch main
+check_ok "work goes to a branch" git -C "$w" checkout -q -b feat/one
+check_ok "publish it" git -C "$w" push -q -u origin feat/one
+check_ok "commit allowed there" git -C "$w" commit -q --allow-empty -m "feat: work"
+check_ok "back on master" git -C "$w" checkout -q master
+check_ok "publishing that branch left master alone" git -C "$w" rev-parse --verify --quiet refs/heads/master
+printf '%s\n' "$(cd "$w" && python3 "$GIT_TIDY" 2>&1)" | grep -q "default branch: master" \
+    && ok "git-tidy resolves D = master with no origin/HEAD" \
+    || no "git-tidy did not resolve D = master without origin/HEAD"
+
+# origin configured but never fetched: no refs/remotes/origin/* at all -> R4 cannot
+# verify, so it fails closed with a fetch hint, and pushing the default branch fixes it.
+w=$(new_unpushed_sandbox neverfetched) || { p "FATAL: fixture failed"; exit 1; }
+git config --global guardrails.maxBranches 9
+check_ok "first commit on unborn main allowed (fresh-repo exception)" git -C "$w" commit -q --allow-empty -m "chore: first"
+check_blocked "second commit fails closed with a fetch hint" "git fetch origin" git -C "$w" commit --allow-empty -m "chore: second"
+check_ok "pushing the default branch establishes refs/remotes/origin/main" git -C "$w" push -q -u origin main
+check_blocked "from then on R4 guards it (new commit is not on origin)" "R4" git -C "$w" commit --allow-empty -m "chore: third"
+
+# =========================================================================== #
+case_begin "no bypass: config scope, quarantine marker, fail-closed wording"
+# =========================================================================== #
+# The R2 limit comes from the user-global config ONLY. A repository - or any
+# command run inside it - must not be able to relax the guardrail for itself.
+w=$(new_sandbox nobypass) || { p "FATAL: fixture failed"; exit 1; }
+if git config --global --get --int guardrails.maxBranches >/dev/null 2>&1; then
+    no "premise: the scratch user config should carry no limit (default 1)"
+else
+    ok "premise: no user-wide limit set, so the default 1 applies"
+fi
+check_ok "first branch allowed" git -C "$w" branch feat/one
+git -C "$w" config guardrails.maxBranches 9 >/dev/null 2>&1
+check_ok "repo-local guardrails.maxBranches=9 written (premise)" \
+    git -C "$w" config --local --get --int guardrails.maxBranches
+check_blocked "repo-local guardrails.maxBranches=9 does NOT lift R2" "R2" git -C "$w" branch feat/two
+check_stderr_absent "R2 message suggests no way to raise the cap" "maxBranches" \
+    git -C "$w" branch feat/two
+check_blocked "R2 message still gives the real fix" "git branch -d" git -C "$w" branch feat/two
+check_ok "setting it user-wide is the human's decision, and works" \
+    sh -c "git config --global guardrails.maxBranches 2"
+check_ok "with the user-wide limit at 2 the second branch is allowed" git -C "$w" branch feat/two
+check_blocked "the third is not" "R2" git -C "$w" branch feat/tre
+
+# the fail-closed report must not hand out a bypass
+closed=$(python3 "$GUARD" </dev/null 2>&1)
+printf '%s\n' "$closed" | sed 's/^/  | /'
+printf '%s' "$closed" | grep -qF -- "-c core.hooksPath=" \
+    && no "fail-closed output still prints a bypass command" \
+    || ok "fail-closed output prints no bypass command"
+printf '%s' "$closed" | grep -qiF "do not disable" \
+    && ok "fail-closed output tells the agent not to disable the guardrails" \
+    || no "fail-closed output lacks the do-not-disable instruction"
+printf '%s' "$closed" | grep -qF "maheidem-plugins/issues" \
+    && ok "fail-closed output gives the report URL" \
+    || no "fail-closed output lacks the report URL"
+
+# GIT_QUARANTINE_PATH alone must not switch the rules off in a developer's repo.
+# git itself refuses every ref update while the marker is exported ("ref updates
+# forbidden inside quarantine environment"), so the marker can never be used to smuggle
+# a write past the guardrails; these cases assert that the RULES are still evaluated.
+w=$(new_sandbox quar 5) || { p "FATAL: fixture failed"; exit 1; }
+MAIN=$(git -C "$w" rev-parse main)
+# a commit object that exists but is on no branch: the ref line is then a real move,
+# not a no-op (a no-op would be allowed by design and prove nothing)
+NEW=$(git -C "$w" commit-tree "$(git -C "$w" rev-parse 'HEAD^{tree}')" -m "probe")
+out=$(guard_out "$w" prepared "$ZERO $NEW refs/heads/main")
+case "$out" in
+    *R4*) ok "marker in a normal clone: R4 is still evaluated (direct call)" ;;
+    *)    no "marker in a normal clone: R4 was skipped - output: $out" ;;
+esac
+out=$(guard_out "$w" prepared "$ZERO $NEW refs/heads/nope")
+case "$out" in
+    *R1*) ok "marker in a normal clone: R1 is still evaluated (direct call)" ;;
+    *)    no "marker in a normal clone: R1 was skipped - output: $out" ;;
+esac
+check_blocked "the real commit under the marker fails too (git's own refusal)" "quarantine" \
+    in_repo "$w" "GIT_QUARANTINE_PATH=\$(pwd)/.git/quarantine git commit --allow-empty -m 'chore: sneaky'"
+check_ok "a linked worktree is created (limit is 5 here)" \
+    git -C "$w" worktree add -q "$ROOT/quar-wt" -b feat/ok
+out=$(guard_out "$ROOT/quar-wt" prepared "$ZERO $NEW refs/heads/feat/ok")
+case "$out" in
+    *R3*) ok "linked worktree: its git dir belongs to the worktree, so R3 fires" ;;
+    *)    no "linked worktree: enforcement skipped - output: $out" ;;
+esac
+check_blocked "a real commit in that linked worktree is blocked by R3 as well" "R3" \
+    git -C "$ROOT/quar-wt" commit --allow-empty -m "feat: unpublished work in a worktree"
+check_ok "push into the bare remote (a real receive side) still works" \
+    in_repo "$w" "git push -q origin main:received && git fetch -q origin"
+out=$(guard_out "$ROOT/quar/remote.git" prepared "$ZERO $NEW refs/heads/feat/received")
+if [ -z "$out" ]; then
+    ok "bare remote with the marker: receive side, allowed"
+else
+    no "bare remote should be exempt but said: $out"
 fi
 
 # =========================================================================== #
@@ -297,7 +527,7 @@ check_ok "back on main" git -C "$w" checkout -q main
 case_begin "chaining - the repo's own hooks still run"
 # =========================================================================== #
 w=$(new_sandbox chain) || { p "FATAL: fixture failed"; exit 1; }
-git -C "$w" config guardrails.maxBranches 9
+git config --global guardrails.maxBranches 9
 check_ok "branch with upstream" in_repo "$w" "git checkout -q -b feat/one && git push -q -u origin feat/one"
 
 cat >"$w/.git/hooks/pre-commit" <<'HOOK'
@@ -399,7 +629,7 @@ check_ok "python sources compile" python3 -m py_compile "$GUARD" "$GIT_TIDY"
 case_begin "git-tidy - report, dry run, --prune"
 # =========================================================================== #
 w=$(new_sandbox tidy1) || { p "FATAL: fixture failed"; exit 1; }
-git -C "$w" config guardrails.maxBranches 9
+git config --global guardrails.maxBranches 9
 check_ok "branch + publish + commit" \
     in_repo "$w" "git checkout -q -b feat/one && git push -q -u origin feat/one && git commit -q --allow-empty -m 'feat: work' && git push -q origin feat/one"
 advance_remote "$w" feat/one
@@ -430,7 +660,7 @@ git -C "$w" rev-parse --verify --quiet refs/heads/feat/wt >/dev/null && ok "--pr
 git -C "$w" worktree list | grep -q "tidy-wt" && no "prunable worktree survived --prune" || ok "worktree prune removed the prunable worktree"
 
 w=$(new_sandbox tidy2) || { p "FATAL: fixture failed"; exit 1; }
-git -C "$w" config guardrails.maxBranches 9
+git config --global guardrails.maxBranches 9
 check_ok "feat/equal (at main, published)" in_repo "$w" "git checkout -q -b feat/equal && git push -q -u origin feat/equal && git checkout -q main"
 check_ok "feat/gone (published then deleted on origin)" \
     in_repo "$w" "git checkout -q -b feat/gone && git push -q -u origin feat/gone && git push -q origin --delete feat/gone && git fetch -q --prune origin && git checkout -q main"

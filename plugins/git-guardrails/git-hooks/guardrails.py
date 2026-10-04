@@ -18,14 +18,20 @@ Rules (refs/heads/* only; every other namespace - refs/tags, refs/remotes,
 refs/notes, AUTO_MERGE - and symref lines such as HEAD updates are always
 allowed):
 
-  D           default branch = target of refs/remotes/origin/HEAD, else "main"
-              if refs/heads/main exists, else "master".
+  D           default branch, in order: target of the refs/remotes/origin/HEAD
+              symref, else refs/remotes/origin/main, else refs/remotes/origin/master,
+              else refs/heads/main, else refs/heads/master, else "master". (A fresh
+              clone of an empty remote has no refs/remotes/origin/HEAD at all, so
+              the remote-tracking refs are the fallback; `git ls-remote --symref` is
+              too slow to ask on every ref transaction.)
   HAS_REMOTE  the repo has a remote named "origin".
   R1 naming   creating refs/heads/X (X != D): X must match
               ^(fix|feat|chore|docs)/[a-z0-9][a-z0-9._-]*$
   R2 budget   creating refs/heads/X (X != D): the count of existing local
               branches other than D (and other than X) must be <
-              `git config --get guardrails.maxBranches` (default 1).
+              `git config --global --get guardrails.maxBranches` (default 1, read
+              from the user-global config ONLY - a repo cannot relax it for itself,
+              and there is no bypass flag).
               Always allowed: creating D itself, and creating the very first
               branch of a repo that has no branches yet (fresh clone/init).
   R3 upstream updating refs/heads/X (X != D) when HAS_REMOTE and
@@ -41,7 +47,10 @@ Defence in depth, in this order, before any rule runs:
   * lines whose refname is not refs/heads/* are ignored (refs/tags, refs/notes,
     refs/remotes, ORIG_HEAD, AUTO_MERGE, ...), as are symref lines.
   * a line whose new value is all zeros is a deletion -> always allowed.
-  * GIT_QUARANTINE_PATH set -> allowed: this is the receiving side of a push.
+  * bare repository -> allowed: a push into a *local* bare remote runs this hook on
+    the receiving side too, where R2 would count the server's branches. Everything
+    non-bare is enforced, linked worktrees included. GIT_QUARANTINE_PATH is never a
+    bypass: git refuses ref updates outright while it is exported.
   * no resolvable repository -> allowed (true while `git init` is still writing
     HEAD/objects; its own plumbing refuses, and there is nothing to police yet).
   * bare repository -> allowed: a push into a *local* bare remote runs this hook
@@ -173,6 +182,28 @@ def is_bare():
     return git_out("rev-parse", "--is-bare-repository") == "true"
 
 
+def receive_side():
+    """True only for a real receive-side run: a bare repository.
+
+    A `git push` into a *local* bare remote runs this hook on the receiving side
+    too, where R2 would count the server's branches and R4 would compare the push
+    against the wrong origin. The receiving side is bare, so bareness is the test.
+
+    GIT_QUARANTINE_PATH is deliberately NOT used as a bypass signal. Two reasons,
+    both measured:
+      * git itself refuses every ref update while that variable is exported
+        ("fatal: ref updates forbidden inside quarantine environment"), so the
+        marker cannot smuggle a write past anything - it only disables git.
+      * every heuristic built on it misfires. Requiring GIT_DIR to sit outside the
+        working tree exempted ordinary *linked worktrees*, whose git dir
+        (`<common>/worktrees/<name>`) lives outside the worktree by design - that
+        was a real bypass, caught by a test.
+
+    So: enforce in every non-bare repository, marker or no marker.
+    """
+    return is_bare()
+
+
 def local_branches():
     """Short names of the local branches that exist right now."""
     out = git_out("for-each-ref", "--format=%(refname)", "refs/heads")
@@ -185,7 +216,20 @@ def local_branches():
 
 
 def default_branch(remote):
-    """D: origin/HEAD target, else "main" if refs/heads/main exists, else "master"."""
+    """D, in this order:
+
+      1. target of the refs/remotes/origin/HEAD symref, when it resolves
+      2. refs/remotes/origin/main, then refs/remotes/origin/master
+      3. refs/heads/main, then refs/heads/master
+      4. "master" (nothing exists yet - fresh repo)
+
+    Step 2 exists because a fresh clone can have no refs/remotes/origin/HEAD at
+    all: cloning an empty remote does not create it, `git remote set-head -a` has
+    to be run to fix it up, and it can be dangling or not a symref at all. We do
+    not use `git ls-remote --symref origin HEAD` - that is a network round trip
+    inside every ref transaction. A remote-tracking ref is a local, honest answer:
+    if origin/main exists locally, main is the branch that came from origin.
+    """
     if remote:
         rc, out = git("symbolic-ref", "--quiet", ORIGIN_NS + "HEAD")
         target = out.strip()
@@ -193,13 +237,24 @@ def default_branch(remote):
             name = target[len(ORIGIN_NS):]
             if name:
                 return name
-    if ref_exists(BRANCH_NS + "main"):
-        return "main"
+        for candidate in ("main", "master"):
+            if ref_exists(ORIGIN_NS + candidate):
+                return candidate
+    for candidate in ("main", "master"):
+        if ref_exists(BRANCH_NS + candidate):
+            return candidate
     return "master"
 
 
 def max_branches():
-    rc, out = git("config", "--get", "--int", "guardrails.maxBranches")
+    """R2 limit, read from the USER-GLOBAL config only.
+
+    `git config --global --get --int guardrails.maxBranches`. Repo-local and
+    worktree-local values are deliberately ignored: a repository (or a command run
+    inside it) must not be able to relax its own guardrail. The limit is one
+    human decision, made once per machine, and there is no bypass flag.
+    """
+    rc, out = git("config", "--global", "--get", "--int", "guardrails.maxBranches")
     text = out.strip()
     if rc != 0 or not text:
         return DEFAULT_MAX_BRANCHES
@@ -264,11 +319,13 @@ def msg_r2(name, short, others, limit, default):
     listed = ", ".join(sorted(others))
     return (
         "%s R2 (branch budget): creating %s would leave %d local branches besides the "
-        "default branch %s, and the limit is %d (`git config --get guardrails.maxBranches`, "
-        "default 1). Counted: %s. Nothing changed: the reference transaction aborted. Fix: "
-        "delete the merged ones first - `git branch -d <branch>`, or run "
-        "`plugins/git-guardrails/bin/git-tidy --prune` to see what is safe - then retry; "
-        "to raise the cap for this repo: `git config guardrails.maxBranches 5`."
+        "default branch %s, and the limit is %d. Counted: %s. Nothing changed: the "
+        "reference transaction aborted. Fix: finish or delete the work that is already "
+        "there - `git branch -d <branch>` for one that is merged, or run "
+        "`plugins/git-guardrails/bin/git-tidy` to see which ones are safe and "
+        "`bin/git-tidy --prune` to remove them - then retry. If this really needs more "
+        "branches open at once, ask the user to decide; a repository cannot raise this "
+        "limit for itself."
     ) % (PLUGIN, name, len(others), default, limit, listed)
 
 
@@ -353,8 +410,8 @@ def evaluate(state, data):
     ]
     if not candidates:
         return []
-    if os.environ.get("GIT_QUARANTINE_PATH"):
-        return []  # receiving side of a push; see module docstring
+    if receive_side():
+        return []  # bare repository: the receiving side of a push, see receive_side()
     # No repository yet (`git init` runs its own ref transaction before HEAD and
     # objects exist, so its plumbing refuses) - nothing to police there.
     if not git_common_dir():
@@ -424,9 +481,10 @@ def fail_closed(summary, tb_text=None):
         lines.append("Traceback summary:")
         lines.extend("  " + ln for ln in tail)
     lines.append(
-        "Please report this at %s with the text above, your `git --version` and the "
-        "command you ran. To bypass the guardrails for one single command: "
-        "git -c core.hooksPath=\"$(git rev-parse --git-common-dir)/hooks\" <subcommand> ..."
+        "Report it at %s with the text above, your `git --version` and the command you "
+        "ran, and tell the user what happened. Do NOT disable or work around the "
+        "guardrails (no --no-verify, no core.hooksPath override, no GIT_QUARANTINE_PATH) "
+        "- a guardrail that quietly steps aside is not a guardrail."
         % ISSUES_URL
     )
     sys.stderr.write("\n".join(lines) + "\n")
