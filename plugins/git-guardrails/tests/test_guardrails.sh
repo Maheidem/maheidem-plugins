@@ -254,7 +254,106 @@ check_ok "checkout -b fix/retry allowed" git -C "$w" checkout -q -b fix/retry
 w=$(new_sandbox r1good2) || { p "FATAL: fixture failed"; exit 1; }
 check_ok "branch chore/add.git-tidy_sh allowed" git -C "$w" branch chore/add.git-tidy_sh
 w=$(new_sandbox r1good3) || { p "FATAL: fixture failed"; exit 1; }
+w=$(new_sandbox r1good3) || { p "FATAL: fixture failed"; exit 1; }
 check_blocked "branch feat/-leading dash rejected" "R1" git -C "$w" branch feat/-dash
+
+# The fix we print must be a name we would ACCEPT. 0.3.0 suggested
+# "git switch -c feat/Bad_Name" for refs/heads/Bad_Name - and feat/Bad_Name
+# fails R1 itself (uppercase after the slash), so following our own advice got you
+# rejected a second time. Slugify: lowercase, [^a-z0-9._-] -> '-', collapse dashes,
+# strip punctuation, keep a valid prefix, never suggest anything the regex rejects.
+case_begin "R1 - the suggested fix name passes R1 itself"
+w=$(new_sandbox r1slug) || { p "FATAL: fixture failed"; exit 1; }
+ZERO=0000000000000000000000000000000000000000
+HEADOID=$(git -C "$w" rev-parse HEAD)
+
+# suggestion <text> - pull the name out of "`git switch -c <name>`"
+suggestion() { printf '%s' "$1" | sed -n 's/.*git switch -c \([^`]*\)`.*/\1/p' | head -1; }
+
+for bad in Bad_Name UPPER feat/Bad_Name fix/Login_Bug topic/My_Idea; do
+    out=$(git -C "$w" branch "$bad" 2>&1); rc=$?
+    if [ $rc -eq 0 ]; then
+        no "R1 should have refused $bad"
+    else
+        ok "$bad refused by R1"
+    fi
+    sug=$(suggestion "$out")
+    if [ -n "$sug" ] && printf '%s\n' "$sug" | grep -Eq '^(fix|feat|chore|docs)/[a-z0-9][a-z0-9._-]*$'; then
+        ok "suggested name for $bad is R1-valid ($sug)"
+    else
+        no "suggested name for $bad is NOT R1-valid (got '$sug')"
+    fi
+    # the suggestion must be creatable: the hook has to let it through
+    if git -C "$w" branch "$sug" >/dev/null 2>&1; then
+        ok "and $sug is really accepted (created, then removed)"
+        git -C "$w" branch -d "$sug" >/dev/null 2>&1
+    else
+        no "$sug was refused: $(git -C "$w" branch "$sug" 2>&1 | head -1)"
+    fi
+    if printf '%s' "$out" | grep -q "switch -c [^\`]*[A-Z]"; then
+        no "message for $bad still suggests a name with capitals"
+    fi
+done
+
+# names git itself will not even take on the command line - drive the hook directly
+for bad in "My Feature" "Some/Two Words" "feat/" "---" "WEIRD!!name"; do
+    out=$( cd "$w" && python3 "$GUARD" prepared <<< "$ZERO $HEADOID refs/heads/$bad" 2>&1 )
+    sug=$(suggestion "$out")
+    if printf '%s\n' "$sug" | grep -Eq '^(fix|feat|chore|docs)/[a-z0-9][a-z0-9._-]*$'; then
+        ok "empty/awkward input '$bad' -> R1-valid suggestion ($sug)"
+    else
+        no "empty/awkward input '$bad' -> bad suggestion (got '$sug', output: $(printf '%s' "$out" | head -1))"
+    fi
+done
+
+# an empty tail (refs/heads/) is not a ref at all: git's own check_refname_format
+# refuses it, so guardrails filters it out instead of pretending to police it.
+if git -C "$w" branch "" >/dev/null 2>&1; then
+    no "git accepted an empty branch name (unexpected on this git)"
+else
+    ok "git itself refuses an empty branch name (no enforcement needed there)"
+fi
+out=$( cd "$w" && python3 "$GUARD" prepared <<< "$ZERO $HEADOID refs/heads/" 2>&1 )
+if [ -z "$out" ]; then
+    ok "refs/heads/ (empty tail) is filtered as not-a-branch, allowed silently by design"
+else
+    no "expected refs/heads/ to be filtered, got: $(printf '%s' "$out" | head -1)"
+fi
+if printf '%s' "$(python3 -c "import importlib.util,sys;spec=importlib.util.spec_from_file_location('g','$GUARD');g=importlib.util.module_from_spec(spec);spec.loader.exec_module(g);print(g.r1_suggestion(''))")" | grep -Eq '^(fix|feat|chore|docs)/[a-z0-9][a-z0-9._-]*$'; then
+    ok "r1_suggestion('') still returns a valid name (feat/change)"
+else
+    no "r1_suggestion('') returned garbage"
+fi
+
+# a valid prefix must be KEPT (fix/ stays fix/), and a non-ASCII name must survive
+out=$( cd "$w" && python3 "$GUARD" prepared <<< "$ZERO $HEADOID refs/heads/fix/Login_Bug" 2>&1 )
+if printf '%s' "$out" | grep -q 'switch -c fix/login_bug`'; then
+    ok "valid prefix preserved and tail slugified (fix/Login_Bug -> fix/login_bug)"
+else
+    no "prefix not preserved: $(printf '%s' "$out" | head -1)"
+fi
+out=$( cd "$w" && python3 "$GUARD" prepared <<< "$ZERO $HEADOID refs/heads/docs/caf%C3%A9--WIFI" 2>&1 )
+if printf '%s' "$out" | grep -q 'switch -c docs/'; then
+    ok "non-ascii tail still yields a docs/ suggestion"
+else
+    no "non-ascii tail produced no suggestion: $(printf '%s' "$out" | head -1)"
+fi
+# exhaustive unit check straight off the regex
+python3 - "$GUARD" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+bad = ["Bad_Name", "feat/Bad_Name", "UPPER", "My Feature", "topic/My_Idea",
+       "feature/login", "fix/Login_Bug", "docs//x", "chore/2.0_release",
+       "café/wi-Fi", "-dash", "feat/", "", "...", "A/B/C"]
+bad_out = [b for b in bad if not g.BRANCH_NAME_RE.match(g.r1_suggestion(b))]
+print("unit: %d inputs, %d bad suggestions" % (len(bad), len(bad_out)))
+if bad_out:
+    print("FAILED: " + ", ".join(repr(b) + "->" + repr(g.r1_suggestion(b)) for b in bad_out))
+    sys.exit(1)
+PY
+if [ $? -eq 0 ]; then ok "r1_suggestion() output matches R1 for every probe input"; else no "r1_suggestion() produced a name R1 rejects"; fi
+
 
 # D is whatever origin/HEAD points at: move it to "trunk" and check that creating
 # the default branch is allowed even though the name breaks R1.

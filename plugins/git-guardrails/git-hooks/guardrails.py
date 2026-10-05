@@ -75,6 +75,7 @@ import re
 import subprocess
 import sys
 import traceback
+import unicodedata
 
 PLUGIN = "git-guardrails"
 ISSUES_URL = "https://github.com/Maheidem/maheidem-plugins/issues"
@@ -84,6 +85,7 @@ STATES = ("preparing", "prepared", "committed", "aborted")
 ZERO_LENS = (40, 64)
 HEX = set("0123456789abcdefABCDEF")
 BRANCH_NAME_RE = re.compile(r"^(fix|feat|chore|docs)/[a-z0-9][a-z0-9._-]*$")
+ALLOWED_PREFIXES = ("fix", "feat", "chore", "docs")
 DEFAULT_MAX_BRANCHES = 1
 
 
@@ -303,9 +305,46 @@ def parse_lines(data):
 # rule messages (one paragraph each: rule id, why, fix command)
 # --------------------------------------------------------------------------- #
 
+def slug_tail(text):
+    """Make the tail of a branch name that R1 actually accepts.
+
+    ASCII-fold (cafe -> cafe), lowercase, map every character outside
+    [a-z0-9._-] to '-', collapse runs of '-', strip leading/trailing
+    punctuation. Never returns empty.
+    """
+    folded = unicodedata.normalize("NFKD", text)
+    folded = folded.encode("ascii", "ignore").decode("ascii")
+    folded = folded.lower()
+    slug = re.sub(r"[^a-z0-9._-]+", "-", folded)
+    slug = re.sub(r"-{2,}", "-", slug)
+    slug = slug.strip("-._")
+    return slug or "change"
+
+
+def r1_suggestion(short):
+    """The name to suggest instead of `short`; guaranteed to match R1.
+
+    Keeps the user's prefix when it is already one of fix|feat|chore|docs
+    (so `fix/LoginBug` becomes `fix/loginbug`, not `feat/loginbug`), else
+    defaults to feat/. The result is checked against BRANCH_NAME_RE and falls
+    back to feat/change rather than ever suggesting a name we would reject -
+    a fix instruction that fails the rule is worse than no instruction.
+    """
+    if "/" in short:
+        prefix, rest = short.split("/", 1)
+        prefix = prefix.lower()
+        if prefix not in ALLOWED_PREFIXES:
+            prefix = "feat"
+    else:
+        prefix, rest = "feat", short
+    name = "%s/%s" % (prefix, slug_tail(rest))
+    if not BRANCH_NAME_RE.match(name):
+        name = "feat/change"
+    return name
+
+
 def msg_r1(name, short):
-    tail = short.split("/")[-1].strip("-._") or "change"
-    suggestion = "feat/" + tail
+    suggestion = r1_suggestion(short)
     return (
         "%s R1 (branch naming): creating %s was rejected because branch names must match "
         "%s - prefix fix|feat|chore|docs, lowercase first character after the slash. "
