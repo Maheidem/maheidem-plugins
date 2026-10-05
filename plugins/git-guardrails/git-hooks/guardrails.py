@@ -435,6 +435,147 @@ def check_update(name, short, new_oid, remote, default):
     return None
 
 
+# --------------------------------------------------------------------------- #
+# P1 / P2 - the push gate (git-hooks/pre-push)
+# --------------------------------------------------------------------------- #
+#
+# The Claude Code PreToolUse gate refuses `git push --force`, but it only covers
+# sessions that load this plugin. pi children, Codex, a shell, cron: none of them go
+# through Claude Code. The push is checked HERE instead, in a hook git always runs,
+# so the rule travels with the repository rather than with the agent.
+#
+# Contract (git docs + measured on git 2.54):
+#   argv:  pre-push <remote-name> <remote-url>
+#   stdin: one line per ref  "<local-ref> <local-oid> <remote-ref> <remote-oid>"
+#          a delete push sends local-ref "(delete)" with a zero local_oid (measured),
+#          `+refspec` pushes may send local-ref "HEAD", so local-ref is NOT parsed as
+#          a refname - the remote_ref is the thing we are about to change.
+#          "Everything up-to-date" sends no lines at all.
+
+PUSH_TAG_NS = "refs/tags/"
+DELETE_LITERAL = "(delete)"
+
+
+def msg_p1(remote, remote_ref, remote_oid, local_oid, extra):
+    return (
+        "%s P1 (non-fast-forward): pushing to %s on %s would rewrite history. The remote "
+        "commit %s is NOT an ancestor of the commit you are pushing (%s), so those commits "
+        "would disappear from %s - this covers `--force`, `--force-with-lease` and a "
+        "`+`-prefixed refspec equally, because the ref move is the same either way. "
+        "Nothing was pushed. Fix: `git pull --rebase origin %s` (or fetch and rebase by "
+        "hand) and push the result, or push to a NEW branch - `git push -u origin "
+        "<new-name>` - and open a PR. If the remote commits really must be thrown away, "
+        "that is a human decision: tell the user and let them run it. %s"
+    ) % (PLUGIN, remote, remote_ref, short_oid(remote_oid), short_oid(local_oid),
+          remote_ref, branch_tail(remote_ref), extra)
+
+
+def msg_p2(remote, remote_ref, remote_oid):
+    kind = "tag" if remote_ref.startswith(PUSH_TAG_NS) else "branch"
+    return (
+        "%s P2 (remote deletion): this push would delete the remote %s %s on %s (it "
+        "currently points at %s). Deleting a remote ref takes the work off the shared "
+        "history for everyone, and a branch that was never merged is gone for good - a "
+        "force-push in a different costume. Nothing was pushed. Fix: do not delete it. "
+        "If the remote %s is genuinely obsolete, tell the user and let THEM run "
+        "`git push origin --delete %s`; merging it first is usually the better move "
+        "(`git -C <repo> bin/git-tidy` shows which local branches are provably safe)."
+    ) % (PLUGIN, kind, remote_ref, remote, short_oid(remote_oid), kind,
+          branch_tail(remote_ref))
+
+
+def msg_p_unknown(remote, remote_ref, remote_oid):
+    return (
+        "%s P1 (non-fast-forward, unknown remote commit): %s on %s currently points at "
+        "%s, which is not in your local object database - so this hook cannot prove your "
+        "push is a fast-forward, and it will not guess. Guessing is how history gets "
+        "eaten. Nothing was pushed. Fix: `git fetch origin` (then `git pull --rebase "
+        "origin %s`) and push again; if it still fails, the push is a rewrite and you "
+        "must ask the user. Failing closed here is deliberate: a hook that stays quiet "
+        "when it is unsure is not a guardrail."
+    ) % (PLUGIN, remote_ref, remote, short_oid(remote_oid), branch_tail(remote_ref))
+
+
+def short_oid(oid):
+    return oid[:12] if oid else "(none)"
+
+
+def branch_tail(remote_ref):
+    for ns in (BRANCH_NS, PUSH_TAG_NS):
+        if remote_ref.startswith(ns):
+            return remote_ref[len(ns):]
+    return remote_ref
+
+
+def evaluate_push(remote, data):
+    """Return violations for this push ([] == allowed)."""
+    violations = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        fields = line.split()
+        if len(fields) != 4:
+            if line.strip():
+                raise GuardrailError(
+                    "unexpected pre-push stdin line %r (expected "
+                    "'<local-ref> <local-oid> <remote-ref> <remote-oid>' from git)" % line
+                )
+            continue
+        _local_ref, local_oid, remote_ref, remote_oid = fields
+        # Anything outside the namespaces we police (refs/notes, refs/keep-around,
+        # LFS refs, ...) is left alone, exactly as in the reference-transaction path.
+        if not (remote_ref.startswith(BRANCH_NS) or remote_ref.startswith(PUSH_TAG_NS)):
+            continue
+        is_delete = is_zero_oid(local_oid) or local_oid == DELETE_LITERAL
+        if remote_oid == "" or is_zero_oid(remote_oid):
+            # New ref on the remote: creating is allowed (that is how work gets out).
+            continue
+        if is_delete:
+            violations.append(msg_p2(remote, remote_ref, remote_oid))
+            continue
+        if local_oid == DELETE_LITERAL or not is_oid(local_oid):
+            raise GuardrailError(
+                "cannot judge the push of %s: local oid %r is not an object id" % (remote_ref, local_oid)
+            )
+        if remote_ref.startswith(PUSH_TAG_NS):
+            if remote_oid != local_oid:
+                # Moving a published tag rewrites a release marker. Never silent.
+                violations.append(msg_p1(
+                    remote, remote_ref, remote_oid, local_oid,
+                    "This is a TAG: never move or re-point a tag that exists on the "
+                    "remote. If the release was wrong, cut the next one (v1.2.3 -> "
+                    "v1.2.4) and tell the user, or ask them to delete/move the tag."))
+            continue
+        if not commit_exists(remote_oid):
+            violations.append(msg_p_unknown(remote, remote_ref, remote_oid))
+            continue
+        if not ref_is_ancestor(remote_oid, local_oid):
+            violations.append(msg_p1(remote, remote_ref, remote_oid, local_oid,
+                                     "Or inspect it: `git log --oneline %s..%s`." % (local_oid, remote_oid)))
+    return violations
+
+
+def run_prepush(args):
+    """`pre-push <remote> <url>`: gate the push, then chain to the repo's own hook."""
+    remote = args[0] if args else "origin"
+    data = sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else b""
+    try:
+        if len(args) > 1 and args[1].startswith("--"):
+            raise GuardrailError("unexpected pre-push argument %r" % args[1])
+        # Same carve-outs as the ref transaction: a bare repo is a receiving side and
+        # "no common dir" means there is no repository here yet.
+        if not git_common_dir() or receive_side():
+            return chain("pre-push", args, data)
+        violations = evaluate_push(remote, data)
+        if violations:
+            for text in violations:
+                sys.stderr.write(text + "\n")
+            return 1
+        return chain("pre-push", args, data)
+    except GuardrailError as exc:
+        return fail_closed(str(exc))
+    except Exception:  # noqa: BLE001 - internal errors fail closed
+        return fail_closed("unexpected exception in %s pre-push" % PLUGIN, traceback.format_exc())
+
+
 def evaluate(state, data):
     """Return the list of violations for this transaction ([] == allowed)."""
     updates = parse_lines(data)
@@ -531,10 +672,15 @@ def fail_closed(summary, tb_text=None):
 
 
 def main(argv):
-    # The shim calls us as `guardrails.py reference-transaction <state>`; direct
-    # calls may pass just the state. Accept both, fail closed on anything else.
+    # The shims call us as `guardrails.py reference-transaction <state>` and
+    # `guardrails.py pre-push <remote> <url>`. A direct call may skip the hook name,
+    # in which case a word that looks like a transaction state is treated as one.
+    # Anything unrecognised fails closed.
     args = list(argv[1:])
-    if args and args[0] == "reference-transaction":
+    hook = args[0] if args else ""
+    if hook == "pre-push":
+        return run_prepush(args[1:])
+    if hook == "reference-transaction":
         args = args[1:]
     state = args[0] if args else ""
     try:

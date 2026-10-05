@@ -698,6 +698,140 @@ check_ok "a non-executable repo hook is skipped" git -C "$w" branch feat/noexec-
 check_ok "shim with no repo hook at all exits 0" sh -c "test ! -e '$w/.git/hooks/pre-rebase' && '$HOOKS/pre-rebase' a b </dev/null"
 
 # =========================================================================== #
+case_begin "pre-push - P1 non-fast-forward, P2 remote deletion"
+# =========================================================================== #
+# The Claude Code PreToolUse gate refuses `git push --force`, but it only covers
+# sessions that load the plugin. pre-push runs for EVERYONE - pi children, Codex,
+# scripts, cron, a human in a terminal - so the push rule lives here too.
+# stdin is "<local-ref> <local-oid> <remote-ref> <remote-oid>"; measured on git
+# 2.54: a delete push sends the literal "(delete)" with a zero local_oid, a
+# `+refspec` push can send local_ref "HEAD", and "Everything up-to-date" sends no
+# lines at all - so the DECISION is taken from remote_ref/remote_oid, never by
+# parsing local_ref as a refname.
+w=$(new_sandbox push1) || { p "FATAL: fixture failed"; exit 1; }
+git config --global guardrails.maxBranches 9
+check_ok "publish feat/one" \
+    in_repo "$w" "git checkout -q -b feat/one && git push -q -u origin feat/one"
+check_ok "fast-forward push after a normal commit is allowed" \
+    in_repo "$w" "git commit -q --allow-empty -m 'feat: work' && git push -q origin feat/one"
+BEFORE=$(git -C "$w" rev-parse origin/feat/one)
+UNKNOWN=$(date +%s%N | git hash-object --stdin)
+
+# P1 - amend then force, three ways
+check_blocked "push --force after an amend is refused (P1)" "P1" \
+    in_repo "$w" "git commit -q --amend --allow-empty -m 'feat: rewritten' && git push --force origin feat/one"
+check_blocked "push --force-with-lease is refused too (P1)" "P1" \
+    in_repo "$w" "git push --force-with-lease origin feat/one"
+check_blocked "push origin +HEAD:refs/heads/... is refused (P1)" "P1" \
+    in_repo "$w" "git push origin +HEAD:refs/heads/feat/one"
+check_blocked "P1 message says the remote commit is not an ancestor" "NOT an ancestor" \
+    in_repo "$w" "git push --force origin feat/one"
+check_blocked "P1 message gives the real fix (rebase)" "git pull --rebase origin feat/one" \
+    in_repo "$w" "git push --force origin feat/one"
+check_blocked "P1 mentions --force-with-lease and the +refspec equivalence" "force-with-lease" \
+    in_repo "$w" "git push --force origin feat/one"
+if [ "$(git -C "$w" ls-remote origin refs/heads/feat/one | cut -f1)" = "$BEFORE" ]; then
+    ok "nothing was pushed: the remote ref still points at $BEFORE"
+else
+    no "the remote ref MOVED despite P1: $(git -C "$w" ls-remote origin refs/heads/feat/one)"
+fi
+if printf '%s\n' "$(cd "$w" && git push --force origin feat/one 2>&1)" | grep -qF -- "--no-verify"; then
+    no "P1 output suggests a bypass (--no-verify)"
+else
+    ok "P1 output prints no bypass command"
+fi
+# rebase is the honest path and it must still work
+check_ok "rebase onto origin makes the push a fast-forward again" \
+    in_repo "$w" "git rebase -q origin/feat/one"
+check_ok "a new commit then pushes normally (fast-forward)" \
+    in_repo "$w" "git commit -q --allow-empty -m 'feat: after rebase' && git push -q origin feat/one"
+check_ok "the remote moved by the legitimate fast-forward" \
+    sh -c "test \"\$(git -C '$w' ls-remote origin refs/heads/feat/one | cut -f1)\" = \"\$(git -C '$w' rev-parse feat/one)\""
+
+# P2 - deleting a remote branch
+check_ok "create + publish a second branch" \
+    in_repo "$w" "git checkout -q -b feat/tmp && git push -q -u origin feat/tmp"
+check_blocked "push --delete origin feat/tmp is refused (P2)" "P2" \
+    in_repo "$w" "git push --delete origin feat/tmp"
+check_blocked "push origin :feat/tmp (the other delete syntax) is refused (P2)" "P2" \
+    in_repo "$w" "git push origin :refs/heads/feat/tmp"
+check_blocked "P2 names it a remote deletion" "remote deletion" \
+    in_repo "$w" "git push --delete origin feat/tmp"
+if git -C "$w" ls-remote origin refs/heads/feat/tmp | grep -q .; then
+    ok "the remote branch is still there after the refused delete"
+else
+    no "the remote branch disappeared despite P2"
+fi
+
+# new refs are allowed - that is how work gets out
+check_ok "pushing a brand-new branch is allowed" \
+    in_repo "$w" "git checkout -q -b feat/fresh && git push -q -u origin feat/fresh"
+check_ok "tag v1 created locally from HEAD" git -C "$w" tag v1
+TAG_TARGET=$(git -C "$w" rev-parse v1)
+check_ok "pushing a new tag is allowed" git -C "$w" push -q origin refs/tags/v1
+check_ok "the new tag really landed on the remote" \
+    in_repo "$w" "git ls-remote origin refs/tags/v1 | grep -q ."
+# P1 for tags: moving a published tag
+check_ok "commit so the tag can be moved" git -C "$w" commit -q --allow-empty -m "feat: after v1"
+check_ok "move the tag locally (local tag moves are not policed)" git -C "$w" tag -f -a -m "release v1 moved" v1
+check_blocked "pushing the moved tag is refused (P1, tag)" "P1" \
+    in_repo "$w" "git push --force origin refs/tags/v1"
+check_blocked "refused tag move tells you to cut the next version" "v1.2.4" \
+    in_repo "$w" "git push --force origin refs/tags/v1"
+check_blocked "deleting the remote tag is refused (P2, tag)" "P2" \
+    in_repo "$w" "git push --delete origin refs/tags/v1"
+REMOTE_TAG=$(git -C "$w" ls-remote origin refs/tags/v1 | cut -f1)
+if [ "$REMOTE_TAG" = "$TAG_TARGET" ]; then
+    ok "the remote tag is untouched (still $TAG_TARGET, not the moved one)"
+else
+    no "the remote tag MOVED: $REMOTE_TAG (expected $TAG_TARGET)"
+fi
+
+# direct calls: the exact shapes git produces, plus fail-closed
+# DEL is the literal git sends for a delete push - held in a variable because bash 3.2
+# mis-parses a bare '(delete)' inside $( ) and the test would "pass" on a syntax error.
+DEL='(delete)'
+ZERO_OID=$ZERO
+check_blocked "direct: (delete) + zero local_oid -> P2" "P2" \
+    in_repo "$w" "printf '%s %s refs/heads/feat/tmp %s\n' '$DEL' $ZERO_OID \$(git rev-parse origin/feat/tmp) | python3 '$GUARD' pre-push origin url"
+check_blocked "direct: remote oid unknown locally -> refuses with a fetch hint" "git fetch origin" \
+    in_repo "$w" "printf 'refs/heads/feat/tmp %s refs/heads/feat/tmp %s\n' \$(git rev-parse HEAD) $UNKNOWN | python3 '$GUARD' pre-push origin url"
+# push the OLDER commit over the NEWER remote one: remote is not an ancestor of local
+check_blocked "direct: non-ancestor remote_oid -> P1" "P1" \
+    in_repo "$w" "printf 'refs/heads/feat/tmp %s refs/heads/feat/tmp %s\n' \$(git rev-parse origin/feat/tmp) \$(git rev-parse HEAD) | python3 '$GUARD' pre-push origin url"
+check_ok "direct: fast-forward remote_oid -> allowed" \
+    in_repo "$w" "printf 'refs/heads/feat/tmp %s refs/heads/feat/tmp %s\n' \$(git rev-parse feat/tmp) \$(git rev-parse origin/feat/tmp) | python3 '$GUARD' pre-push origin url"
+check_ok "direct: zero remote_oid (new ref) -> allowed" \
+    in_repo "$w" "printf 'refs/heads/feat/new %s refs/heads/feat/new %s\n' \$(git rev-parse HEAD) $ZERO_OID | python3 '$GUARD' pre-push origin url"
+check_ok "direct: other namespaces ignored (refs/notes rewrite)" \
+    in_repo "$w" "printf 'refs/notes/commits %s refs/notes/commits %s\n' \$(git rev-parse HEAD) \$(git rev-parse HEAD~1) | python3 '$GUARD' pre-push origin url"
+check_blocked "direct: malformed stdin line (too few fields) fails closed" "INTERNAL ERROR" \
+    in_repo "$w" "printf 'two\n' | python3 '$GUARD' pre-push origin url"
+check_ok "direct: empty stdin (Everything up-to-date) is fine" \
+    in_repo "$w" "printf '' | python3 '$GUARD' pre-push origin url"
+
+# carve-outs identical to the reference transaction: bare repo / no repo.
+# Each asserts the guard RAN (the premise oid resolves) so an empty answer means
+# "allowed", never "the fixture died".
+BARE_MAIN=$(git --git-dir="$ROOT/push1/remote.git" rev-parse main)
+if [ -z "$BARE_MAIN" ]; then
+    no "premise: bare remote has no main to test with"
+else
+    out=$( cd "$ROOT/push1/remote.git" && printf '%s %s refs/heads/main %s\n' "$DEL" "$ZERO" "$BARE_MAIN" | python3 "$GUARD" pre-push origin url 2>&1 )
+    if [ $? -eq 0 ] && [ -z "$out" ]; then
+        ok "bare repository: receive-side carve-out applies to pre-push too"
+    else
+        no "bare repo was policed by pre-push (or died): $out"
+    fi
+fi
+out=$( cd /tmp && printf '%s %s refs/heads/main %s\n' "$DEL" "$ZERO" "$BARE_MAIN" | python3 "$GUARD" pre-push origin url 2>&1 )
+if [ $? -eq 0 ] && [ -z "$out" ]; then
+    ok "no repository at all: nothing to police, exits 0"
+else
+    no "pre-push policed outside a repository: $out"
+fi
+
+# =========================================================================== #
 case_begin "guardrails.py directly - states and fail-closed"
 # =========================================================================== #
 w=$(new_sandbox states) || { p "FATAL: fixture failed"; exit 1; }
@@ -734,8 +868,8 @@ check_ok "branch + publish + commit" \
 advance_remote "$w" feat/one
 check_ok "bring local main up to origin/main (so git branch -d will accept it)" \
     in_repo "$w" "git checkout -q main && git pull --ff-only -q origin main"
-check_ok "remote branch deleted -> upstream gone" \
-    in_repo "$w" "git push -q origin --delete feat/one && git fetch -q --prune origin"
+check_ok "remote branch deleted inside the bare remote (P2 refuses a delete push)" \
+    in_repo "$w" "GIT_DIR=$ROOT/tidy1/remote.git git update-ref -d refs/heads/feat/one \$(git -C '$w' rev-parse origin/feat/one) && git -C '$w' fetch -q --prune origin"
 check_ok "worktree added" git -C "$w" worktree add -q "$ROOT/tidy-wt" -b feat/wt
 check_ok "its directory removed" rm -rf "$ROOT/tidy-wt"
 check_ok "git reports the worktree as prunable" \
@@ -762,7 +896,7 @@ w=$(new_sandbox tidy2) || { p "FATAL: fixture failed"; exit 1; }
 git config --global guardrails.maxBranches 9
 check_ok "feat/equal (at main, published)" in_repo "$w" "git checkout -q -b feat/equal && git push -q -u origin feat/equal && git checkout -q main"
 check_ok "feat/gone (published then deleted on origin)" \
-    in_repo "$w" "git checkout -q -b feat/gone && git push -q -u origin feat/gone && git push -q origin --delete feat/gone && git fetch -q --prune origin && git checkout -q main"
+    in_repo "$w" "git checkout -q -b feat/gone && git push -q -u origin feat/gone && GIT_DIR=$ROOT/tidy2/remote.git git update-ref -d refs/heads/feat/gone \$(git rev-parse origin/feat/gone) && git fetch -q --prune origin && git checkout -q main"
 check_ok "feat/stale (own commit, not merged)" \
     in_repo "$w" "git checkout -q -b feat/stale && git push -q -u origin feat/stale && git commit -q --allow-empty -m 'feat: unreleased work' && git checkout -q main"
 check_ok "feat/noupstream (never published)" git -C "$w" checkout -q -b feat/noupstream

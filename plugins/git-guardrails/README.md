@@ -102,17 +102,43 @@ exported `GIT_QUARANTINE_PATH`. The R2 limit is read from the **user-global** co
 only, so a repository cannot raise it for itself - changing it is a human decision made
 once per machine, in `~/.gitconfig`.
 
+## The push gate - P1 / P2 (`git-hooks/pre-push`)
+
+`PreToolUse` can only police the agents that load it. pi children, Codex, scripts,
+cron and a human in a terminal never touch it - so the part of the policy that stops
+history being rewritten lives in a hook git runs for **everyone**.
+
+| rule | fires when | what it says |
+|---|---|---|
+| **P1** non-fast-forward | `remote_oid` is non-zero and is **not** an ancestor of `local_oid` | one paragraph naming P1, the two oids, and the fix: `git pull --rebase origin <branch>` then push, or push to a new branch and open a PR. If the remote commits really must go, that is a human decision |
+| **P1** unknown remote commit | `remote_oid` exists on the remote but not in your object database | refuses instead of guessing: `git fetch origin`, then retry. Failing closed when unsure is the point |
+| **P1** tag move | `refs/tags/*` on the remote exists and `local_oid` differs | never move a published tag; cut the next version (`v1.2.3` -> `v1.2.4`) or ask the user to move it |
+| **P2** remote deletion | `local_oid` is all zeros (or the literal `(delete)`) for a `refs/heads/*` or `refs/tags/*` remote ref | does not delete; tells you to merge first, and that `git push origin --delete <ref>` is the human's command to run |
+
+`--force`, `--force-with-lease` and a `+`-prefixed refspec are all the *same ref
+move*, so all three are caught by P1 - the flag is invisible by the time the hook
+sees it, which is exactly why the check is on the ref transition and not on the
+arguments. **Pushing new branches and tags and fast-forwards is allowed** - that is
+how work gets out. Same carve-outs as the ref transaction (bare repository = receive
+side, unresolvable repository = nothing to police), and after the checks pass it chains
+to the repository's own `pre-push` with stdin replayed.
+
+The decision is taken from `remote_ref` / `remote_oid`, never by parsing `local_ref`:
+measured on git 2.54, a delete push sends the literal `(delete)` as `local_ref`, a
+`+refspec` push can send `HEAD`, and "Everything up-to-date" sends no lines at all.
+
 ## Hook chaining
 
 `core.hooksPath` makes git **ignore** `.git/hooks` entirely. So every other standard
 hook name ships as a shim that hands the hook to the repository's own copy:
 
-`pre-commit`, `commit-msg`, `prepare-commit-msg`, `pre-push`, `post-checkout`,
+`pre-commit`, `commit-msg`, `prepare-commit-msg`, `post-checkout`,
 `post-merge`, `pre-rebase`, `post-rewrite` → `exec $(git rev-parse --git-common-dir)/hooks/<name>`,
 with arguments and stdin passed straight through; exit 0 when there is no such
 executable hook. Non-executable files are skipped (git would not run them anyway).
-`reference-transaction` also chains, after its own checks pass, with stdin **replayed**
-(git's ref lines are consumed by the checks first).
+`pre-push` and `reference-transaction` are the two that **enforce first** (P1/P2 and
+R1-R4) and then chain, with stdin **replayed** (git's lines are consumed by the checks
+first).
 
 That keeps husky, lefthook, pre-commit, git-lfs, Gerrit's `commit-msg` and any
 hand-written hook working - including a repo-local `pre-commit` that exits 1, which
@@ -274,12 +300,12 @@ delete them yourself. Without `origin/D` present, nothing is pruned.
 ## Tests
 
 ```bash
-bash plugins/git-guardrails/tests/test_guardrails.sh     # git side:    13 cases / 202
+bash plugins/git-guardrails/tests/test_guardrails.sh     # git side:    14 cases / 240
 bash plugins/git-guardrails/tests/test_claude_hooks.sh    # Claude Code:   6 cases / 123
 bash plugins/git-guardrails/tests/test_installer.sh       # installer:     7 cases /  54
 ```
 
-379 assertions in total, exit code 0 only when every one passes; a failure names the
+417 assertions in total, exit code 0 only when every one passes; a failure names the
 assertion and quotes stderr. Every case builds a fresh sandbox under `mktemp`.
 
 `test_guardrails.sh` - a bare `remote.git`, a clone, `main` pushed. `GIT_CONFIG_GLOBAL`
@@ -299,7 +325,13 @@ after `push -u`, rejected again after `--unset-upstream`, enforced for a commit 
 as a creation, deletions, other namespaces, detached HEAD, chaining (pre-commit /
 pre-push / commit-msg args / reference-transaction stdin, non-executable hooks skipped),
 every state argument, fail-closed output (no bypass command printed, and the
-quarantine marker is not a bypass), and all of `git-tidy` - never deleting `D`, the
+quarantine marker is not a bypass), the whole push gate against a real local bare remote: fast-forward and new-branch/new-tag pushes
+pass, `--force` after an amend / `--force-with-lease` / `+HEAD:refs/heads/...` are all
+P1 with the remote ref provably unmoved, `--delete` and the `:refs/heads/...` syntax are
+P2, moving a published tag is P1 and deleting it P2, plus direct-hook stdin for every
+shape git produces (including the literal `(delete)` and the unknown-remote-oid fetch
+hint) and the bare-repo/no-repo carve-outs,
+and `git-tidy` - never deleting `D`, the
 current branch, unmerged branches, branches checked out in a worktree, or branches
 without upstream.
 
@@ -353,7 +385,8 @@ plugin.json in .claude-plugin/plugin.json   manifest (not registered in marketpl
 git-hooks/guardrails.py                     all rule logic (stdlib only)
 git-hooks/reference-transaction             exec python3 guardrails.py reference-transaction "$@"
 git-hooks/_chain.sh                         shared chain helper
-git-hooks/{pre-commit,commit-msg,prepare-commit-msg,pre-push,
+git-hooks/pre-push                         push gate: P1 non-fast-forward, P2 remote deletion, then chains
+git-hooks/{pre-commit,commit-msg,prepare-commit-msg,
            post-checkout,post-merge,pre-rebase,post-rewrite}   chain shims
 hooks/hooks.json                            Claude Code wiring: PreToolUse(Bash) + Stop
 hooks/_guard.py                             shared: payload/cwd, git plumbing, D resolution

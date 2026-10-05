@@ -1,4 +1,13 @@
 #!/bin/sh
-# git-guardrails: chain the "pre-push" hook to this repository's own copy, if it has one.
-dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
-exec "$dir/_chain.sh" pre-push "$@"
+# git-guardrails: gate every push (P1 no non-fast-forward, P2 no remote deletion),
+# then chain to this repository's own pre-push hook.
+#
+# This is the part of the policy that does NOT depend on the agent cooperating: the
+# Claude Code PreToolUse gate only sees Claude Code sessions, while git runs this hook
+# for pi children, Codex, scripts, cron and a human in a terminal alike. git calls it
+# with `pre-push <remote-name> <remote-url>` and one line per ref on stdin,
+# "<local-ref> <local-oid> <remote-ref> <remote-oid>". All logic (including chaining
+# to the repo's own hook with stdin replayed) lives in guardrails.py. If python3 is
+# missing the exec fails and the push aborts - fail closed, by design.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || dir=.
+exec python3 "$dir/guardrails.py" pre-push "$@"
