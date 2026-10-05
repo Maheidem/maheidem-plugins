@@ -32,7 +32,7 @@ is deliberately *not* used: it is a network round trip inside every ref transact
 
 | Rule | Fires on | Condition | Fix it with |
 |------|----------|-----------|-------------|
-| **R1** naming | creating `refs/heads/X`, `X != D` | `X` does not match `^(fix\|feat\|chore\|docs)/[a-z0-9][a-z0-9._-]*$` | `git switch -c feat/<topic>` |
+| **R1** naming | creating `refs/heads/X`, `X != D` | `X` does not match `^(fix\|feat\|chore\|docs)/[a-z0-9][a-z0-9._-]*$` | `git switch -c <slug of X>` - a slugified name that itself passes R1 |
 | **R2** budget | creating `refs/heads/X`, `X != D` | count of existing local branches other than `D` (and other than `X`) is `>= guardrails.maxBranches` (default **1**, read from `git config --global` only) | `git branch -d <merged>` / `bin/git-tidy --prune` |
 | **R3** upstream | updating `refs/heads/X`, `X != D`, `HAS_REMOTE` | `branch.X.remote` is unset | `git push -u origin X` |
 | **R4** default branch | updating `refs/heads/D`, `HAS_REMOTE` | new oid is **not** ancestor-or-equal of `refs/remotes/origin/D` | `git switch -c feat/<topic>` + PR; `git pull --ff-only` is fine |
@@ -52,6 +52,16 @@ branch (`git config branch.feat.login.remote` is unset), so this work would stay
 machine and drift from origin. Nothing changed: the reference transaction aborted. Fix:
 `git push -u origin feat/login` ...
 ```
+
+The name R1 suggests is **slugified and checked against R1 before it is printed**:
+ASCII-folded, lowercased, anything outside `[a-z0-9._-]` becomes `-`, runs of dashes
+collapsed, leading/trailing punctuation stripped, and a prefix you already got right is
+kept (`fix/LoginBug` -> `fix/login_bug`, `feature/login` -> `feat/login`,
+`My Feature` -> `feat/my-feature`, `feat/-` -> `feat/change`). Until 0.3.1 it printed
+`feat/Bad_Name` for `Bad_Name` - a name R1 rejects too, so following our own advice got
+you refused twice. An unparseable name falls back to `feat/change` rather than to a
+suggestion we would refuse; the test feeds both real `git branch` calls and raw hook
+stdin, and asserts every suggestion is accepted and created.
 
 ### Deliberate carve-outs
 
@@ -264,12 +274,12 @@ delete them yourself. Without `origin/D` present, nothing is pruned.
 ## Tests
 
 ```bash
-bash plugins/git-guardrails/tests/test_guardrails.sh     # git side:    12 cases / 176
+bash plugins/git-guardrails/tests/test_guardrails.sh     # git side:    13 cases / 202
 bash plugins/git-guardrails/tests/test_claude_hooks.sh    # Claude Code:   6 cases / 123
 bash plugins/git-guardrails/tests/test_installer.sh       # installer:     7 cases /  54
 ```
 
-353 assertions in total, exit code 0 only when every one passes; a failure names the
+379 assertions in total, exit code 0 only when every one passes; a failure names the
 assertion and quotes stderr. Every case builds a fresh sandbox under `mktemp`.
 
 `test_guardrails.sh` - a bare `remote.git`, a clone, `main` pushed. `GIT_CONFIG_GLOBAL`
@@ -279,8 +289,10 @@ It is rewritten per fixture, so a `git config --global` set by one case cannot l
 the next. Covers: R1 (accept/reject, `D` from `origin/HEAD` set to `trunk`), the full
 `D` resolution order **without** `refs/remotes/origin/HEAD` (fresh clone of an empty
 remote, master-default remote with no symref at all, remote added but never fetched),
-R2 (limit 1, user-global limit honoured, **repo-local ignored**, re-allowed after a
-delete, fresh-init first-branch exception), R3 (rejected without upstream, allowed
+the slugified R1 suggestion (every suggestion is created for real to prove it passes,
+including raw-hook input like `My Feature` and `---`), R2 (limit 1, user-global limit
+honoured, **repo-local ignored**, re-allowed after a delete, fresh-init first-branch
+exception), R3 (rejected without upstream, allowed
 after `push -u`, rejected again after `--unset-upstream`, enforced for a commit in a
 *linked* worktree), R4 (direct commit on `main` rejected, `git pull --ff-only` allowed,
 `update-ref` to an unpublished commit rejected), no-origin repos, `git worktree add -b`
