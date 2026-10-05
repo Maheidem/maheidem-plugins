@@ -1,0 +1,9 @@
+#!/bin/sh
+# git-guardrails: enforce branch rules on every ref transaction.
+# git calls this with $1 = preparing|prepared|committed|aborted and lines
+# "<old-oid> <new-oid> <refname>" on stdin. All logic (including chaining to
+# the repo's own reference-transaction hook, with stdin replayed) lives in
+# guardrails.py. If python3 is missing the exec fails and the transaction
+# aborts - fail closed, by design.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || dir=.
+exec python3 "$dir/guardrails.py" reference-transaction "$@"

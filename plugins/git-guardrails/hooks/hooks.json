@@ -1,0 +1,28 @@
+{
+  "description": "git-guardrails Claude Code hooks. PreToolUse on Bash refuses commands that switch the git guardrails off or dodge them (writing core.hooksPath or guardrails.*, exporting GIT_QUARANTINE_PATH, --no-verify, any force push, git branch -D, git worktree add outside <repo>/.worktrees); it never prints 'allow', so normal permission prompts stay intact. Stop blocks once when the current branch has commits origin does not have (stop_hook_active is respected, so it never loops). The rules themselves are enforced inside git by git-hooks/guardrails.py via core.hooksPath - install with bin/install-git-guardrails (dry run by default, --apply to write).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|mcp__local__(bash|shell))$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-bash.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/check-unpushed.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+# install-git-guardrails - install (or remove) the git guardrails for one user.
+#
+#   bin/install-git-guardrails                 # dry run: prints everything, changes nothing
+#   bin/install-git-guardrails --apply       # copies hooks + sets core.hooksPath globally
+#   bin/install-git-guardrails --uninstall   # unsets global core.hooksPath, if ours
+#   bin/install-git-guardrails --roots ~/code ~/src
+#
+# What it does
+#   1. copies this plugin's git-hooks/ into a stable path:
+#        ~/.config/git-guardrails/hooks          (override: GUARDRAILS_HOME=...)
+#      Stable matters: a plugin lives in a versioned cache directory that Claude Code
+#      replaces on update, and core.hooksPath must not point into a directory that
+#      disappears under git's feet.
+#   2. with --apply only, sets `git config --global core.hooksPath <that dir>`.
+#      Without --apply nothing is written anywhere; the default is a report.
+#   3. scans the given roots (default ~/Documents) for repositories that would NOT be
+#      protected by a global hooks path, and prints them:
+#        - SHADOWS  repo-local core.hooksPath is set: git uses that path and never
+#                   looks at the global one, so the guardrails silently do not run.
+#        - LOCAL    the repo has its own .git/hooks/reference-transaction: it would be
+#                   shadowed by the global path, so that hook must be chained instead.
+#      It does not touch either of those repos: they are reported for you to decide.
+#
+# Safety
+#   - Writes exactly one config key, in --apply: core.hooksPath in the user's global
+#     gitconfig. Never repo-local config, never the system config.
+#   - Refuses to replace an existing global core.hooksPath that points somewhere else
+#     (husky, lefthook, a company profile) unless --force is given.
+#   - Never deletes anything. --uninstall only unsets the key when its value is this
+#     installer's own directory; the copied files stay, and it prints the path.
+#   - Refuses to copy onto itself.
+#   - Honourable exit: 0 when it did what was asked (even if shadows were found - those
+#     are findings, not failures), 2 on a refusal or bad arguments.
+#
+# Debug: GUARDRAILS_DEBUG=1 prints the scan's skips.
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+
+PLUGIN = "install-git-guardrails"
+HOOK_FILES = (
+    "reference-transaction", "pre-commit", "prepare-commit-msg", "commit-msg",
+    "pre-push", "post-checkout", "post-merge", "pre-rebase", "post-rewrite",
+    "guardrails.py", "_chain.sh",
+)
+# Directories the scan never descends into: huge, or never a git repo of ours.
+SKIP_DIRS = frozenset((
+    "node_modules", ".git", "Library", "Applications", ".Trash", ".cache", ".npm",
+    ".cocoapods", "venv", ".venv", ".pytest_cache", ".mypy_cache", ".gradle", ".m2",
+    "Pictures", "Music", "Movies", "VirtualBox VMs", ".colima", ".docker", "site-packages",
+))
+MAX_DEPTH = 6
+MAX_DIRS = 40000
+
+
+def debug(msg):
+    if os.environ.get("GUARDRAILS_DEBUG") == "1":
+        sys.stderr.write("%s: %s\n" % (PLUGIN, msg))
+
+
+def git(args, cwd=None):
+    """(rc, stdout) for a git call. Plumbing only, never writes."""
+    env = dict(os.environ)
+    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        env.pop(key, None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_PAGER"] = "cat"
+    try:
+        proc = subprocess.run(["git"] + list(args), cwd=cwd, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        debug("git %s failed: %s" % (" ".join(args), exc))
+        return 1, ""
+    return proc.returncode, proc.stdout.decode("utf-8", "replace")
+
+
+def global_hooks_path():
+    """Current global core.hooksPath, expanded, or "" when unset."""
+    rc, out = git(["config", "--global", "--get", "core.hooksPath"])
+    if rc != 0:
+        return ""
+    text = out.strip()
+    if not text:
+        return ""
+    return os.path.normpath(os.path.expanduser(text))
+
+
+def plugin_hooks_dir():
+    """This plugin's git-hooks/, resolved from the script's own location."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    return os.path.join(os.path.dirname(here), "git-hooks")
+
+
+def target_dir():
+    home = os.environ.get("GUARDRAILS_HOME") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.realpath(os.path.expanduser("~")), ".config"),
+        "git-guardrails")
+    return os.path.normpath(os.path.join(home, "hooks"))
+
+
+def same_path(a, b):
+    """Equal after expansion/normalisation, or equal once resolved on disk."""
+    if not a or not b:
+        return False
+    na = os.path.normpath(os.path.expanduser(a)).rstrip("/")
+    nb = os.path.normpath(os.path.expanduser(b)).rstrip("/")
+    if na.lower() == nb.lower():
+        return True
+    try:
+        return os.path.realpath(na).lower() == os.path.realpath(nb).lower()
+    except OSError:
+        return False
+
+
+# --- the scan --------------------------------------------------------------- #
+
+def git_dir_of(repo):
+    """.git may be a directory or, for a worktree, a file saying where it lives."""
+    dot = os.path.join(repo, ".git")
+    if os.path.isdir(dot):
+        return dot
+    if os.path.isfile(dot):
+        try:
+            with open(dot, "r", encoding="utf-8") as handle:
+                text = handle.read().strip()
+        except OSError:
+            return ""
+        if text.startswith("gitdir:"):
+            linked = text.split(":", 1)[1].strip()
+            linked = linked if os.path.isabs(linked) else os.path.normpath(
+                os.path.join(repo, linked))
+            return linked if os.path.isdir(linked) else ""
+    return ""
+
+
+def repo_findings(repo):
+    """(shadows, local_reference_transaction) for one repository, both '' or text."""
+    git_dir = git_dir_of(repo)
+    if not git_dir:
+        return None
+    rc, out = git(["config", "--local", "--get", "core.hooksPath"], cwd=repo)
+    shadows = out.strip() if rc == 0 and out.strip() else ""
+    rc, out = git(["rev-parse", "--git-common-dir"], cwd=repo)
+    common = out.strip() if rc == 0 and out.strip() else git_dir
+    if not os.path.isabs(common):
+        common = os.path.normpath(os.path.join(repo, common))
+    chain = os.path.join(common, "hooks", "reference-transaction")
+    local = chain if os.path.isfile(chain) else ""
+    return {"repo": repo, "shadows": shadows, "local_rtx": local}
+
+
+def scan(roots):
+    """Every git repo under the roots, with what would defeat a global install."""
+    found, visited, missing = [], 0, []
+    for root in roots:
+        root = os.path.realpath(os.path.expanduser(root))
+        if not os.path.isdir(root):
+            missing.append(root)
+            debug("root missing, skipped: %s" % root)
+            continue
+        base_depth = root.rstrip("/").count("/")
+        for dirpath, dirnames, _files in os.walk(root, topdown=True):
+            depth = dirpath.rstrip("/").count("/") - base_depth
+            if depth > MAX_DEPTH:
+                dirnames[:] = []
+                continue
+            keep = []
+            for name in dirnames:
+                if name in SKIP_DIRS:
+                    debug("skip %s" % os.path.join(dirpath, name))
+                    continue
+                full = os.path.join(dirpath, name)
+                if os.path.islink(full):
+                    debug("symlink, not followed: %s" % full)
+                    continue
+                keep.append(name)
+            dirnames[:] = keep
+            visited += 1
+            if os.path.exists(os.path.join(dirpath, ".git")):
+                hit = repo_findings(dirpath)
+                if hit:
+                    found.append(hit)
+            if visited >= MAX_DIRS:
+                debug("scan budget reached (%d dirs), stopping" % visited)
+                return found, visited, True, missing
+    return found, visited, False, missing
+
+
+# --- reporting ------------------------------------------------------------ #
+
+def plan(src, dst, apply, current, roots, force=False):
+    lines = []
+    same = same_path(src, dst)
+    lines.append("%s - git hooks installer" % PLUGIN)
+    lines.append("  mode            : %s" % ("APPLY (writes)" if apply else
+                                              "DRY RUN (nothing is written)"))
+    lines.append("  source          : %s" % src)
+    lines.append("  target dir      : %s" % dst)
+    lines.append("  target exists   : %s" % ("yes" if os.path.isdir(dst) else "no"))
+    lines.append("  current global  : %s" % (current or "core.hooksPath is unset"))
+    lines.append("")
+    lines.append("  files it %s copy (%d):" % ("would" if not apply else "will",
+                                                 len(HOOK_FILES)))
+    missing = []
+    for name in HOOK_FILES:
+        if not os.path.isfile(os.path.join(src, name)):
+            missing.append(name)
+        lines.append("    %s%s" % (name, "   <- MISSING in the plugin" if name in
+                                    missing else ""))
+    if missing:
+        lines.append("")
+        lines.append("  REFUSING: the plugin checkout is incomplete (%s)." %
+                     ", ".join(missing))
+        return lines, False
+    if same:
+        lines.append("")
+        lines.append("  REFUSING: source and target are the same directory.")
+        return lines, False
+    if current and not same_path(current, dst):
+        lines.append("")
+        if not force:
+            lines.append("  REFUSING: core.hooksPath already points at %s, not at this"
+                         " %s. Something else owns your hooks - husky, lefthook, a"
+                         " company profile. Move it deliberately, or rerun with --force"
+                         " once you are sure." % (current, dst))
+            return lines, False
+        lines.append("  WARNING: --force. Replacing the previous global value %s."
+                     " Whatever hooked there will stop running for every repository of"
+                     " yours unless it is chained." % current)
+    lines.append("")
+    lines.append("  git config --global core.hooksPath %s   <- %s" %
+                 (dst, "SKIPPED in a dry run" if not apply else "will be set"))
+    hits, visited, capped, missing_roots = scan(roots)
+    shadowing = [h for h in hits if h["shadows"]]
+    local = [h for h in hits if h["local_rtx"]]
+    lines.append("")
+    lines.append("  scan of %s (%d directories visited%s):" %
+                 (", ".join(roots), visited, ", stopped at the %d budget" % MAX_DIRS
+                  if capped else ""))
+    for root in missing_roots:
+        lines.append("    (root does not exist, nothing scanned there: %s)" % root)
+    if not hits:
+        lines.append("    no git repositories found")
+    for hit in shadowing:
+        lines.append("    SHADOWS  %s" % hit["repo"])
+        lines.append("             repo-local core.hooksPath = %s" % hit["shadows"])
+        lines.append("             git will use that path and NEVER the global one: "
+                     "the guardrails do not run here. Decide, do not ignore: chain "
+                     "them (copy or exec $(git rev-parse --git-common-dir)/hooks/"
+                     "reference-transaction from that path's hook), or unset it with "
+                     "the user's OK (git config --local --unset core.hooksPath)")
+    for hit in local:
+        if hit["shadows"]:
+            continue
+        lines.append("    LOCAL    %s" % hit["repo"])
+        lines.append("             has %s" % hit["local_rtx"])
+        lines.append("             a global core.hooksPath shadows .git/hooks, so "
+                     "this repo's own reference-transaction will not run unless the "
+                     "installed one chains to it (git-guardrails does chain - see "
+                     "README); if the file is a copy, make it the chain instead")
+    if not shadowing and not local:
+        lines.append("    no repo-local hooksPath and no repo reference-transaction "
+                     "hook: nothing in the way")
+    lines.append("")
+    lines.append("  repos found: %d   shadowing the global path: %d   with their own "
+                 "reference-transaction: %d" % (len(hits), len(shadowing), len(local)))
+    return lines, True
+
+
+def apply_install(src, dst):
+    os.makedirs(dst, exist_ok=True)
+    for name in HOOK_FILES:
+        source = os.path.join(src, name)
+        dest = os.path.join(dst, name)
+        shutil.copy2(source, dest)
+        if name.endswith(".py"):
+            os.chmod(dest, 0o644)
+        else:
+            os.chmod(dest, 0o755)
+    rc, out = git(["config", "--global", "core.hooksPath", dst])
+    if rc != 0:
+        return False, "git config --global core.hooksPath failed (rc=%d)" % rc
+    back = global_hooks_path()
+    if not same_path(back, dst):
+        return False, "core.hooksPath reads back as %r, expected %s" % (back, dst)
+    for name in ("reference-transaction", "guardrails.py"):
+        full = os.path.join(dst, name)
+        if not os.path.isfile(full):
+            return False, "%s did not land in %s" % (name, dst)
+    if not os.access(os.path.join(dst, "reference-transaction"), os.X_OK):
+        return False, "%s/reference-transaction is not executable" % dst
+    return True, back
+
+
+def uninstall(dst):
+    current = global_hooks_path()
+    if not current:
+        print("%s: core.hooksPath is not set globally - nothing to do." % PLUGIN)
+        return 0
+    if not same_path(current, dst):
+        print("%s: REFUSING. core.hooksPath points at %s, not at %s, so it is not "
+              "ours to remove. Someone else owns your hooks; unset it yourself once "
+              "you have decided what should run instead." % (PLUGIN, current, dst))
+        return 2
+    rc, _ = git(["config", "--global", "--unset", "core.hooksPath"])
+    if rc != 0:
+        print("%s: git config --global --unset core.hooksPath failed (rc=%d)" %
+              (PLUGIN, rc))
+        return 2
+    print("%s: unset global core.hooksPath (was %s)." % (PLUGIN, current))
+    print("  The guardrails are off. Repositories that want them need a local "
+          "core.hooksPath or a copy of these hooks.")
+    print("  Left in place (delete by hand if you want them gone): %s" % dst)
+    return 0
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(
+        prog="install-git-guardrails",
+        description="Install or remove the git-guardrails hooks for this user. "
+                    "Dry run by default: prints the plan and the repositories whose "
+                    "repo-local core.hooksPath would bypass a global install.")
+    parser.add_argument("--apply", action="store_true",
+                        help="actually copy the hooks and set core.hooksPath globally")
+    parser.add_argument("--uninstall", action="store_true",
+                        help="unset global core.hooksPath, only if it points at this "
+                             "installer's own hooks directory")
+    parser.add_argument("--force", action="store_true",
+                        help="with --apply: replace a global core.hooksPath that "
+                             "points somewhere else")
+    parser.add_argument("--roots", action="append", default=[], metavar="PATH",
+                        help="directory to scan for repositories (repeatable); "
+                             "default ~/Documents")
+    args = parser.parse_args(argv)
+
+    src = plugin_hooks_dir()
+    dst = target_dir()
+    roots = args.roots or [os.path.join(os.path.realpath(os.path.expanduser("~")),
+                                         "Documents")]
+
+    if args.uninstall:
+        return uninstall(dst)
+
+    if not os.path.isdir(src):
+        print("%s: REFUSING. plugin git-hooks not found at %s" % (PLUGIN, src))
+        return 2
+
+    current = global_hooks_path()
+    if current and not same_path(current, dst) and args.apply and not args.force:
+        print("%s: REFUSING. core.hooksPath already points at %s (not %s). "
+              "Something else owns your global hooks. Rerun with --force only if you "
+              "have decided to replace it." % (PLUGIN, current, dst))
+        return 2
+
+    lines, ok = plan(src, dst, args.apply, current, roots, args.force)
+    print("\n".join(lines))
+    if not ok:
+        return 2
+    if not args.apply:
+        print("DRY RUN - nothing was written. Re-run with --apply to install.")
+        return 0
+    done, detail = apply_install(src, dst)
+    if not done:
+        print("%s: FAILED, nothing was left half-installed: %s" % (PLUGIN, detail))
+        return 2
+    if current and not same_path(current, dst):
+        print("  it previously pointed at %s (--force)" % current)
+    print("INSTALLED. core.hooksPath = %s" % detail)
+    print("  guardrails.py must stay readable; git runs the shims, the shims run "
+          "python3.")
+    print("  Check it: git-tidy, or make a branch with a bad name in any repo and "
+          "watch R1 refuse it.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
