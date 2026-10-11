@@ -1,0 +1,19 @@
+{
+  "name": "mod-forge",
+  "version": "2.0.0",
+  "description": "Builds, redesigns and live-tests Claude Code mods (hooks-module plugins that draw panes, bands or toasts, or guard tool calls) with a driver, live tmux mockups, a storyboard and a done gate.",
+  "author": {
+    "name": "Maheidem"
+  },
+  "keywords": [
+    "claude-code-mods",
+    "mods",
+    "hooks-module",
+    "tui",
+    "pane",
+    "tmux",
+    "mockups",
+    "storyboard"
+  ],
+  "repository": "https://github.com/maheidem/maheidem-plugins"
+}

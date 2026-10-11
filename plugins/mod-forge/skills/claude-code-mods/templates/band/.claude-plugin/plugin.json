@@ -1,0 +1,7 @@
+{
+  "name": "prompt-band",
+  "version": "0.1.0",
+  "description": "A band of items above the prompt (prototype)",
+  "author": { "name": "your-name" },
+  "types": "./types/index.d.ts"
+}

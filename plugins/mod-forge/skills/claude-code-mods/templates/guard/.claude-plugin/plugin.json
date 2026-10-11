@@ -1,0 +1,7 @@
+{
+  "name": "guard-starter",
+  "version": "0.1.0",
+  "description": "A guard for Bash calls (prototype)",
+  "author": { "name": "your-name" },
+  "types": "./types/index.d.ts"
+}

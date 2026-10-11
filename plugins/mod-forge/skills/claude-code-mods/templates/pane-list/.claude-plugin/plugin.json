@@ -1,0 +1,7 @@
+{
+  "name": "pane-list",
+  "version": "0.1.0",
+  "description": "A pane of items (prototype)",
+  "author": { "name": "your-name" },
+  "types": "./types/index.d.ts"
+}

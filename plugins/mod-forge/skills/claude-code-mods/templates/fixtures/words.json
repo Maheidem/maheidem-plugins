@@ -1,0 +1,71 @@
+{
+  "sentences": [
+    "Call the vendor about the invoice before Friday",
+    "Fix the flaky login test",
+    "Ask for the design file",
+    "Rename the staging bucket",
+    "Check disk use on the build host",
+    "Reply to the audit email",
+    "Draft the release plan",
+    "Book the team room for Monday",
+    "Update the onboarding page",
+    "Archive the old dashboards",
+    "Review the cache change",
+    "Pay the domain renewal",
+    "Clean up the feature flags",
+    "Write the incident summary"
+  ],
+  "ages": ["2m", "14m", "1h", "3h", "1d", "1d", "2d", "3d", "4d", "6d", "1w", "2w", "3w", "1mo"],
+  "words": [
+    "invoice", "login", "design", "bucket", "disk", "audit", "release",
+    "room", "onboarding", "dashboard", "cache", "domain", "flag", "incident"
+  ],
+  "slugs": [
+    "main",
+    "feat/side-panel",
+    "fix/login-flake",
+    "chore/deps",
+    "feat/export-csv",
+    "docs/readme",
+    "fix/empty-guard",
+    "refactor/store",
+    "feat/dark-mode",
+    "fix/retry-delay",
+    "chore/ci-cache",
+    "feat/search-box",
+    "test/flaky-suite",
+    "release/2.4"
+  ],
+  "paths": [
+    "src/app.ts",
+    "src/index.ts",
+    "src/store.ts",
+    "src/util/format.ts",
+    "src/ui/pane.tsx",
+    "src/ui/list.tsx",
+    "tests/app.test.ts",
+    "tests/store.test.ts",
+    "docs/README.md",
+    "package.json",
+    "tsconfig.json",
+    "scripts/build.sh",
+    "src/config.ts",
+    "src/api/client.ts"
+  ],
+  "names": [
+    "Ana Souza",
+    "Bruno Lima",
+    "Carla Mendes",
+    "Diego Alves",
+    "Elisa Costa",
+    "Felipe Rocha",
+    "Gabriela Dias",
+    "Henrique Nunes",
+    "Isabela Prado",
+    "Joao Ribeiro",
+    "Karen Teixeira",
+    "Lucas Barros",
+    "Marina Duarte",
+    "Nuno Pires"
+  ]
+}

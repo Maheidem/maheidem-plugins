@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "claude-code-mods/journey.schema.json",
+  "title": "Storyboard journey of a Claude Code mod",
+  "description": "Every screen (node) and every key (edge) of one mod design, on fixture worlds (scenarios). Read by scripts/journey-lint.py, scripts/crawl.py and scripts/storyboard-build.py. Procedure: references/storyboard.md.",
+  "type": "object",
+  "required": [
+    "scenarios",
+    "nodes",
+    "edges"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Page title of the player, for example 'my-mod · design C storyboard'."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free text for the reviewer: size, design rules that differ from the real code, what is not in the storyboard."
+    },
+    "crawl": {
+      "type": "object",
+      "description": "Defaults for crawl.py. A command-line option wins over a value here.",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Template of the reset command. {mod} = plugin name, {scenario} = scenario id. Default '/{mod} {scenario}'."
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 40,
+          "description": "Terminal columns. Default 150."
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 20,
+          "description": "Terminal rows. Default 45."
+        },
+        "paneColumn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "First column of the pane body (the column right of the dock divider). 0 = the whole screen. Left out = find the divider on each screen."
+        },
+        "clearScenarios": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scenarios whose edge replays start with /clear (old transcript lines would match their markers). Node captures always start with /clear."
+        },
+        "openMarker": {
+          "type": "string",
+          "description": "Text that shows only while the pane is open. Used, with the dock divider, to decide whether a reset must send Esc."
+        },
+        "ringAreas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Areas whose captures get the ring check when a ❯ shows. Left out = every area."
+        },
+        "keyTimeout": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Seconds to wait for a marker after a key. Default 7."
+        },
+        "waitTimeout": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Seconds to wait for a marker after a 'wait' key. Default 14."
+        },
+        "pointer": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The selection pointer the design draws, for the ring check. Default '❯'."
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "description": "Hint-key gate of storyboard-build.py.",
+      "additionalProperties": false,
+      "properties": {
+        "hints": {
+          "type": "array",
+          "description": "Rules that turn a hint on the screen into a key. Replaces the default rules when given.",
+          "items": {
+            "type": "object",
+            "required": [
+              "re"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "re": {
+                "type": "string",
+                "description": "Python regex. The match is the hotspot. Group 1, when there is one and 'key' is not given, is the key."
+              },
+              "key": {
+                "type": "string",
+                "description": "The edge key token this hint stands for (Escape, Enter, Down, Tab, C-x ...)."
+              }
+            }
+          }
+        },
+        "extraHints": {
+          "type": "array",
+          "description": "Rules added to the defaults (same shape as 'hints').",
+          "items": {
+            "$ref": "#/properties/gate/properties/hints/items"
+          }
+        },
+        "ignore": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Python regexes. A hint match that sits inside a match of one of these does not count (for example the active tab '▸ 1: Result')."
+        },
+        "same": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "Key groups that count as one key, for example [['Up','Down']]. Default [['Up','Down']]."
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "description",
+          "start"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "description": {
+            "type": "string",
+            "description": "The fixture world in plain words: what data, what timers, what each action returns."
+          },
+          "start": {
+            "type": "string",
+            "description": "The node that '/<mod> <scenario>' shows."
+          },
+          "group": {
+            "type": "string",
+            "description": "Group name in the player's scenario menu."
+          }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "area",
+          "title",
+          "description",
+          "scenario",
+          "marker",
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "area": {
+            "type": "string",
+            "description": "The view or surface: list, detail, settings, band, toast ..."
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "description": "What the screen shows, with its exact hint footer."
+          },
+          "scenario": {
+            "type": "string",
+            "description": "The scenario where the node is first reached."
+          },
+          "marker": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Texts joined by ' && '. A part that starts with '!' must not show. Only this node satisfies it."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Where the screen comes from: spec section, file:line of the handler or the prototype."
+          },
+          "focus": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Text that the focus ring (inverse run) must hold on this screen, for example 'n: keep it' on a confirm (the safe choice). crawl.py fails the capture when it does not."
+          },
+          "region": {
+            "enum": [
+              "pane",
+              "screen"
+            ],
+            "description": "Where the marker is searched. 'screen' for a band, a toast or a transcript line. Default: 'pane' when a pane is open, else 'screen'."
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "key",
+          "label",
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "description": "tmux send-keys names, space-separated. 'K*N' = K pressed N times. 'text:\"...\"' = literal text; {mod} in it becomes the plugin name. 'wait' = send nothing, wait for a timer."
+          },
+          "label": {
+            "type": "string",
+            "description": "What the key does, in plain words."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The handler: file:line of onPress, onSubmit, hotkey, ui.close ..."
+          },
+          "scn": {
+            "type": "string",
+            "description": "Replay this edge in this scenario. It also limits the edge to this scenario when the crawler finds a path."
+          },
+          "onlyIn": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Path search may use this edge only in these scenarios."
+          },
+          "notIn": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Path search must not use this edge in these scenarios."
+          },
+          "history": {
+            "type": "boolean",
+            "description": "true = the result depends on where you came from (Esc back to the origin, a kept draft). Path search never uses it; the crawler checks it on the route via the target."
+          },
+          "approx": {
+            "type": "string",
+            "description": "The target is the nearest captured screen, not the exact one. The note says what differs."
+          },
+          "check": {
+            "type": "string",
+            "description": "Marker that must hold after the key, instead of the target's marker. Required with 'approx' when the target marker does not hold."
+          },
+          "timeout": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Seconds to wait for the marker after this key (a long fixture timer)."
+          }
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "description": "Read by scripts/audit-handlers.py.",
+      "additionalProperties": false,
+      "properties": {
+        "skip": {
+          "type": "object",
+          "description": "Source lines with no node or edge on purpose: a piece of the line text -> why.",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

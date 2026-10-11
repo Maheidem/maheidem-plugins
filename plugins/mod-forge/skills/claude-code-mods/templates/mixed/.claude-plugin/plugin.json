@@ -1,0 +1,7 @@
+{
+  "name": "mixed",
+  "version": "0.1.0",
+  "description": "Combined starter on the kit: a list pane, a band above the prompt, a toast, a tool-call guard and a slash command in one hooks module.",
+  "author": { "name": "your-name" },
+  "types": "./types/index.d.ts"
+}

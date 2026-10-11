@@ -1,0 +1,15 @@
+# One banned phrase per line. Case-insensitive substring match. Seeded from table 4 of rules.md.
+# Each phrase copies text of the PA reference.md. Cite [PA:<heading>] instead.
+next.called ? next(e)
+not any surface's paint
+2,000 characters
+10,000 remotely
+the engine drew its own
+an ES module whatever its suffix
+Every file is an ES module
+Enable hot reloading for this session
+['terminal', 'desktop']
+singleDouble
+doubleSingle
+after the chain and the handler settled
+No `invalidate` is needed

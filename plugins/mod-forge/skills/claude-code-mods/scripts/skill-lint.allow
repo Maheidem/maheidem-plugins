@@ -1,0 +1,6 @@
+# <relative file>:<regex>. A line of that file that matches the regex is not reported by L1, L2 or L3.
+# Engine output that the skill quotes on purpose. The engine writes this text, not the skill.
+references/pitfalls.md:logging to /private/tmp
+# The types discovery path. The driver searches the bundled-skills folder on purpose.
+scripts/mods.py:for root in \(f'/private/tmp/claude-\{uid\}'
+scripts/mods.py:no claude-code\.d\.ts found under /private/tmp/claude-<uid>/bundled-skills

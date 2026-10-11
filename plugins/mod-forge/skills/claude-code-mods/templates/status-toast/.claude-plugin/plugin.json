@@ -1,0 +1,7 @@
+{
+  "name": "status-toast",
+  "version": "0.1.0",
+  "description": "Toasts about events (prototype)",
+  "author": { "name": "your-name" },
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,10 @@
+# <relative file or base name> <max lines>. These are the v2 budgets. Tolerance: +10% is a warning, above that fails.
+SKILL.md 150
+api.md 160
+ux-design.md 220
+testing.md 150
+pitfalls.md 110
+storyboard.md 120
+examples.md 110
+evidence.md 2000
+VERSIONS.md 60

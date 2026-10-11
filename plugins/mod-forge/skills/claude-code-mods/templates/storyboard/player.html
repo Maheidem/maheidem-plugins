@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root{
+  --bg:#f4f4f2; --panel:#ffffff; --panel2:#eceae6; --line:#d8d5cf; --text:#1c1c1a; --dim:#666460;
+  --accent:#b35a1f; --accent-bg:rgba(179,90,31,.14); --ok:#2f7d4f; --bad:#b3261e; --chip:#f0eee9; --shot-bg:#1b1b1b;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#151515; --panel:#1e1e1d; --panel2:#262624; --line:#363532; --text:#e8e6e1; --dim:#9a9791;
+    --accent:#e8a066; --accent-bg:rgba(232,160,102,.18); --ok:#6fcf97; --bad:#ff7b72; --chip:#2a2927; --shot-bg:#0e0e0e;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#151515; --panel:#1e1e1d; --panel2:#262624; --line:#363532; --text:#e8e6e1; --dim:#9a9791;
+  --accent:#e8a066; --accent-bg:rgba(232,160,102,.18); --ok:#6fcf97; --bad:#ff7b72; --chip:#2a2927; --shot-bg:#0e0e0e;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column}
+button,select,input{font:inherit;color:inherit}
+kbd{font:12px ui-monospace,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:0 6px;white-space:nowrap}
+header.top{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header.top h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.01em}
+header.top .sub{color:var(--dim);font-size:12px}
+.grow{flex:1}
+.btn{background:var(--chip);border:1px solid var(--line);border-radius:7px;padding:4px 10px;cursor:pointer}
+.btn:hover:not(:disabled){border-color:var(--accent)}
+.btn:disabled{opacity:.4;cursor:default}
+select{background:var(--chip);border:1px solid var(--line);border-radius:7px;padding:4px 8px;max-width:260px}
+.layout{flex:1;min-height:0;display:grid;grid-template-columns:320px minmax(0,1fr)}
+aside{border-right:1px solid var(--line);background:var(--panel);overflow:auto;min-height:0}
+aside .stats{padding:12px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:2}
+aside .stats b{font-variant-numeric:tabular-nums}
+.bar{height:5px;background:var(--panel2);border-radius:3px;margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent)}
+aside input[type=search]{width:100%;margin-top:8px;background:var(--chip);border:1px solid var(--line);border-radius:7px;padding:4px 8px}
+details{border-bottom:1px solid var(--line)}
+details>summary{cursor:pointer;padding:7px 14px;font-weight:600;list-style:none;display:flex;justify-content:space-between;text-transform:capitalize}
+details>summary::-webkit-details-marker{display:none}
+details>summary .n{color:var(--dim);font-weight:400;font-size:12px}
+details details{border:0}
+details details>summary{padding:4px 14px 4px 24px;font-weight:500;font-size:12px;color:var(--dim);text-transform:none}
+.node{display:flex;gap:6px;align-items:baseline;width:100%;text-align:left;background:none;border:0;border-left:3px solid transparent;padding:3px 14px 3px 30px;cursor:pointer;font-size:13px}
+.node:hover{background:var(--panel2)}
+.node .tick{width:1em;color:var(--ok);flex:none}
+.node.cur{background:var(--accent-bg);border-left-color:var(--accent);font-weight:600}
+.node.gap{color:var(--bad)}
+.node.hide,details.hide{display:none}
+main{overflow:auto;min-width:0;padding:16px 20px 28px}
+.head .crumb{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px}
+.badge{font-size:11px;text-transform:uppercase;letter-spacing:.06em;background:var(--accent-bg);color:var(--accent);border-radius:999px;padding:1px 9px;font-weight:650}
+.badge.scn{background:var(--panel2);color:var(--dim)}
+.head h2{margin:0;font-size:20px}
+.head p{margin:4px 0 0;max-width:110ch}
+.head .src{font:11px ui-monospace,Menlo,monospace;color:var(--dim);margin-top:4px;word-break:break-all}
+.stage{position:relative;margin:12px 0 10px;background:var(--shot-bg);border:1px solid var(--line);border-radius:10px;overflow:hidden;line-height:0}
+.stage img{width:100%;height:auto;display:block;image-rendering:auto}
+.hot{position:absolute;cursor:pointer;border-radius:3px;outline:0}
+.hot:hover{background:rgba(232,160,102,.28);box-shadow:0 0 0 1.5px #e8a066}
+.hot::after{content:attr(data-tip);position:absolute;left:0;bottom:calc(100% + 4px);background:#000;color:#fff;border:1px solid #e8a066;border-radius:5px;padding:2px 7px;font:12px/1.3 ui-monospace,Menlo,monospace;white-space:nowrap;opacity:0;pointer-events:none;z-index:3}
+.hot:hover::after{opacity:1}
+.gapbox{padding:60px 20px;text-align:center;line-height:1.5;color:var(--bad);background:repeating-linear-gradient(45deg,transparent 0 12px,rgba(179,38,30,.08) 12px 24px)}
+.gapbox b{font-size:18px;display:block}
+.chips{display:flex;flex-wrap:wrap;gap:8px;position:sticky;bottom:0;background:var(--bg);padding:8px 0;border-top:1px solid var(--line);z-index:2}
+.chip{display:inline-flex;align-items:center;gap:8px;background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:5px 11px;cursor:pointer;text-align:left}
+.chip:hover{border-color:var(--accent);background:var(--accent-bg)}
+.chip .lab{max-width:48ch}
+.chip .tag{font-size:11px;color:var(--dim);background:var(--panel2);border-radius:5px;padding:0 6px}
+.chip.seen{border-style:dashed}
+.chip.seen .lab::after{content:" ✓";color:var(--ok)}
+.chip.bad{border:1px dashed var(--bad);color:var(--bad);cursor:not-allowed}
+.chip.hl{border-color:var(--accent);background:var(--accent-bg)}
+.hint{color:var(--dim);font-size:12px;margin-top:12px}
+.flash{color:var(--bad);min-height:1.4em;font-size:12px;margin-top:6px}
+.flash.info{color:var(--dim)}
+.scninfo{padding:6px 16px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:12px;color:var(--dim)}
+.scninfo b{color:var(--text)}
+.approx{margin:8px 0 0;padding:8px 12px;border:1px dashed var(--accent);border-radius:8px;background:var(--accent-bg);font-size:13px}
+.approx b{color:var(--accent)}
+.chip.ap{border-style:dotted}
+.chip .tag.ap{background:var(--accent-bg);color:var(--accent)}
+.hot.hl{background:rgba(232,160,102,.28);box-shadow:0 0 0 1.5px #e8a066}
+.waitbtn{position:absolute;right:10px;bottom:10px;line-height:1.3;z-index:2}
+.sbtoggle{display:none}
+@media (max-width:900px){
+  html,body{height:auto}
+  .layout{display:block}
+  aside{max-height:40vh;border-right:0;border-bottom:1px solid var(--line)}
+  main{overflow:visible}
+}
+@media (max-width:700px){ main{padding:12px 16px} }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1 id="h1"></h1>
+  <span class="sub" id="crawlnote"></span>
+  <span class="grow"></span>
+  <label class="sub" for="scn">Scenario</label>
+  <select id="scn" aria-label="Scenario"></select>
+  <button class="btn" id="back" title="Back (Alt+Left)">← Back</button>
+  <button class="btn" id="fwd" title="Forward (Alt+Right)">Forward →</button>
+  <button class="btn" id="restart" title="Go to the start of this scenario">Restart</button>
+  <button class="btn" id="theme" title="Switch light and dark">Theme</button>
+</header>
+<div class="scninfo" id="scninfo"></div>
+<div class="layout">
+  <aside>
+    <div class="stats">
+      <div>Visited <b id="vn">0</b> of <b id="nn">0</b> screens, <b id="vp">0</b> of <b id="np">0</b> paths</div>
+      <div class="bar"><i id="bar"></i></div>
+      <div class="sub" id="gaps" style="margin-top:6px"></div>
+      <input type="search" id="q" placeholder="Filter screens" aria-label="Filter screens">
+      <div style="margin-top:6px"><button class="btn" id="clear" style="font-size:12px;padding:2px 8px">Clear progress</button></div>
+    </div>
+    <div id="map"></div>
+  </aside>
+  <main>
+    <div class="head">
+      <div class="crumb"><span class="badge" id="area"></span><span class="badge scn" id="nscn"></span></div>
+      <h2 id="title"></h2>
+      <p id="desc"></p>
+      <div class="src" id="src"></div>
+    </div>
+    <div class="stage" id="stage"></div>
+    <div class="approx" id="approx" hidden></div>
+    <div class="chips" id="chips"></div>
+    <div class="flash" id="flash"></div>
+    <div class="hint">Keys: <kbd>↑</kbd> <kbd>↓</kbd> <kbd>Enter</kbd> <kbd>Esc</kbd> and letters follow a path from this screen. In a focused field, any letter types the sample text and <kbd>Enter</kbd> sends it. <kbd>Space</kbd> waits for a timer. <kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> move in history. Paths with several keys (for example <kbd>↓×4 Enter</kbd>) are chips only. A dotted chip marked ≈ leads to the nearest captured screen, not the exact one; the note under the screen says what differs. Hover the screen to see clickable cues. <kbd>PageUp</kbd>/<kbd>PageDown</kbd> and the wheel scroll the page. <span id="sizenote"></span></div>
+  </main>
+</div>
+<!--__IMAGES__-->
+<script>
+/*__DATA__*/
+(function(){
+'use strict';
+var byId={}, outs={}, nodeEls={}, AREAS=[];
+DATA.nodes.forEach(function(n){if(AREAS.indexOf(n.area)<0)AREAS.push(n.area);});
+DATA.nodes.forEach(function(n){byId[n.id]=n;outs[n.id]=[];});
+DATA.edges.forEach(function(e,i){e.i=i;if(outs[e.f])outs[e.f].push(e);});
+var startOf={}; DATA.scenarios.forEach(function(s){startOf[s.id]=s.start;});
+var FIRST=DATA.scenarios[0].id;
+var st={cur:null,scn:FIRST,hist:[],hi:-1,visited:new Set(),trav:new Set()};
+var $=function(id){return document.getElementById(id);};
+function el(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e;}
+
+var KEYNAME={Down:'↓',Up:'↑',Escape:'Esc',Enter:'Enter',Tab:'Tab',BSpace:'⌫',wait:'⏱ wait'};
+function fmtKey(k){
+  return k.split(' ').map(function(t){
+    var m=t.match(/^text:"(.*)"$/); if(m) return 'type "'+m[1]+'"';
+    m=t.match(/^(\w+)\*(\d+)$/); if(m) return (KEYNAME[m[1]]||m[1])+'×'+m[2];
+    return KEYNAME[t]||t;
+  }).join(' ');
+}
+var BROWSER={ArrowDown:'Down',ArrowUp:'Up',Escape:'Escape',Enter:'Enter',Tab:'Tab',' ':'wait'};
+
+// One key can have several results (by scenario, or 'back to where you came from').
+// Prefer: the screen you came from (Esc), the edge for the current scenario, an exact edge.
+// 'y wait' is the key y, then the wait for the result: the key y takes it.
+function candidates(nid,key){return outs[nid].filter(function(e){return (e.k===key||e.k===key+' wait')&&!e.bad;});}
+function scnOf(e){return e.scn||null;}
+function pick(nid,key){
+  var c=candidates(nid,key);
+  if(!c.length) return null;
+  var prev=st.hi>0?st.hist[st.hi-1].id:null;
+  if(key==='Escape'&&prev){var b=c.filter(function(e){return e.t===prev;});if(b.length) return b[0];}
+  var sc=c.filter(function(e){return scnOf(e)===st.scn;}); if(sc.length) return sc[0];
+  var nos=c.filter(function(e){var s=scnOf(e);return !s||s===st.scn;});
+  var pool=nos.length?nos:c;
+  var ex=pool.filter(function(e){return !e.a;});
+  var ts=(ex.length?ex:pool).filter(function(e){var t=byId[e.t];return t&&t.scn===st.scn;});
+  return ts[0]||(ex.length?ex:pool)[0];
+}
+
+function store(){try{localStorage.setItem('sb-theme',document.documentElement.dataset.theme||'');}catch(e){}}
+function initTheme(){try{var t=localStorage.getItem('sb-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}}
+
+/* ---- sidebar ---- */
+function buildMap(){
+  var map=$('map'); map.textContent='';
+  AREAS.forEach(function(a){
+    var ns=DATA.nodes.filter(function(n){return n.area===a;}); if(!ns.length) return;
+    var d=el('details'); d.dataset.area=a;
+    var s=el('summary'); s.appendChild(el('span',null,a)); var cnt=el('span','n'); cnt.dataset.cnt=a; s.appendChild(cnt); d.appendChild(s);
+    var by={}, order=[];
+    ns.forEach(function(n){if(!by[n.scn]){by[n.scn]=[];order.push(n.scn);}by[n.scn].push(n);});
+    order.forEach(function(sc){
+      var sd=el('details'); sd.dataset.scn=sc;
+      sd.appendChild(el('summary',null,'scenario: '+sc));
+      by[sc].forEach(function(n){
+        var b=el('button','node'+(n.img?'':' gap')); b.type='button'; b.tabIndex=-1; b.dataset.id=n.id;
+        var tk=el('span','tick'); b.appendChild(tk); b.appendChild(el('span',null,(n.img?'':'GAP · ')+n.title));
+        b.addEventListener('mousedown',function(e){e.preventDefault();});
+        b.addEventListener('click',function(){if(startOf[n.scn])setScn(n.scn);go(n.id);});
+        nodeEls[n.id]=b; sd.appendChild(b);
+      });
+      d.appendChild(sd);
+    });
+    map.appendChild(d);
+  });
+}
+function refreshMap(){
+  var q=$('q').value.trim().toLowerCase();
+  Object.keys(nodeEls).forEach(function(id){
+    var b=nodeEls[id], n=byId[id];
+    b.classList.toggle('cur',id===st.cur);
+    b.firstChild.textContent=st.visited.has(id)?'✓':'';
+    b.classList.toggle('hide',!!q&&(n.title+' '+n.id+' '+n.scn).toLowerCase().indexOf(q)<0);
+  });
+  document.querySelectorAll('#map details').forEach(function(d){
+    var shown=d.querySelectorAll('.node:not(.hide)').length; d.classList.toggle('hide',shown===0);
+    if(d.dataset.area){var c=d.querySelector('[data-cnt]');var tot=d.querySelectorAll('.node').length,v=0;d.querySelectorAll('.node').forEach(function(b){if(st.visited.has(b.dataset.id))v++;});c.textContent=v+'/'+tot;}
+    if(q&&shown) d.open=true;
+  });
+  var cur=nodeEls[st.cur];
+  if(cur){var p=cur.parentElement;while(p&&p.id!=='map'){if(p.tagName==='DETAILS')p.open=true;p=p.parentElement;}
+    var side=document.querySelector('aside'),r=cur.getBoundingClientRect(),sr=side.getBoundingClientRect();
+    if(r.top<sr.top+130||r.bottom>sr.bottom) side.scrollTop+=r.top-sr.top-sr.height/2;}
+  var nn=DATA.nodes.length,np=DATA.edges.length;
+  $('vn').textContent=st.visited.size;$('nn').textContent=nn;$('vp').textContent=st.trav.size;$('np').textContent=np;
+  $('bar').style.width=(100*st.visited.size/nn)+'%';
+}
+
+/* ---- screen ---- */
+function render(){
+  var n=byId[st.cur];
+  $('area').textContent=n.area; $('nscn').textContent='scenario: '+n.scn;
+  $('title').textContent=n.title; $('desc').textContent=n.desc; $('src').textContent='Source: '+n.src;
+  var stage=$('stage'); stage.textContent='';
+  if(n.img){
+    var img=new Image(); img.alt=n.title+': screenshot of Claude Code'; img.draggable=false;
+    img.src=$('img-'+n.id).textContent; stage.appendChild(img);
+    if(outs[n.id].some(function(e){return e.k==='wait';})){
+      var wb=el('button','btn waitbtn','⏱ Space: wait'); wb.type='button'; wb.title='Wait for the timer or the action result';
+      wb.addEventListener('mousedown',function(e){e.preventDefault();}); wb.addEventListener('click',function(){press('wait');});
+      stage.appendChild(wb);
+    }
+    Object.keys(n.hs).forEach(function(k){
+      var e=pick(n.id,k); if(!e) return;
+      n.hs[k].forEach(function(r){
+      var h=el('div','hot'); h.dataset.tip=fmtKey(k)+'  '+e.l; h.dataset.key=k; h.title=fmtKey(k)+': '+e.l;
+      h.style.left=(r[0]*100)+'%'; h.style.top=(r[1]*100)+'%'; h.style.width=(r[2]*100)+'%'; h.style.height=(r[3]*100)+'%';
+      h.addEventListener('click',function(){press(k);});
+      h.addEventListener('mouseenter',function(){hl(k,true);}); h.addEventListener('mouseleave',function(){hl(k,false);});
+      stage.appendChild(h);
+      });
+    });
+  } else {
+    var g=el('div','gapbox'); var b=el('b',null,'GAP: this screen was not captured'); g.appendChild(b);
+    g.appendChild(el('span',null,'The crawl failed for "'+n.id+'". The node stays in the map so the gap is visible.')); stage.appendChild(g);
+  }
+  var chips=$('chips'); chips.textContent='';
+  var keyCount={}; outs[n.id].forEach(function(e){keyCount[e.k]=(keyCount[e.k]||0)+1;});
+  outs[n.id].forEach(function(e){
+    var c=el('button','chip'+(e.bad?' bad':'')+(st.trav.has(e.i)?' seen':'')); c.type='button'; c.tabIndex=-1; c.dataset.key=e.k;
+    c.title=(e.bad?'GAP: this path failed in the crawl. ':'')+'Source: '+e.s;
+    c.appendChild(el('kbd',null,fmtKey(e.k))); c.appendChild(el('span','lab',e.l));
+    var t=byId[e.t]; if(keyCount[e.k]>1&&t) c.appendChild(el('span','tag',t.scn));
+    if(e.bad) c.appendChild(el('span','tag','GAP'));
+    if(e.h) c.title='Depends on where you came from. '+c.title;
+    if(e.a){c.classList.add('ap');c.appendChild(el('span','tag ap','≈'));c.title='Approximate: '+e.a+' '+c.title;}
+    c.addEventListener('mousedown',function(ev){ev.preventDefault();});
+    c.addEventListener('click',function(){if(!e.bad)take(e);});
+    c.addEventListener('mouseenter',function(){hotHl(e.k,true);}); c.addEventListener('mouseleave',function(){hotHl(e.k,false);});
+    chips.appendChild(c);
+  });
+  var ap=$('approx'); ap.hidden=!st.note; ap.textContent='';
+  if(st.note){ap.appendChild(el('b',null,'≈ Nearest captured screen. '));ap.appendChild(document.createTextNode(st.note));}
+  $('flash').textContent=st.flash||''; $('flash').className='flash'+(st.flashInfo?' info':''); st.flash=''; st.flashInfo=false;
+  $('back').disabled=st.hi<=0; $('fwd').disabled=st.hi>=st.hist.length-1;
+  document.title=n.title+' · '+DATA.title;
+  refreshMap();
+  // warm the next screens
+  outs[n.id].slice(0,8).forEach(function(e){var s=$('img-'+e.t);if(s){var p=new Image();p.src=s.textContent;}});
+}
+function hl(k,on){document.querySelectorAll('.chip').forEach(function(c){if(c.dataset.key===k)c.classList.toggle('hl',on);});}
+function hotHl(k,on){document.querySelectorAll('.hot').forEach(function(h){if(h.dataset.key===k)h.classList.toggle('hl',on);});}
+
+function go(id,noPush,note){
+  if(!byId[id]) return;
+  st.cur=id; st.visited.add(id); st.note=note||'';
+  if(!noPush){st.hist=st.hist.slice(0,st.hi+1);st.hist.push({id:id,scn:st.scn,note:st.note});st.hi=st.hist.length-1;}
+  try{history.replaceState(null,'','#'+id);}catch(e){}
+  render();
+}
+function take(e){
+  var n=candidates(st.cur,e.k).length;
+  st.trav.add(e.i);
+  if(n>1){st.flash='This key has '+n+' results on that screen. The chips with the same key show the others.';st.flashInfo=true;}
+  go(e.t,false,e.a||'');
+}
+// A key with no single-key path: in a focused field a letter types the sample text,
+// and Enter takes the path that types and sends, or the band's open path.
+function fallback(k){
+  var es=outs[st.cur].filter(function(e){return !e.bad;});
+  if(k.length===1&&k!==' '){var t=es.filter(function(e){return /^text:/.test(e.k);});if(t.length) return t[0];}
+  if(k==='Enter'){var t2=es.filter(function(e){return /^(text:"[^"]*" Enter|C-x Tab Enter)/.test(e.k);});if(t2.length) return t2[0];}
+  return null;
+}
+function press(k){
+  var e=pick(st.cur,k)||fallback(k);
+  if(e){take(e);return true;}
+  flash('No path for "'+fmtKey(k)+'" on this screen.'); return false;
+}
+function flash(m){$('flash').textContent=m;$('flash').className='flash';}
+function setScn(s){st.scn=s;$('scn').value=s;showScn();}
+function back(){if(st.hi>0){st.hi--;var h=st.hist[st.hi];setScn(h.scn);go(h.id,true,h.note);}}
+function fwd(){if(st.hi<st.hist.length-1){st.hi++;var h=st.hist[st.hi];setScn(h.scn);go(h.id,true,h.note);}}
+function restart(){var s=startOf[st.scn]||startOf[FIRST];st.hist=[];st.hi=-1;go(s);}
+function showScn(){
+  var s=DATA.scenarios.filter(function(x){return x.id===st.scn;})[0]; var box=$('scninfo'); box.textContent='';
+  if(!s) return;
+  box.appendChild(el('b',null,'Scenario '+s.id+(s.own<=1?' (variant)':'')+': '));
+  box.appendChild(document.createTextNode(s.desc+(s.own<=1?' It starts at '+byId[s.start].title+'; its own screens: '+s.own+'.':'')));
+}
+
+document.addEventListener('keydown',function(ev){
+  var t=ev.target&&ev.target.tagName; if(t==='INPUT'||t==='SELECT'||t==='TEXTAREA') return;
+  if(ev.ctrlKey||ev.metaKey) return;
+  if(ev.altKey){if(ev.key==='ArrowLeft'){ev.preventDefault();back();}else if(ev.key==='ArrowRight'){ev.preventDefault();fwd();}return;}
+  var k=BROWSER[ev.key]||(ev.key.length===1?ev.key:null);
+  if(!k) return;
+  // Only a key that takes a path is kept from the page: arrows and Space still scroll otherwise.
+  var e=pick(st.cur,k)||fallback(k);
+  if(!e){if(k.length===1&&k!==' '||k==='Escape'||k==='Enter') flash('No path for "'+fmtKey(k)+'" on this screen.');return;}
+  ev.preventDefault(); take(e);
+});
+$('back').onclick=back; $('fwd').onclick=fwd; $('restart').onclick=restart;
+['back','fwd','restart','theme','clear'].forEach(function(id){$(id).addEventListener('mousedown',function(e){e.preventDefault();});});
+$('theme').onclick=function(){
+  var r=document.documentElement,dark=(r.dataset.theme==='dark')||(!r.dataset.theme&&matchMedia('(prefers-color-scheme: dark)').matches);
+  r.dataset.theme=dark?'light':'dark'; store();
+};
+$('clear').onclick=function(){st.visited=new Set([st.cur]);st.trav=new Set();render();};
+$('q').addEventListener('input',refreshMap);
+$('q').addEventListener('keydown',function(e){e.stopPropagation();});
+$('scn').addEventListener('change',function(){setScn(this.value);this.blur();restart();});
+
+/* ---- init ---- */
+initTheme();
+var sel=$('scn');
+var groups={};
+DATA.scenarios.forEach(function(s){
+  if(!groups[s.group]){groups[s.group]=el('optgroup');groups[s.group].label=s.group;sel.appendChild(groups[s.group]);}
+  var o=el('option',null,s.id+(s.own<=1?' (variant)':''));o.value=s.id;o.title=s.desc;groups[s.group].appendChild(o);
+});
+var gapN=DATA.nodes.filter(function(n){return !n.img;}).length, gapE=DATA.edges.filter(function(e){return e.bad;}).length;
+$('gaps').textContent='Gaps: '+gapN+' screens, '+gapE+' paths'+((gapN||gapE)?' (marked in red)':' (every screen and path was captured)');
+$('h1').textContent=DATA.title;
+$('sizenote').textContent='Terminal '+DATA.cols+' columns x '+DATA.rows+' rows.';
+$('crawlnote').textContent=(DATA.gateErrors?'DRAFT: '+DATA.gateErrors+' gate checks failed. ':'')+'Drawn live by '+DATA.version+': '+DATA.crawl.captured+' screens captured, '+DATA.crawl.edgesVerified+' paths verified ('+DATA.crawl.approx+' lead to the nearest screen, marked ≈)';
+buildMap();
+var h=(location.hash||'').slice(1), first=byId[h]?h:startOf[FIRST];
+setScn(startOf[byId[first].scn]?byId[first].scn:FIRST);
+go(first);
+})();
+</script>
+</body>
+</html>
