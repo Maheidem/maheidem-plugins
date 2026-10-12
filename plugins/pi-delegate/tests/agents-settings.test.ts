@@ -1,98 +1,147 @@
-import { expect, mock, test } from 'claude-code/testing'
-import { shellQuote, pluginDataPath, settingValue } from '../hooks/agents.js'
-const PANE = {
-  plugin: 'pi-delegate', component: 'Pane', requestId: 'pi-agents',
-  viewport: { columns: 160, rows: 48 },
-  props: { title: 'pi agents', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 40 }, view: {} },
-} as const
+// The settings screen: the rows, the source chain, a save with read-back, the reset question,
+// and the pointer that follows the ring (bug 8). Esc while editing (bug 17) is in agents-keys.test.ts.
+import { expect, test } from 'claude-code/testing'
+import { settingOf } from '../hooks/model'
+import { RUN, arrowTo, inputKey, mount, pointed, screen, stubs } from './agents-fixture'
+import type { Disk } from './agents-fixture'
+
 const snapshot = {
-  ok: true, projectPath: '/scratch/.claude/pi-delegate.local.md', userPath: '/config/pi-delegate.json',
+  ok: true, projectPath: '/scratch/.claude/pi-delegate.local.md', userPath: '/home/.claude/pi-delegate.json',
   warnings: ['Invalid user max_live_children; ignoring it'], testMode: true, overrides: { PI_MCP_TTL_MS: 1000 },
   pin: { provider: 'local', model: 'model', source: 'project' },
-  definitions: { questions_per_turn: { default: 5, min: 0, max: 100, special: ['unlimited'] }, default_thinking: { default: 'pi-default', special: ['off', 'low', 'medium', 'high', 'pi-default'] } },
-  settings: { questions_per_turn: { value: 2, source: 'project', project: 2, user: 9 }, default_thinking: { value: 'pi-default', source: 'default', project: null, user: null } },
+  definitions: { questions_per_turn: { default: 5, min: 0, max: 100, special: ['unlimited'] }, turn_timeout_minutes: { default: 60, min: 1, max: 1440, special: ['unlimited'] }, default_thinking: { default: 'pi-default', special: ['off', 'low', 'medium', 'high', 'pi-default'] } },
+  settings: {
+    questions_per_turn: { value: 2, source: 'project', project: 2, user: 9 },
+    turn_timeout_minutes: { value: 60, source: 'default', project: null, user: null },
+    default_thinking: { value: 'pi-default', source: 'default', project: null, user: null },
+  },
 }
 
-test('shell values are single-quoted and native plugin data paths use the proper store', () => {
-  expect(shellQuote("a'b;$(x)")).toBe("'a'\\''b;$(x)'")
-  expect(settingValue('turn_timeout_minutes', 60)).toBe('60 min')
-  expect(settingValue('default_thinking', 'pi-default')).toBe('pi default')
-  expect(settingValue('turn_timeout_minutes', 'unlimited')).toBe('unlimited')
-  expect(settingValue('idle_park_minutes', 'never')).toBe('never')
-  expect(pluginDataPath('/source/pi-delegate', '/config')).toBe('/config/plugins/data/pi-delegate-inline')
-  const installed = { plugins: { 'pi-delegate@maheidem-plugins': [{ installPath: '/home/.claude/plugins/cache/maheidem-plugins/pi-delegate/0.12.0' }] } }
-  expect(pluginDataPath('/home/.claude/plugins/cache/maheidem-plugins/pi-delegate/0.12.0', '/config', installed)).toBe('/config/plugins/data/pi-delegate-maheidem-plugins')
-  expect(pluginDataPath('/source/market/plugins/pi-delegate', '/config', installed,
-    { 'maheidem-plugins': { source: { source: 'directory', path: '/source/market' } } },
-    { 'maheidem-plugins': { plugins: [{ name: 'pi-delegate', source: './plugins/pi-delegate' }] } })).toBe('/config/plugins/data/pi-delegate-maheidem-plugins')
-  expect(() => pluginDataPath('/unmapped', '/config', installed)).toThrow(/Cannot resolve/)
-})
+function disk(validations: string[][]): Disk {
+  return {
+    metas: {}, events: {}, files: {},
+    run: argv => {
+      if (argv[2] === 'snapshot') {
+        expect(argv[3]).toBe('/project') // the session folder, not the viewer's data override
+        return { exitCode: 0, stdout: JSON.stringify(snapshot) }
+      }
+      if (argv[2] === 'validate') {
+        validations.push([...argv])
+        const value = argv[4]
+        return value === 'five' ? { exitCode: 1, stdout: JSON.stringify({ ok: false, errorMessage: 'Invalid questions_per_turn: "five"' }) } : { exitCode: 0, stdout: JSON.stringify({ ok: true, value }) }
+      }
+      return { exitCode: 0, stdout: '' }
+    },
+  }
+}
 
 for (const scope of ['project', 'user'] as const) {
-  test(`settings: /config-style rows, source chain, ${scope} save with read-back, reset confirm`, async ($, on) => {
-    const clock = mock.clock(on)
-    mock.env(on, { CLAUDE_PLUGIN_ROOT: '/plugin with spaces', CLAUDE_PLUGIN_DATA: '/data', PI_DELEGATE_VIEW_PROJECT: '/real-read-only' })
-    const commands: string[] = []
+  test(`settings: rows, source chain, ${scope} save with read-back, reset question`, async ($, on) => {
     const validations: string[][] = []
-    on('session.start', () => ({ cwd: '/scratch/nested' }))
-    on('session.root', () => ({ value: '/scratch' }))
-    on('fs.list', () => ({ value: [] }))
-    on('ui.open', () => ({ value: undefined }))
-    on('process.run', ($, e) => {
-      const argv = e.argv
-      if (argv[2] === 'snapshot') {
-        expect(argv[3]).toBe('/scratch') // Not the viewer live-data override!
-        return { value: { exitCode: 0, stdout: JSON.stringify(snapshot), stderr: '' } }
-      }
-      validations.push([...argv])
-      const value = argv[4]
-      return { value: { exitCode: value === 'five' ? 1 : 0, stdout: JSON.stringify(value === 'five' ? { ok: false, errorMessage: 'shared validation rejected' } : { ok: true, value }), stderr: '' } }
-    })
-    on('tool.call', ($, e) => { commands.push(e.command); return { result: '{"ok":true}', text: '{"ok":true}' } })
-    await $.session.start({ cwd: '/scratch/nested', surface: 'terminal', isInteractive: true })
-    await $.command.run({ command: 'pi-delegate:agents', args: '' })
-    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const { clock, host } = stubs(on, disk(validations), { env: { PI_DELEGATE_VIEW_PROJECT: '/real-read-only' } })
+    await $.command.run(RUN)
+    await clock.settle()
+    const ui = await $.ui.mount(mount())
     expect(await ui.find({ key: 'tab:result' })).toBeUndefined()
-    await ui.press({ key: 'key:s' })
+    await ui.press({ key: 'act:s' })
     await clock.settle()
+    const text = await screen(ui)
     expect((await ui.find({ key: 'set:questions_per_turn' }))?.props.autoFocus).toBe(true)
-    expect(await ui.find({ type: 'Select', key: 'sel:default_thinking' })).toBeDefined()
-    expect((await ui.find({ type: 'Select', key: 'scope' }))?.props.value).toBe('project')
-    expect(await ui.find({ type: 'Text', text: 'this project 2 · your settings 9 · default 5' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /Test mode: environment overrides active/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /Invalid user max_live_children/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'model · from the project pin' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /\/scratch\/\.claude/ })).toBeUndefined()
-    if (scope === 'user') await ui.select({ key: 'scope', value: 'user' })
-    expect(await ui.find({ key: 'set:questions_per_turn' })).toBeDefined()
+    expect(text).toContain('this project: 2 · your settings: 9 · default: 5')
+    expect(text).toContain('Saves to .claude/pi-delegate.local.md in this project.')
+    expect(text).toContain('Test mode: environment overrides are active')
+    expect(text).not.toContain('PI_MCP_TTL_MS') // no internal names
+    expect(text).toContain('Invalid user max_live_children')
+    expect(text).toContain('model · from the project pin')
+    expect(text).toContain('This project ▾')
+    if (scope === 'user') {
+      await ui.press({ key: 'set:scope' })
+      await clock.settle()
+      await ui.select({ key: 'pick:scope', value: 'user' })
+      await clock.settle()
+      expect(await screen(ui)).toContain('Your user settings ▾')
+      expect(await screen(ui)).toContain('Saves to ~/.claude/pi-delegate.json')
+      await $.ui.focus(arrowTo('set:questions_per_turn'))
+    }
     await ui.press({ key: 'set:questions_per_turn' })
-    expect((await ui.find({ key: 'edit:questions_per_turn' }))?.props.submitLabel).toBe('Save')
-    await ui.input({ key: 'edit:questions_per_turn', text: 'five' })
     await clock.settle()
-    expect(commands.length).toBe(0)
-    expect(await ui.find({ type: 'Text', text: 'Must be a whole number from 0 to 100, or unlimited. You typed "five".' })).toBeDefined()
-    await ui.input({ key: 'edit:questions_per_turn', text: 'unlimited' })
+    const field = await inputKey(ui, 'in:set:questions_per_turn#')
+    expect((await ui.find({ key: field }))?.props.submitLabel).toBe('save')
+    expect(await screen(ui)).toContain('    0–100 or unlimited · now 2 (project)')
+    expect((await screen(ui)).split('\n').filter(l => /Enter to save/.test(l)).length).toBe(1)
+    await ui.input({ key: field, text: 'five' })
     await clock.settle()
-    expect(commands[0]).toContain(`write-config --scope ${scope} --questions-per-turn 'unlimited' --json`)
-    expect(commands[0]).toContain("CLAUDE_PROJECT_DIR='/scratch'")
-    expect(commands[0]).toContain("'/plugin with spaces/scripts/pi-companion.mjs'")
-    expect(await ui.find({ type: 'Text', text: /^✓ Saved · Questions per turn is now/ })).toBeDefined()
-    // Reset is two-step with Cancel focused; Cancel does nothing.
-    await ui.press({ key: 'reset' })
-    expect((await ui.find({ key: 'confirm:no' }))?.props.autoFocus).toBe(true)
-    expect(await ui.find({ key: 'key:b' })).toBeUndefined()
+    expect(host.calls.length).toBe(0)
+    // Bug 12: plain words, no internal key and no JSON in the error.
+    expect(await screen(ui)).toContain('✕ Must be a whole number from 0 to 100, or unlimited. You typed "five".')
+    expect(await screen(ui)).not.toContain('Invalid questions_per_turn')
+    await ui.input({ key: await inputKey(ui, 'in:set:questions_per_turn#'), text: 'unlimited' })
+    await clock.settle()
+    expect(String(host.calls[0]?.command)).toContain(`write-config --scope ${scope} --questions-per-turn 'unlimited' --json`)
+    expect(String(host.calls[0]?.command)).toContain("CLAUDE_PROJECT_DIR='/project'")
+    expect(await screen(ui)).toMatch(/✓ Saved · Questions per turn is now/)
+    // Reset asks first with cancel focused; cancel does nothing.
+    await ui.press({ key: 'act:r' })
+    await clock.settle()
+    expect(await ui.find({ key: 'confirm:no' })).toBeDefined()
+    expect(await screen(ui)).toContain('Reset Questions per turn')
     await ui.press({ key: 'confirm:no' })
-    expect(commands.length).toBe(1)
-    await ui.press({ key: 'reset' })
+    await clock.settle()
+    expect(host.calls.length).toBe(1)
+    await ui.press({ key: 'act:r' })
+    await clock.settle()
     await ui.press({ key: 'confirm:yes' })
     await clock.settle()
-    expect(commands[1]).toContain(`--scope ${scope} --questions-per-turn 'inherit' --json`)
-    await ui.select({ key: 'sel:default_thinking', value: 'high' })
+    expect(String(host.calls[1]?.command)).toContain(`--scope ${scope} --questions-per-turn 'inherit' --json`)
+    expect(validations.map(v => v[4])).toEqual(['five', 'unlimited', 'inherit'])
+    // The command lands on the list again.
+    await $.command.run(RUN)
     await clock.settle()
-    expect(commands[2]).toContain(`--scope ${scope} --default-thinking 'high' --json`)
-    expect(validations.map(v => v[4])).toEqual(['five', 'unlimited', 'inherit', 'high'])
-    await ui.press({ key: 'key:b' })
-    expect(await ui.find({ type: 'Text', text: 'No pi agents in this project.' })).toBeDefined()
+    expect(await screen(ui)).toContain('No pi agents in this project.')
     await ui.unmount()
   })
 }
+
+test('bug 8: the pointer follows the ring, survives a reopen, and r resets the row that has it', async ($, on) => {
+  const { clock } = stubs(on, disk([]))
+  await $.command.run(RUN)
+  await clock.settle()
+  const ui = await $.ui.mount(mount())
+  await ui.press({ key: 'act:s' })
+  await clock.settle()
+  await $.ui.focus(arrowTo('set:turn_timeout_minutes'))
+  await clock.settle()
+  expect(await pointed(ui)).toContain('Turn time limit')
+  expect(await screen(ui)).toContain('The time budget for one turn')
+  await $.command.run(RUN) // the command lands on the list
+  await clock.settle()
+  await ui.press({ key: 'act:s' }) // open the settings again
+  await clock.settle()
+  expect(await pointed(ui)).toContain('Turn time limit')
+  expect((await ui.find({ key: 'set:turn_timeout_minutes' }))?.props.autoFocus).toBe(true)
+  await ui.press({ key: 'act:r' })
+  await clock.settle()
+  expect(await screen(ui)).toContain('Reset Turn time limit')
+  await ui.press({ key: 'confirm:no' })
+  await clock.settle()
+  // Enter edits the row that has the pointer; the field keeps the pointer on that row.
+  await ui.press({ key: 'set:turn_timeout_minutes' })
+  await clock.settle()
+  expect(await inputKey(ui, 'in:set:turn_timeout_minutes#')).not.toBe('')
+  await $.ui.focus(arrowTo(await inputKey(ui, 'in:set:turn_timeout_minutes#')))
+  expect(await screen(ui)).toContain('1–1440 or unlimited · now 60 min (default)')
+  expect(settingOf({ focusKey: 'in:set:turn_timeout_minutes#4' } as any)).toBe('turn_timeout_minutes')
+  await ui.unmount()
+})
+
+test('a bad settings reader shape shows an error line in plain words instead of a blank pane', async ($, on) => {
+  const { clock } = stubs(on, { metas: {}, events: {}, files: {}, run: argv => (argv[2] === 'snapshot' ? { exitCode: 0, stdout: '{"ok":true,"pin":null}' } : { exitCode: 0, stdout: '' }) })
+  await $.command.run(RUN)
+  await clock.settle()
+  const ui = await $.ui.mount(mount())
+  expect(await screen(ui)).toContain('No pi agents in this project.')
+  await ui.press({ key: 'act:s' })
+  await clock.settle()
+  expect(await screen(ui)).toContain("Couldn't read the settings: The settings reader gave data in a form the pane does not know.")
+  await ui.unmount()
+})

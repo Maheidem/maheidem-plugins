@@ -18,6 +18,21 @@ export function parseSetting(key, value) {
   if (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value)) value = Number(value);
   return Number.isInteger(value) && value >= spec.min && value <= spec.max ? value : null;
 }
+// Conservative allowlist for provider/model values that end up in pi's argv or
+// in the project config file: no whitespace, no leading '-', limited charset.
+export function isSafeArgValue(v) {
+  return typeof v === "string" && v.length > 0 && !v.startsWith("-") && /^[A-Za-z0-9._/:@-]+$/.test(v);
+}
+// One frontmatter value as YAML reads it: an inline comment (" # ...") is
+// dropped, then one pair of surrounding quotes is removed.
+export function frontmatterValue(raw) {
+  const v = String(raw).trim();
+  const quoted = /^(['"])(.*?)\1(?:\s+#.*)?$/.exec(v);
+  if (quoted) return quoted[2];
+  return v.replace(/(?:^|\s+)#.*$/, "").trim();
+}
+// The project file also holds the model pin (pi-companion loadProjectConfig).
+const PIN_KEYS = ["provider", "model", "extensions"];
 export function userSettingsPath() {
   return path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "pi-delegate.json");
 }
@@ -28,18 +43,24 @@ export function resolveSettings(cwd) {
   const warnings = [], project = {}, user = {};
   try {
     const fm = frontmatter(fs.readFileSync(projectPath, "utf8"));
+    // Nothing is skipped silently: an unknown key or a pin value that never
+    // reaches pi (unsafe as an argv token) is a warning, shown with the
+    // settings (list header, doctor, the agents pane).
     if (fm) for (const line of fm[1].split(/\r?\n/)) {
-      const match = line.match(/^([a-z_]+)\s*:\s*(.*?)\s*$/);
-      if (!match || !Object.hasOwn(SETTINGS, match[1])) continue;
-      let value = match[2];
-      if (/^(['"]).*\1$/.test(value)) value = value.slice(1, -1);
-      project[match[1]] = value;
+      const match = line.match(/^([A-Za-z_][\w-]*)\s*:(.*)$/);
+      if (!match) continue;
+      const [, key, rawValue] = match;
+      const value = frontmatterValue(rawValue);
+      if (Object.hasOwn(SETTINGS, key)) project[key] = value;
+      else if ((key === "provider" || key === "model") && value && !isSafeArgValue(value)) warnings.push(`Invalid project pin ${key} ${JSON.stringify(value)}; ignoring it`);
+      else if (!PIN_KEYS.includes(key)) warnings.push(`Unknown project setting ${key}; ignoring it`);
     }
   } catch (err) { if (err.code !== "ENOENT") warnings.push("Cannot read project settings"); }
   try {
     const data = JSON.parse(fs.readFileSync(userPath, "utf8"));
     if (!data || Array.isArray(data) || typeof data !== "object") throw new Error("expected object");
     Object.assign(user, data);
+    for (const key of Object.keys(data)) if (!Object.hasOwn(SETTINGS, key)) warnings.push(`Unknown user setting ${key}; ignoring it`);
   } catch (err) { if (err.code !== "ENOENT") warnings.push("Cannot read user settings"); }
   const settings = {};
   for (const [key, spec] of Object.entries(SETTINGS)) {

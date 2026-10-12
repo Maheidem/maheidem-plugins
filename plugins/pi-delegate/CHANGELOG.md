@@ -2,6 +2,50 @@
 
 Earlier versions have no changelog; see `git log -- plugins/pi-delegate`.
 
+## 0.14.0 (2026-10-12)
+
+### Changed
+- The `/pi-delegate:agents` pane runs on the mod-forge kit v2 (`hooks/kit/`,
+  module `hooks/register.tsx`). `hooks/agents.js` is gone.
+- Esc steps back one level (detail, settings, confirm, input). Esc in the
+  list closes the pane. The `b: back` key is gone.
+- A new agent always opens on the Result tab. The Log tab shows words only,
+  no raw JSON.
+- The pane finds its data folder from this session's own MCP server, so it
+  also works with `claude --plugin-dir`.
+- The text fallback of the command prints plain lines, not a pipe table.
+
+### Fixed
+- Pane: Esc hints in a dock, `s` in the error view, a stuck error view,
+  drafts lost after Enter, one busy flag that blocked other agents, focus
+  after an action, Selects that opened on focus, hotkeys in the arrow ring,
+  the first Down in Activity, a band that hid other bands, the footer cut
+  off at 100 and 60 columns.
+- A slow prompt acknowledgement (for example, compaction) no longer rejects
+  a turn that pi still runs. A prompt refused during compaction is sent again.
+- A dead pi is detected while a daemon holds its stdout. Its process group
+  is killed.
+- The turn clock pauses while a question or a dialog waits.
+- An answer from the pane no longer turns on push wake.
+- Extension dialogs (`d_*`) wake Claude, pause the turn clock and forward
+  their message.
+- `pi_wait` accepts the `pi:` prefix and any case.
+- A question that nobody is shown has an expiry clock.
+- RPC replies match their command by id.
+- `pi_stop` returns the events that Claude did not see.
+- A cancelled `pi_answer` leaves no hidden wake holder.
+- A tool error is an `isError` result, not a JSON-RPC error.
+- A pin with an inline `# comment` works. Unknown settings keys show as
+  warnings.
+
+### Added
+- `hold: false` on `pi_answer`, `pi_send_message` and `pi_stop`: the call
+  returns at once and leaves the next event queued for Claude. The pane
+  uses it.
+- A `dialog` event.
+- Needs the pi-side package @maheidem/pi-delegate 0.7.3 or later, so that
+  small models see the `ask_parent` tool.
+
 ## 0.13.0 (2026-10-02)
 
 ### Changed

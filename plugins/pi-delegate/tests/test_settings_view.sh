@@ -36,11 +36,11 @@ const child = path.join(store, 'projects', sessionSlugForCwd(cwd), 'children/sco
 fs.mkdirSync(child, { recursive: true });
 fs.writeFileSync(path.join(child, 'meta.json'), JSON.stringify({ name: 'scout', state: 'waiting', provider: 'local', model: 'test', gen: 2, turn: 3 }));
 fs.writeFileSync(path.join(child, 'events.jsonl'), JSON.stringify({ type: 'question', gen: 2, turn: 3, data: { toolCallId: 'q' } }) + '\n{"torn');
-assert.ok(fallback(cwd, store).includes('| scout | waiting | local/test | 2/3 | 1 |'));
-assert.ok(fallback(cwd, store).includes('Model pin (read-only): local/test-model — source: project'));
+assert.ok(fallback(cwd, store).includes('scout · asking · 1 question waiting · turn 3 · test'));
+assert.ok(fallback(cwd, store).includes('pi model: test-model (from the project pin)'));
 const result = spawnSync(process.execPath, [path.resolve('scripts/settings-view.mjs'), 'fallback', store], { cwd, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: '/not-the-session-project' } });
 assert.equal(result.status, 0);
-assert.ok(result.stdout.includes('local/test-model — source: project'));
+assert.ok(result.stdout.includes('pi model: test-model (from the project pin)'));
 process.env.PI_MCP_TEST = '1';
 process.env.PI_MCP_TTL_MS = '1000';
 data = snapshot(cwd);

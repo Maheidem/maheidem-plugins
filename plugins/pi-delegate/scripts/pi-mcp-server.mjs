@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   runSetup, detectErrorTurn, taskResult, resolveCwd,
-  loadProjectConfig, isSafeArgValue, sanitizeSessionName,
+  loadProjectConfig, isSafeArgValue,
   lockPathFor, acquireLock, releaseLock, reclaimIfDead, buildChildLaunch, checkPiVersion, usageFrom,
   sessionSlugForCwd, findSessionFiles, piSessionsDir, fsSafeName,
   pinConflict, pinLabel, validPin, readLockOwner, renderSessionEntries, piSidePackageDir
@@ -36,8 +36,9 @@ function readPluginVersion() {
 // 30-min stdio idle abort away). With a token there is no cap while a child runs.
 const MAX_WAIT_MS = 1500000;
 // The server owns ask expiry and the question budget (0.11 §5). The soft
-// timer starts once a question event is consumed; the child only has a 4h
-// hard cap and a budget it never reaches, so neither decides on its own.
+// timer starts once a question event is consumed (shown to Claude); before
+// that a backstop of three soft windows runs. The child only has a 4h hard
+// cap and a budget it never reaches, so neither decides on its own.
 function askTimeoutMs() { return setting("question_wait_minutes") * 60000; }
 // Config is refreshed at server start and each spawn/turn.
 let delegateSettings = resolveSettings(resolveCwd());
@@ -67,11 +68,12 @@ const INSTRUCTIONS =
   "pi children are NOT native agents: SendMessage, TaskStop and ListAgents cannot see them; use the pi_* tools " +
   "(pi_agent starts one, pi_send_message talks to it, pi_answer answers its questions, pi_stop stops it). " +
   "When the user asks about background agents, pi agents or an agent by name, call pi_list_agents before ListAgents; " +
-  "call it too after compaction or when unsure what your children are doing, and pi_read {name} for a child's full output. " +
-  "pi-delegate pushes events as <channel source=\"...pi-delegate...\" agent=\"<name>\" event=\"question|done|failed\" seq=\"N\" instance=\"I\" ...>; " +
+  "call it too after compaction, and pi_read {name} for a child's full output. " +
+  "pi-delegate pushes events as <channel source=\"...pi-delegate...\" agent=\"<name>\" event=\"question|dialog|done|failed\" seq=\"N\" instance=\"I\" ...>; " +
   "line 1 is a summary, the <pi-agent-event> block has the detail. Skip an event only when you already handled the same agent, instance AND seq " +
-  "(a name forgotten with pi_stop {forget:true} and started again is a new instance; its seq starts over). " +
+  "(a name forgotten and started again is a new instance). " +
   "event=question: the child is BLOCKED on ask_parent; answer with pi_answer {to:<agent>, question_id:<question_id>, answer}. " +
+  "event=dialog: an extension dialog blocks it; pi_answer {to, question_id:<d_ id>, value|confirmed|cancelled:true}. " +
   "Answer blocked/guidance questions yourself; for an approval or opinion that changes scope or is irreversible, ask the user " +
   "with AskUserQuestion first, then pi_answer {relay_user:true}; ONLY then: an answer the user gave beforehand is yours (relay_user false). " +
   "Never invent approval. " +
@@ -117,7 +119,7 @@ const PI_AGENT_TOOL = {
       tools: { type: "array", items: { type: "string" }, description: "Tool allowlist (pi -t). ask_parent is added when ask is on." },
       exclude_tools: { type: "array", items: { type: "string" }, description: "Tool denylist (pi -xt). Excluding ask_parent turns ask off." },
       ask: { type: "boolean", description: "Default true: the child may ask you questions (ask_parent)." },
-      turn_timeout_ms: { type: "integer", minimum: 1, description: "Overrides the configured turn timeout (default 60 minutes); paused while a question is pending." }
+      turn_timeout_ms: { type: "integer", minimum: 1, description: "Overrides the configured turn timeout (default 60 minutes); paused while a question or dialog is pending." }
     }
   }
 };
@@ -131,6 +133,12 @@ function toolsForList() {
   delete props.model;
   return TOOLS.map((t) => (t === PI_AGENT_TOOL ? { ...t, inputSchema: { ...t.inputSchema, properties: props } } : t));
 }
+
+// hold:false is the agents pane's flag. The pane's tool result never reaches
+// the model, so a pane call returns at once: it holds no wake and carries no
+// queued event. Those events stay for pi_wait, pi_list_agents or a push.
+const HOLD_DESC = "Default true. false: return at once, hold no wake, and leave every event queued for Claude (the agents pane sends false).";
+const QUEUED_NOTE = "its next event stays queued for pi_wait or pi_list_agents";
 
 const TOOLS = [
   PI_AGENT_TOOL,
@@ -151,7 +159,8 @@ const TOOLS = [
         to: { type: "string", description: "The child's name (a leading \"pi:\" is stripped; aliases: name, task_id)." },
         message: { type: "string" },
         interrupt: { type: "boolean", description: "Default false. Abort the current turn (and any pending question) and start a new one with this message." },
-        mode: { type: "string", enum: ["auto", "follow_up"], description: "For a running child: auto (default) steers, follow_up queues the message until the turn ends." }
+        mode: { type: "string", enum: ["auto", "follow_up"], description: "For a running child: auto (default) steers, follow_up queues the message until the turn ends." },
+        hold: { type: "boolean", description: HOLD_DESC }
       }
     }
   },
@@ -173,7 +182,8 @@ const TOOLS = [
         relay_user: { type: "boolean", description: "Default false (recorded as \"model\"). true ONLY when this answer is the user's reply to an AskUserQuestion you asked about this specific question (recorded as \"model (relaying user)\"). An answer the user gave you beforehand, e.g. in the prompt that started the child, is not a relay: leave false." },
         value: { type: "string", description: "d_* dialogs (select/input): the value." },
         confirmed: { type: "boolean", description: "d_* dialogs (confirm)." },
-        cancelled: { type: "boolean", description: "d_* dialogs: cancel it." }
+        cancelled: { type: "boolean", description: "d_* dialogs: cancel it." },
+        hold: { type: "boolean", description: HOLD_DESC }
       }
     }
   },
@@ -188,7 +198,8 @@ const TOOLS = [
       required: ["name"],
       properties: {
         name: { type: "string", description: "The child's name (aliases: to, task_id)." },
-        forget: { type: "boolean", description: "Default false. Also delete its sessions and record." }
+        forget: { type: "boolean", description: "Default false. Also delete its sessions and record." },
+        hold: { type: "boolean", description: HOLD_DESC }
       }
     }
   },
@@ -328,9 +339,6 @@ async function handleToolCall(msg) {
   const params = msg.params || {};
   const name = params.name;
   const args = params.arguments || {};
-  // Before the handler runs: a question id only a push delivered confirms
-  // push wake, so this very call already behaves as in channel mode.
-  implicitConfirm(args);
   let result;
   if (name === "pi_agent") {
     result = await piAgent(args, progressTokenOf(params), msg.id);
@@ -365,8 +373,6 @@ async function handleToolCall(msg) {
   // A HEADLINE (one line for the model, already escaped) goes before the JSON.
   const head = result ? result[HEADLINE] : null;
   const text = (head ? `${head}\n` : "") + JSON.stringify(escDeep(result));
-  // Question ids a tool response shows can't prove a push arrived (§3.4).
-  noteToolShown(text);
   reply(msg.id, {
     content: [{ type: "text", text }],
     isError: result && result.ok === false
@@ -423,8 +429,15 @@ function handleLine(line) {
     pendingOps++;
     inFlightCalls.add(msg.id);
     const settled = () => { inFlightCalls.delete(msg.id); cancelledCalls.delete(msg.id); opDone(); };
+    // A handler that throws is a failed tool call, not a protocol error: the
+    // model gets an isError result it can read (a JSON-RPC error is shown as
+    // a transport failure).
     reconciled.then(() => { clientIsReady(); return handleToolCall(msg); }).then(settled).catch((err) => {
-      if (!cancelledCalls.has(msg.id)) replyErr(msg.id, -32603, `tool call failed: ${err && err.message ? err.message : String(err)}`);
+      if (!cancelledCalls.has(msg.id)) {
+        const why = `pi-delegate: ${msg.params && msg.params.name ? msg.params.name : "the tool call"} failed inside the server: ${err && err.message ? err.message : String(err)}`;
+        process.stderr.write(`${why}\n`);
+        reply(msg.id, { content: [{ type: "text", text: escBlock(why) }], isError: true });
+      }
       settled();
     });
   } else if (msg.id !== undefined && msg.method) {
@@ -520,8 +533,10 @@ const LISTENER_NOTE = "This is only the wake listener; stopping it does NOT stop
 // unconfirmed. PI_DELEGATE_WAKE=channel|fallback overrides everything below.
 // Otherwise the parent's argv only sets the initial label ("channel?" or
 // "fallback"); push wake starts once a push is proven to reach Claude: the
-// probe's nonce comes back through pi_list_agents {confirm_push}, or a tool
-// call names a question only a push delivered (implicit confirmation).
+// probe's nonce comes back through pi_list_agents {confirm_push}. Nothing
+// else confirms. A question id in a tool call proves nothing: the agents pane
+// reads ids from events.jsonl and answers with them, also in a session where
+// no push ever arrives.
 
 // The direct parent's argv as `ps` shows it (.mcp.json spawns node without a
 // shell, so the parent is Claude). Tokens are split on whitespace: ps loses
@@ -616,21 +631,6 @@ function maybeProbe() {
 // until confirmation: a pi_wait or any later call still returns them).
 function probeWindow() {
   return !wake.confirmedAt && wake.source !== "override" && wake.hint.channel && !wake.hint.print && !!wake.probe;
-}
-
-// Implicit confirmation (§3.4 step 4): a question id that reached Claude only
-// through a push (never in a tool response) proves pushes arrive. Tool
-// responses are scanned for q_ ids as they are written; pushes record theirs.
-const QID_RE = /\bq_[0-9a-f]{6}\b/g;
-const pushedQids = new Set();
-const toolShownQids = new Set();
-function noteToolShown(text) {
-  for (const m of String(text).matchAll(QID_RE)) toolShownQids.add(m[0]);
-}
-function implicitConfirm(args) {
-  if (pushConsumes() || !args || typeof args !== "object") return;
-  const qid = typeof args.question_id === "string" ? args.question_id.trim() : null;
-  if (qid && pushedQids.has(qid) && !toolShownQids.has(qid)) confirmWake(`question ${qid} answered from a push`);
 }
 
 const store = new Map(); // name -> child record, for children this server owns
@@ -1132,11 +1132,23 @@ function headlineRaw(name, e) {
     const budget = Number.isInteger(d.n) && Number.isInteger(d.max) ? `, ${d.n}/${d.max}` : "";
     return `${tag} QUESTION ${d.question_id} (${d.topic}${budget}${budget ? " this turn" : ""}): ${oneLine(d.text, 300)}`;
   }
+  if (e.type === "dialog") return `${tag} DIALOG ${d.dialog_id} (${d.method}): ${oneLine(dialogText(d), 300)}`;
   return `${tag} ${e.type.toUpperCase()} turn ${e.turn}`;
+}
+
+// A dialog's title, message and options as one text.
+function dialogText(d) {
+  const opts = Array.isArray(d.options) ? ` [${d.options.join(" | ")}]` : "";
+  return [d.title, d.message].filter(Boolean).join(": ") + opts;
+}
+function dialogControls(name, d) {
+  const how = d.method === "confirm" ? "confirmed:true|false" : d.method === "select" ? "value:\"<one option>\"" : "value:\"...\"";
+  return `pi_answer {to:"${name}", question_id:"${d.dialog_id}", ${how}} · pi_answer {to:"${name}", question_id:"${d.dialog_id}", cancelled:true}`;
 }
 
 function controlsFor(name, e) {
   const d = e.data || {};
+  if (e.type === "dialog") return dialogControls(name, d);
   if (e.type === "question") {
     return `pi_answer {to:"${name}", question_id:"${d.question_id}", answer:"..."} · scope-changing approval: AskUserQuestion, then pi_answer {relay_user:true}`;
   }
@@ -1149,10 +1161,11 @@ function controlsFor(name, e) {
 // Full form: the channel push body (line 1 is the terminal echo).
 function renderEvent(name, e) {
   const d = e.data || {};
-  const status = e.type === "done" ? "completed" : e.type === "question" ? "waiting" : e.type === "failed" ? "failed" : e.type;
+  const status = e.type === "done" ? "completed" : e.type === "question" || e.type === "dialog" ? "waiting" : e.type === "failed" ? "failed" : e.type;
   const out = [headline(name, e), "<pi-agent-event>", `<pi-agent>${name}</pi-agent>`, `<status>${status}</status>`];
   if (e.type === "done") out.push(`<result>${escBlock(resultText(name, d, PUSH_RESULT_CAP))}</result>`);
   if (e.type === "question") out.push(`<question id="${d.question_id}" topic="${d.topic}">${escBlock(d.text)}</question>`);
+  if (e.type === "dialog") out.push(`<dialog id="${d.dialog_id}" method="${escBlock(d.method)}">${escBlock(dialogText(d))}</dialog>`);
   if (e.type === "failed") {
     if (d.reason === "question_unroutable") {
       out.push(`<question topic="${d.topic}">${escBlock(d.text)}</question>`);
@@ -1175,16 +1188,18 @@ function renderCompact(rec, e) {
   const d = e.data || {};
   const marks = [];
   if (e.type === "question" && !isQuestionPending(rec.name, d.toolCallId)) marks.push("[expired]");
+  if (e.type === "dialog" && !isDialogPending(rec.name, d.dialog_id)) marks.push("[closed]");
   const pushed = rec.pushedAt.get(e.seq);
   if (pushed) marks.push(`(also pushed ${clock(pushed)})`);
   const out = [headline(rec.name, e) + (marks.length ? ` ${marks.join(" ")}` : "")];
   if (e.type === "done") out.push(escBlock(resultText(rec.name, d, COMPACT_RESULT_CAP)));
   if (e.type === "failed") out.push(escBlock(oneLine(d.reason === "question_unroutable" ? `(${d.topic}) ${d.text}` : d.errorMessage, COMPACT_RESULT_CAP)));
   if (e.type === "question") out.push(escBlock(d.text), controlsFor(rec.name, e));
+  if (e.type === "dialog") out.push(escBlock(dialogText(d)), controlsFor(rec.name, e));
   for (const n of notesOf(e)) out.push(escBlock(riderLine(n)));
   // A truncated result already ends with the read pointer.
   const pointed = e.type === "done" && resultTruncated(d, COMPACT_RESULT_CAP);
-  if (e.type !== "question" && !pointed) out.push(`pi_read {name:"${rec.name}"}`);
+  if (e.type !== "question" && e.type !== "dialog" && !pointed) out.push(`pi_read {name:"${rec.name}"}`);
   return out.join("\n");
 }
 
@@ -1198,6 +1213,8 @@ function eventView(rec, e) {
     if (d.reason === "question_unroutable") Object.assign(v, { badToolCallId: d.badToolCallId, topic: d.topic, text: d.text });
   } else if (e.type === "question") {
     Object.assign(v, { question_id: d.question_id, toolCallId: d.toolCallId, topic: d.topic, text: d.text, expired: !isQuestionPending(rec.name, d.toolCallId) });
+  } else if (e.type === "dialog") {
+    Object.assign(v, { question_id: d.dialog_id, dialog_id: d.dialog_id, method: d.method, title: d.title ?? null, message: d.message ?? null, options: d.options ?? null, closed: !isDialogPending(rec.name, d.dialog_id) });
   }
   const notes = notesOf(e);
   if (notes.length) v.notes = notes.map((n) => (n.kind === "expired" ? { expired: n.question_id, reason: n.reason, text: n.text } : { topic: n.topic, text: n.text }));
@@ -1219,7 +1236,6 @@ function pushChannel(rec, e) {
   send({ jsonrpc: "2.0", method: "notifications/claude/channel", params: { content: renderEvent(rec.name, e), meta } }, (err) => {
     if (consumes) e.reserved = false;
     if (err) { rec.pushedAt.delete(e.seq); recheckWaiters(); return; }
-    if (meta.question_id) pushedQids.add(meta.question_id);
     if (consumes) consume(rec, [e.seq]);
   });
 }
@@ -1270,12 +1286,12 @@ function returnInline(result, picked) {
   return withCommit(result, picked);
 }
 
-// The question/unroutable events a blocking call returns early with.
+// The question/dialog/unroutable events a blocking call returns early with.
 function commitPendingQuestions(result, name) {
   const rec = ownedByName(name);
   if (!rec) return result;
   const picked = rec.pending
-    .filter((e) => !e.reserved && (e.type === "question" || (e.type === "failed" && e.data && e.data.reason === "question_unroutable")))
+    .filter((e) => !e.reserved && (e.type === "question" || e.type === "dialog" || (e.type === "failed" && e.data && e.data.reason === "question_unroutable")))
     .map((e) => ({ rec, e }));
   return returnInline(result, picked);
 }
@@ -1300,6 +1316,7 @@ function takeOwed(name) {
   const picked = rec.pending
     .filter((e) => !e.reserved
       && !(e.type === "question" && isQuestionPending(name, e.data && e.data.toolCallId))
+      && !(e.type === "dialog" && isDialogPending(name, e.data && e.data.dialog_id))
       && !(live && e.gen === rec.gen && e.turn === live.turn))
     .map((e) => ({ rec, e }));
   if (!picked.length) return null;
@@ -1365,12 +1382,11 @@ function liveSummary(scopeNames) {
 // (the 20s heartbeat keeps the client's idle abort away); without one the cap
 // is MAX_WAIT_MS. An explicit timeout_ms is honoured.
 async function waitEvent(rawName, timeoutArg, progressToken, requestId) {
-  let name = null;
-  if (typeof rawName === "string" && rawName) {
-    const named = chanName(rawName);
-    if (named.error) return taskResult({ errorMessage: named.error });
-    name = named.name;
-  }
+  // The same resolver as every other by-name tool: "pi:c" (as a push shows
+  // it) and "C" name child c.
+  const named = resolveAgentName({ name: rawName });
+  if (named.error) return agentError(named.error);
+  const name = named.name;
   // Orphans (their server died mid-turn) are recovered, and records a gone
   // server left with unconsumed events join the scope first: an async turn's
   // done must survive a restart or /mcp reconnect.
@@ -1531,12 +1547,23 @@ function emitExpired(name, ask, reason) {
   addRider(name, { kind: "expired", question_id: ask.questionId, reason, text: ask.text, at: new Date().toISOString() });
 }
 
-// True while the child sits inside an ask_parent call: a routable question,
-// or an unroutable one (it polls a file we won't write until its ask budget
-// runs out). Either way the parent is not what's slow, so the turn clock and
-// the idle/cap reapers leave the child alone.
+// True while the child sits inside an ask_parent call (a routable question,
+// or an unroutable one it polls until its ask budget runs out) or an
+// extension dialog (select/confirm/input/editor: pi blocks until the answer,
+// with no timeout of its own unless the dialog sets one). Either way the
+// parent is not what's slow, so the turn clock and the idle/cap reapers
+// leave the child alone.
 function isBlockedOnAsk(ch) {
-  return hasPendingAsks(ch.name) || !!(ch.unroutable && ch.unroutable.size);
+  return hasPendingAsks(ch.name) || !!(ch.unroutable && ch.unroutable.size) || !!ch.pendingQuestion;
+}
+
+// A dialog parked for pi_answer (its dialog event was recorded).
+function parkedDialog(ch) {
+  return !!(ch && ch.alive && ch.pendingQuestion && ch.pendingQuestion.parked);
+}
+function isDialogPending(name, dialogId) {
+  const ch = registry.get(name);
+  return !!(ch && ch.alive && ch.pendingQuestion && ch.pendingQuestion.dialogId === dialogId);
 }
 
 function onAskStart(ch, evt) {
@@ -1596,6 +1623,11 @@ function onAskStart(ch, evt) {
     return;
   }
   emitProgress(ch, null, `pi asks (${topic}): ${text.slice(0, 200)}`);
+  // Backstop: a question nobody is shown (no push reaches Claude and no call
+  // returns it) has no soft clock yet. Without this it would hold a live slot
+  // until the child's own 4h cap. Showing it replaces this with the soft clock.
+  ask.timer = setTimeout(() => expireAsk(ch.name, ask, "never shown"), askBackstopMs());
+  ask.timer.unref();
   setState(store.get(ch.name), "waiting", { questionsThisTurn: ch.questionsThisTurn });
   const e = emitEvent(ch.name, "question", { question_id: questionId, toolCallId: evt.toolCallId, topic, text, n: ch.questionsThisTurn, max: ch.questionLimit },
     { pid: ch.child && ch.child.pid });
@@ -1667,36 +1699,53 @@ function writeAnswer(name, ask, answeredBy, answer, how = `answered by ${answere
   }
 }
 
-// The server's soft expiry (§5): it starts once Claude has the question (its
-// event consumed), so a busy Claude doesn't burn the window. On expiry the
-// server answers with the child's own fallback text.
+// The server's soft expiry (§5): it starts once the question's event is
+// consumed, i.e. once a tool response carrying it or a confirmed push has
+// been written. A tool response reaches Claude at once. A push may not:
+// Claude Code shows a push that arrives during a tool call only after that
+// call returns, and the server cannot see when that happens, so in channel
+// mode a long tool call uses up part of question_wait_minutes. On expiry the
+// server answers with the child's own fallback text. Until the question is
+// shown, only the backstop (askBackstopMs, set in onAskStart) runs.
 function startAskTimers(name, seqs) {
   const m = asks.get(name);
   if (!m) return;
   for (const a of m.values()) {
-    if (a.answeredAt || a.timer || !Number.isInteger(a.seq) || !seqs.has(a.seq)) continue;
-    a.timer = setTimeout(() => expireAsk(name, a), askTimeoutMs());
+    if (a.answeredAt || a.shown || !Number.isInteger(a.seq) || !seqs.has(a.seq)) continue;
+    a.shown = true;
+    clearAskTimer(a);
+    a.timer = setTimeout(() => expireAsk(name, a, "timeout"), askTimeoutMs());
     a.timer.unref();
   }
 }
 
-function expireAsk(name, a) {
+// A question never shown to Claude expires after three soft windows (30 min
+// with the default question_wait_minutes), well inside the child's 4h cap.
+function askBackstopMs() { return Math.min(askTimeoutMs() * 3, CHILD_ASK_TIMEOUT_MS); }
+
+function expireAsk(name, a, reason) {
   a.timer = null;
   const m = asks.get(name);
   if (a.answeredAt || !m || m.get(a.toolCallId) !== a) return;
   try {
-    writeAnswer(name, a, "model (timeout)", ASK_FALLBACK_TEXT, "expired (timeout)");
+    writeAnswer(name, a, "model (timeout)", ASK_FALLBACK_TEXT, `expired (${reason})`);
   } catch (err) {
     process.stderr.write(`pi-delegate: expiry answer for ${a.questionId} on pi:${name}: ${err && err.message ? err.message : String(err)}\n`);
     return;
   }
-  emitExpired(name, a, "timeout");
+  emitExpired(name, a, reason);
 }
 
 // Pre-answers every open question of a child (interrupt, stop, shutdown) so
 // ask.ts's poll loop returns: its execute() has no AbortSignal.
 function preAnswerAll(name, answeredBy, text, how) {
   const out = [];
+  // A pending extension dialog blocks pi the same way: cancel it.
+  const ch = registry.get(name);
+  if (ch && ch.alive && ch.pendingQuestion) {
+    out.push(ch.pendingQuestion.dialogId);
+    writeUiResponse(ch, ch.pendingQuestion.id, { cancelled: true });
+  }
   for (const a of openAsks(name)) {
     try {
       writeAnswer(name, a, answeredBy, text, how);
@@ -1764,7 +1813,9 @@ async function piAnswer(args, progressToken, requestId) {
   if (owner) return agentError(owner.message, { name, ownerPid: owner.pid });
   const dialogFields = args.cancelled === true || typeof args.confirmed === "boolean" || typeof args.value === "string";
   const ch = registry.get(name);
-  if ((qid && qid.startsWith("d_")) || (!qid && dialogFields && !openAsks(name).length)) return answerDialog(name, ch, qid, args);
+  // hold:false (the agents pane): return at once, consume nothing.
+  const hold = args.hold !== false;
+  if ((qid && qid.startsWith("d_")) || (!qid && dialogFields && !openAsks(name).length)) return answerDialog(name, ch, qid, args, progressToken, requestId, hold);
 
   const pending = asks.get(name) ? [...asks.get(name).values()].filter((a) => !a.budget) : [];
   const open = pending.filter((a) => !a.answeredAt);
@@ -1777,7 +1828,7 @@ async function piAnswer(args, progressToken, requestId) {
     const expired = r.how.startsWith("expired");
     const text = `question ${r.questionId} already resolved (${r.how}, ${hhmm(r.at)})` +
       (expired ? `; the child proceeded on its own judgment. Send a correction with pi_send_message {to:"${name}"}` : "");
-    const turn = lateWakeTurn(ch, name, r.turnId);
+    const turn = hold ? lateWakeTurn(ch, name, r.turnId) : null;
     if (!turn) return agentError(`${text}${notArmed()}`, { name, question_id: r.questionId });
     const call = makeCall(requestId);
     try {
@@ -1813,48 +1864,64 @@ async function piAnswer(args, progressToken, requestId) {
   // The turn this question belongs to, taken now: it may end (and drop off
   // ch.tracked) while we wait for the pickup.
   const askTurn = ch.tracked && ch.tracked.turnId === ask.turnId ? ch.tracked : null;
-  // Listen for the pickup before the file exists: the child polls every 400ms.
-  const ended = waitAskEnd(ch, ask.toolCallId, PICKUP_WAIT_MS);
-  try {
-    writeAnswer(name, ask, answeredBy, args.answer);
-  } catch (err) {
-    return agentError(`failed to write the answer file: ${err && err.message ? err.message : String(err)}`, { name, question_id: ask.questionId });
-  }
-  const end = await ended;
-  let pickup;
-  if (end && end.details && end.details.askAnswered === true) pickup = "picked up";
-  else if (end) {
-    pickup = "expired before pickup";
-    emitExpired(name, ask, end.details && end.details.askTimedOut ? "child timeout" : "error");
-  } else pickup = "written; not yet picked up";
-  const open2 = openAsks(name);
-  const siblings = open2.map((a) => a.questionId);
-  const result = { ok: true, name, question_id: ask.questionId, toolCallId: ask.toolCallId, answeredBy, pickup, pendingQuestions: siblings };
-  const lead = `answered ${ask.questionId} for pi:${name}`;
-  const expired = pickup === "expired before pickup";
-  const tail = expired
-    ? "expired before pickup; the child proceeded on its own judgment. Send the correction with pi_send_message."
-    : `${pickup}; it continues in the same session.`;
-  if (siblings.length) {
-    // A batch question that arrived after the call that returned the first
-    // one was never shown: its text rides on this response, and is consumed
-    // with it (which also starts its expiry clock).
-    result[HEADLINE] = `${lead}; ${pickup}; still blocked on ${listing(open2)} (same batch).`;
-    return commitPendingQuestions(result, name);
-  }
-  result[HEADLINE] = `${lead}; ${tail}`;
-  // Fallback: with no question left, this call holds the wake (§2.3), also
-  // when the answer expired before pickup: the child goes on without it, and
-  // nobody else holds its turn. A turn that already ended returns its end
-  // (blockUntilWake's finished/ready branches).
-  const tracked = askTurn;
-  if (pushConsumes() || !tracked) return result;
+  // Registered before the pickup wait: a cancel that lands during it must end
+  // this call, never leave a later blockUntilWake holding the wake unseen.
   const call = makeCall(requestId);
   try {
-    const info = { ok: true, name, gen: store.get(name) ? store.get(name).gen : null, question_id: ask.questionId, answeredBy, pickup };
-    return await blockUntilWake(ch, name, tracked, { progressToken, cancelled: call.cancelledP, call, owed: null, info, head: `${lead}; ${tail}` });
+    return await answerBody();
   } finally {
     call.release();
+  }
+  async function answerBody() {
+    // Listen for the pickup before the file exists: the child polls every 400ms.
+    const ended = waitAskEnd(ch, ask.toolCallId, PICKUP_WAIT_MS);
+    try {
+      writeAnswer(name, ask, answeredBy, args.answer);
+    } catch (err) {
+      return agentError(`failed to write the answer file: ${err && err.message ? err.message : String(err)}`, { name, question_id: ask.questionId });
+    }
+    const end = await ended;
+    // Cancelled while waiting for the pickup: the answer is written (the child
+    // gets it), but the call returns nothing and holds no wake.
+    if (call.cancelled) return CANCELLED;
+    let pickup;
+    if (end && end.details && end.details.askAnswered === true) pickup = "picked up";
+    else if (end) {
+      pickup = "expired before pickup";
+      emitExpired(name, ask, end.details && end.details.askTimedOut ? "child timeout" : "error");
+    } else pickup = "written; not yet picked up";
+    const open2 = openAsks(name);
+    const siblings = open2.map((a) => a.questionId);
+    const result = { ok: true, name, question_id: ask.questionId, toolCallId: ask.toolCallId, answeredBy, pickup, pendingQuestions: siblings };
+    const lead = `answered ${ask.questionId} for pi:${name}`;
+    const expired = pickup === "expired before pickup";
+    const tail = expired
+      ? "expired before pickup; the child proceeded on its own judgment. Send the correction with pi_send_message."
+      : `${pickup}; it continues in the same session.`;
+    if (siblings.length && !hold) {
+      result[HEADLINE] = `${lead}; ${pickup}; still blocked on ${listing(open2)} (same batch).`;
+      return result;
+    }
+    if (siblings.length) {
+      // A batch question that arrived after the call that returned the first
+      // one was never shown: its text rides on this response, and is consumed
+      // with it (which also starts its expiry clock).
+      result[HEADLINE] = `${lead}; ${pickup}; still blocked on ${listing(open2)} (same batch).`;
+      return commitPendingQuestions(result, name);
+    }
+    result[HEADLINE] = `${lead}; ${tail}`;
+    // Fallback: with no question left, this call holds the wake (§2.3), also
+    // when the answer expired before pickup: the child goes on without it, and
+    // nobody else holds its turn. A turn that already ended returns its end
+    // (blockUntilWake's finished/ready branches).
+    const tracked = askTurn;
+    if (pushConsumes() || !tracked) return result;
+    if (!hold) {
+      result[HEADLINE] = `${lead}; ${tail.replace(/\.$/, "")}; ${QUEUED_NOTE}.`;
+      return result;
+    }
+    const info = { ok: true, name, gen: store.get(name) ? store.get(name).gen : null, question_id: ask.questionId, answeredBy, pickup };
+    return await blockUntilWake(ch, name, tracked, { progressToken, cancelled: call.cancelledP, call, owed: null, info, head: `${lead}; ${tail}` });
   }
 }
 
@@ -1862,7 +1929,8 @@ async function piAnswer(args, progressToken, requestId) {
 function dialogIdFor(id) {
   return "d_" + createHash("sha1").update(String(id)).digest("hex").slice(0, 6);
 }
-function answerDialog(name, ch, qid, args) {
+// In fallback it then holds the turn's wake, as pi_answer does for a question.
+async function answerDialog(name, ch, qid, args, progressToken, requestId, hold = true) {
   const pq = ch && ch.alive ? ch.pendingQuestion : null;
   if (!pq) return agentError(`no pending dialog on pi:${name}`, { name });
   if (qid && qid !== pq.dialogId && qid !== String(pq.id)) return agentError(`no pending dialog ${JSON.stringify(qid)} on pi:${name}; pending: ${pq.dialogId}`, { name });
@@ -1871,10 +1939,20 @@ function answerDialog(name, ch, qid, args) {
   else if (typeof args.confirmed === "boolean") fields.confirmed = args.confirmed;
   else if (typeof args.value === "string") fields.value = args.value;
   else return agentError(`dialog ${pq.dialogId} needs value, confirmed, or cancelled:true`, { name });
+  const tracked = ch.tracked && !ch.tracked.finished ? ch.tracked : null;
   writeUiResponse(ch, pq.id, fields);
-  const result = { ok: true, name, dialog_id: pq.dialogId, response: fields };
-  result[HEADLINE] = `answered dialog ${pq.dialogId} (${pq.method}) for pi:${name}`;
-  return result;
+  const head = `answered dialog ${pq.dialogId} (${pq.method}) for pi:${name}`;
+  const info = { ok: true, name, dialog_id: pq.dialogId, response: fields };
+  if (pushConsumes() || !tracked || !hold) {
+    info[HEADLINE] = pushConsumes() || !tracked ? head : `${head}; ${QUEUED_NOTE}`;
+    return info;
+  }
+  const call = makeCall(requestId);
+  try {
+    return await blockUntilWake(ch, name, tracked, { progressToken, cancelled: call.cancelledP, call, owed: null, info, head });
+  } finally {
+    call.release();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1905,12 +1983,6 @@ function enqueue(name, fn) {
   return next;
 }
 
-function chanName(raw) {
-  const sanitized = sanitizeSessionName(raw);
-  if (!sanitized.ok) return { error: sanitized.error || "invalid conversation name" };
-  return { name: sanitized.name };
-}
-
 function spawnErrorMessage(ch) {
   const err = ch && ch.spawnError;
   if (!err) return null;
@@ -1935,7 +2007,8 @@ function markDead(ch) {
   }
   releaseLifetimeLock(ch);
   if (ch.settleWaiter) { const s = ch.settleWaiter; ch.settleWaiter = null; s("dead"); }
-  for (const w of ch.responseWaiters) { if (!w.done) { w.done = true; w.resolve(null); } }
+  for (const w of [...ch.responseWaiters]) w.resolve(null);
+  if (ch.dialogTimer) { clearTimeout(ch.dialogTimer); ch.dialogTimer = null; }
   if (registry.get(ch.name) === ch) registry.delete(ch.name);
   // A dead child can't pick up answers: its questions (and answer files) are
   // gone with it. A respawn recreates the directory.
@@ -2022,7 +2095,7 @@ async function spawnChannel(name, opts = {}) {
   const ch = {
     name, child: null, alive: true, lastUsedAt: Date.now(),
     buffer: "", events: [], steered: [], turnInFlight: false, tracked: null,
-    responseWaiters: [], settleWaiter: null, pendingQuestion: null,
+    responseWaiters: [], settleWaiter: null, pendingQuestion: null, dialogTimer: null, blockedMs: 0, blockedSince: null,
     currentTurnId: null, lastTurnId: null, lastTurnSettledAt: null, lastTurnResult: null,
     progressToken: null, progressSeq: 0, lastProgressAt: 0,
     askDir, askEnabled: launch.askEnabled, extensions: launch.extensions, warnings: launch.warnings,
@@ -2061,8 +2134,13 @@ async function spawnChannel(name, opts = {}) {
       let evt;
       try { evt = JSON.parse(line); } catch { continue; }
       if (evt && evt.type === "response") {
-        const w = ch.responseWaiters.find((x) => x.command === evt.command && !x.done);
-        if (w) { w.done = true; w.resolve(evt); continue; }
+        // pi repeats the command's id (docs/rpc.md); a reply without one (an
+        // older pi, a stub) falls back to the oldest waiter of that command.
+        const hasId = typeof evt.id === "string";
+        const w = hasId ? ch.responseWaiters.find((x) => x.id === evt.id) : ch.responseWaiters.find((x) => x.command === evt.command);
+        if (w) { w.resolve(evt); continue; }
+        // A late reply to one of our commands that already timed out: drop it.
+        if (hasId && evt.id.startsWith(RPC_ID_PREFIX)) continue;
       }
       if (evt && evt.type === "extension_ui_request" && ["select", "confirm", "input", "editor"].includes(evt.method)) {
         handleUiRequest(ch, evt);
@@ -2072,6 +2150,7 @@ async function spawnChannel(name, opts = {}) {
         else if (evt.type === "tool_execution_end") onAskEnd(ch, evt);
       }
       ch.events.push(evt);
+      trackBlocked(ch);
       emitProgress(ch, evt);
       if (evt && evt.type === "agent_settled") {
         // pi is idle from here on: a steer sent now would sit in its queue
@@ -2082,6 +2161,16 @@ async function spawnChannel(name, opts = {}) {
     }
   });
   child.on("close", () => markDead(ch));
+  // 'close' waits for every holder of the child's stdio pipes. A daemon that
+  // a provider extension starts inherits stdout, so after pi itself dies
+  // 'close' may never fire (pi-companion's listProviders has the same rule).
+  // 'exit' is pi's own end: a short drain lets its last lines arrive first.
+  // After the drain the rest of pi's process group (that daemon) is killed:
+  // pi was spawned detached, so the group is pi's own, never the server's.
+  child.on("exit", () => {
+    const t = setTimeout(() => { markDead(ch); reapGroup(child.pid); }, EXIT_DRAIN_MS);
+    t.unref();
+  });
   registry.set(name, ch);
   const fields = { pid: child.pid, sessionId, provider, model, askEnabled: launch.askEnabled, extensions: launch.extensions };
   if (opts.gens) fields.gens = opts.gens;
@@ -2157,24 +2246,50 @@ function enforceCap() {
   }
 }
 
+// Every command carries its own id and its reply is matched on it, so a late
+// reply to a command that timed out can never answer a newer command of the
+// same type. A waiter leaves ch.responseWaiters once it resolves (reply,
+// timeout, or the child's death). timeoutMs null: wait until the child dies.
+const RPC_ID_PREFIX = "pd-";
+let rpcSeq = 0;
 function rpcCommand(ch, cmd, timeoutMs) {
   return new Promise((resolve) => {
     if (!ch.alive || !ch.child) { resolve(null); return; }
-    const waiter = { command: cmd.type, done: false, resolve };
+    let t = null;
+    const waiter = { id: `${RPC_ID_PREFIX}${++rpcSeq}`, command: cmd.type, done: false };
+    waiter.resolve = (v) => {
+      if (waiter.done) return;
+      waiter.done = true;
+      if (t) clearTimeout(t);
+      const i = ch.responseWaiters.indexOf(waiter);
+      if (i >= 0) ch.responseWaiters.splice(i, 1);
+      resolve(v);
+    };
     ch.responseWaiters.push(waiter);
-    const t = setTimeout(() => {
-      if (!waiter.done) { waiter.done = true; resolve(null); }
-    }, timeoutMs);
-    t.unref();
-    try { ch.child.stdin.write(JSON.stringify(cmd) + "\n"); } catch {
-      if (!waiter.done) { waiter.done = true; resolve(null); }
+    if (timeoutMs !== null) {
+      t = setTimeout(() => waiter.resolve(null), timeoutMs);
+      t.unref();
     }
+    try { ch.child.stdin.write(JSON.stringify({ id: waiter.id, ...cmd }) + "\n"); } catch { waiter.resolve(null); }
   });
 }
 
-// Resolves "settled" | "dead" | "timeout". While a question is pending the
-// clock is suspended: pi is waiting on the parent, bounded by its own ask
-// budget, and killing it then would lose the question.
+// The time a channel spent blocked on its parent (a question or a dialog) in
+// the current turn: the turn clock does not run then. Called after every
+// line the child writes and whenever a dialog closes from this side.
+function trackBlocked(ch) {
+  const blocked = isBlockedOnAsk(ch);
+  if (blocked && ch.blockedSince === null) ch.blockedSince = Date.now();
+  else if (!blocked && ch.blockedSince !== null) { ch.blockedMs += Date.now() - ch.blockedSince; ch.blockedSince = null; }
+}
+function blockedMsOf(ch) {
+  return ch.blockedMs + (ch.blockedSince !== null ? Date.now() - ch.blockedSince : 0);
+}
+
+// Resolves "settled" | "dead" | "timeout" (or what ch.settleWaiter is called
+// with). The clock pauses while the child is blocked on its parent (a
+// question or a dialog): the deadline moves by the time spent blocked
+// (blockedMsOf), so a slow answer never counts against the turn.
 function waitSettle(ch, timeoutMs) {
   return new Promise((resolve) => {
     if (!ch.alive) { resolve("dead"); return; }
@@ -2182,9 +2297,14 @@ function waitSettle(ch, timeoutMs) {
     const alreadySettled = ch.events.some(e => e && e.type === "agent_settled");
     if (alreadySettled) { resolve("settled"); return; }
     let t = null;
+    const start = Date.now();
     const arm = (ms) => {
       t = setTimeout(() => {
-        if (isBlockedOnAsk(ch) && ch.alive) { arm(Math.min(timeoutMs, 30000)); return; }
+        const blocked = isBlockedOnAsk(ch);
+        const left = start + timeoutMs + blockedMsOf(ch) - Date.now();
+        // Blocked: the deadline moves as fast as the clock, so check again
+        // at most once a second until the block ends.
+        if (ch.alive && (blocked || left > 0)) { arm(blocked ? Math.max(left, 1000) : left); return; }
         if (ch.settleWaiter) ch.settleWaiter = null;
         resolve("timeout");
       }, ms);
@@ -2195,13 +2315,50 @@ function waitSettle(ch, timeoutMs) {
   });
 }
 
-// Sends the prompt RPC only and does the per-turn reset bookkeeping.
-async function sendPrompt(ch, message) {
+// pi answers `prompt` only after its preflight, and the preflight can run a
+// compaction (an LLM call that takes minutes). So a missing ack is not a
+// rejection: after PROMPT_ACK_MS the turn counts as dispatched and stays
+// tracked until agent_settled, the turn timeout, the child's death, or a late
+// rejection. A prompt sent while a compaction already runs is refused at once
+// ("Cannot submit a prompt while compaction is in progress", pi
+// core/agent-session.js): it is sent again every COMPACTION_RETRY_GAP_MS
+// until pi takes it, within COMPACTION_RETRY_MS (and the turn timeout).
+const PROMPT_ACK_MS = 15000;
+const COMPACTION_RETRY_MS = 600000;
+const COMPACTION_RETRY_GAP_MS = 1000;
+const COMPACTING_RE = /while compaction is in progress/i;
+const EXIT_DRAIN_MS = 500;
+const ACK_PENDING = Symbol("ack pending");
+
+// Resolves with pi's final answer to the prompt (after any compaction
+// retries), or null once the child is gone.
+async function promptAccepted(ch, message, retryMs) {
+  const until = Date.now() + retryMs;
+  for (;;) {
+    const r = await rpcCommand(ch, { type: "prompt", message }, null);
+    if (!r || r.success !== false || !COMPACTING_RE.test(String(r.error || "")) || Date.now() >= until) return r;
+    await sleep(COMPACTION_RETRY_GAP_MS);
+    if (!ch.alive) return null;
+    // What pi emitted while it compacted is not this turn's.
+    ch.events.length = 0;
+  }
+}
+
+// Sends the prompt and does the per-turn reset bookkeeping. Returns
+// { resp, pending, ack }: resp is pi's answer when it came within
+// PROMPT_ACK_MS; otherwise pending is true and ack still resolves later.
+async function sendPrompt(ch, message, retryMs) {
   ch.events.length = 0; // per-turn event scope: turns are serialized per channel
   ch.steered = [];
   ch.turnInFlight = true;
   ch.lastUsedAt = Date.now();
-  return rpcCommand(ch, { type: "prompt", message }, 15000);
+  ch.blockedMs = 0;
+  ch.blockedSince = isBlockedOnAsk(ch) ? Date.now() : null;
+  const ack = promptAccepted(ch, message, retryMs);
+  let timer = null;
+  const first = await Promise.race([ack, new Promise((r) => { timer = setTimeout(() => r(ACK_PENDING), PROMPT_ACK_MS); timer.unref(); })]);
+  clearTimeout(timer);
+  return first === ACK_PENDING ? { resp: null, pending: true, ack } : { resp: first, pending: false, ack };
 }
 
 function promptError(ch, resp) {
@@ -2209,11 +2366,23 @@ function promptError(ch, resp) {
     || (resp ? (resp.error || "prompt rejected") : "prompt was not acknowledged (channel dead?)");
 }
 
-// Waits for the turn kicked off by an already-sent prompt to settle.
-async function awaitTurnCompletion(ch, timeoutMs) {
+// Waits for the turn kicked off by an already-sent prompt to settle. A prompt
+// whose ack was still pending (lateAck) can still be refused: that ends the
+// turn as prompt_rejected.
+async function awaitTurnCompletion(ch, timeoutMs, lateAck = null) {
+  let error = null;
+  if (lateAck) {
+    lateAck.then((r) => {
+      if (!r || r.success !== false || !ch.settleWaiter) return;
+      error = `pi refused the prompt: ${r.error || "no reason given"}`;
+      const s = ch.settleWaiter;
+      ch.settleWaiter = null;
+      s("rejected");
+    });
+  }
   const outcome = await waitSettle(ch, timeoutMs);
   ch.lastUsedAt = Date.now();
-  return { outcome, error: null };
+  return { outcome, error };
 }
 
 // After the turn ends: turn it into the stable result shape.
@@ -2270,8 +2439,9 @@ async function startTrackedTurn(ch, name, message, timeoutMs, detach = false) {
   ch.questionLimit = setting("questions_per_turn");
   ch.questionsThisTurn = 0;
   if (rec) { rec.turn++; setState(rec, "running", { questionsThisTurn: 0 }); }
-  const promptResp = await sendPrompt(ch, message);
-  if (!promptResp || promptResp.success === false) {
+  const sent = await sendPrompt(ch, message, timeoutMs === null ? COMPACTION_RETRY_MS : Math.min(timeoutMs, COMPACTION_RETRY_MS));
+  const promptResp = sent.resp;
+  if (!sent.pending && (!promptResp || promptResp.success === false)) {
     ch.turnInFlight = false;
     ch.currentTurnId = null;
     ch.questionsThisTurn = prior ? prior.questions : 0;
@@ -2292,7 +2462,7 @@ async function startTrackedTurn(ch, name, message, timeoutMs, detach = false) {
     let res;
     let reason = "turn_error";
     try {
-      const turn = await awaitTurnCompletion(ch, timeoutMs);
+      const turn = await awaitTurnCompletion(ch, timeoutMs, sent.pending ? sent.ack : null);
       if (ch.interruptedTurnId === turnId) reason = "interrupted";
       else if (ch.stopping) reason = "stopped";
       else if (turn.error) reason = "prompt_rejected";
@@ -2671,13 +2841,15 @@ async function piAgent(args, progressToken, requestId) {
     }
     appendEvent(rec, "spawned", { sessionId: spec.sessionId, gen, provider: got.provider || null, model: got.id, askEnabled: ch.askEnabled }, ch.child.pid);
     if (call.cancelled) return { result: CANCELLED, ch };
-    if (progressToken !== null && progressToken !== undefined) {
+    // Unconfirmed but argv names the channel: return at once (probeWindow).
+    const detach = background && (pushConsumes() || probeWindow());
+    // Progress goes only to a call that stays open: a detached call has
+    // returned, and its token must not outlive it on the child.
+    if (!detach && progressToken !== null && progressToken !== undefined) {
       ch.progressToken = progressToken;
       ch.progressSeq = 0;
       ch.lastProgressAt = 0;
     }
-    // Unconfirmed but argv names the channel: return at once (probeWindow).
-    const detach = background && (pushConsumes() || probeWindow());
     const owed = call.owed = takeOwed(name);
     const start = await startTrackedTurn(ch, name, args.prompt, turnTimeout, detach);
     if (!start.dispatched) {
@@ -2815,7 +2987,7 @@ async function blockUntilWake(ch, name, tracked, { progressToken, cancelled, cal
   const asked = new Promise((resolve) => {
     wakeAsk = (why) => resolve(why === "unroutable" ? "unroutable" : "asked");
     ch.askWaiters.add(wakeAsk);
-    if (openAsks(name).length) wakeAsk();
+    if (openAsks(name).length || parkedDialog(ch)) wakeAsk();
     else if (ch.unroutable.size) wakeAsk("unroutable");
   });
   // Pushes confirmed while this call is open (§3.4 step 5): it returns at
@@ -2840,7 +3012,7 @@ async function blockUntilWake(ch, name, tracked, { progressToken, cancelled, cal
     // An end or a question that landed in the same tick goes back inline as
     // usual: it was recorded for this call, not pushed.
     if (tracked.finished) first = await tracked.done;
-    else if (openAsks(name).length) first = "asked";
+    else if (openAsks(name).length || parkedDialog(ch)) first = "asked";
     else if (ch.unroutable.size) first = "unroutable";
   }
   if (first === "cancelled") return CANCELLED;
@@ -2923,7 +3095,7 @@ function abandonTurn(tracked) {
 }
 
 function statusOf(e) {
-  if (e.type === "question") return "waiting";
+  if (e.type === "question" || e.type === "dialog") return "waiting";
   if (e.type === "done") return "done";
   if (e.type === "failed") return e.data && e.data.terminal === false ? "running" : "failed";
   return e.type;
@@ -3244,6 +3416,8 @@ async function piSendMessage(args, progressToken, requestId) {
   const interrupt = args.interrupt === true;
   const mode = args.mode === undefined || args.mode === null ? "auto" : args.mode;
   if (mode !== "auto" && mode !== "follow_up") return agentError(`mode must be auto or follow_up`, { name });
+  // hold:false (the agents pane): never hold the wake, never take queued events.
+  const hold = args.hold !== false;
   const call = makeCall(requestId);
   try {
     let release = null;
@@ -3267,7 +3441,7 @@ async function piSendMessage(args, progressToken, requestId) {
         };
       }
       if (!live && (meta.name !== name || !meta.launch)) return { result: unknownChild(name) };
-      let owed = call.owed = takeOwed(name);
+      let owed = call.owed = hold ? takeOwed(name) : null;
       let delivered;
       let respawned = false;
       let dropped = [];
@@ -3333,11 +3507,11 @@ async function piSendMessage(args, progressToken, requestId) {
         // The record is ours now: events nobody was shown (an orphaned turn's
         // question_expired/failed the resume just recorded, or another
         // session's leftovers) ride on this response.
-        if (!owed) owed = call.owed = takeOwed(name);
+        if (!owed && hold) owed = call.owed = takeOwed(name);
       }
       if (call.cancelled) return { result: CANCELLED };
       const spec = (readMeta(childDir(name)).launch) || {};
-      const detach = pushConsumes();
+      const detach = pushConsumes() || !hold;
       if (progressToken !== null && progressToken !== undefined && !detach) {
         ch.progressToken = progressToken;
         ch.progressSeq = 0;
@@ -3361,7 +3535,7 @@ async function piSendMessage(args, progressToken, requestId) {
       // returned on a question, or was cancelled) and there is no channel,
       // this call takes it (§2.2).
       const tracked = ch.tracked;
-      if (pushConsumes() || !tracked || tracked.finished || !tracked.detached) {
+      if (!hold || pushConsumes() || !tracked || tracked.finished || !tracked.detached) {
         const result = { ...info, disposition: s.disposition ?? null };
         result[HEADLINE] = `${head}; it reaches the child at its next step.`;
         return consumeOnSend(result, owed);
@@ -3370,8 +3544,9 @@ async function piSendMessage(args, progressToken, requestId) {
     }
     if (call.cancelled) return CANCELLED;
     if (start.tracked.detached) {
-      const result = { ...info, wake: "channel" };
-      result[HEADLINE] = `${head}; you will be notified when it finishes or asks something. Do not poll.`;
+      const queued = !pushConsumes();
+      const result = { ...info, wake: queued ? "queued" : "channel" };
+      result[HEADLINE] = queued ? `${head}; ${QUEUED_NOTE}.` : `${head}; you will be notified when it finishes or asks something. Do not poll.`;
       return consumeOnSend(result, owed);
     }
     info.wake = "fallback";
@@ -3388,12 +3563,16 @@ async function piStop(args) {
   if (!resolved.name) return agentError("name is required");
   const name = resolved.name;
   const forget = args.forget === true;
+  // hold:false (the agents pane): unshown events stay queued for Claude.
+  const hold = args.hold !== false;
   return enqueue(name, async () => {
     let held = null;
+    let owed = null;
     try {
-      return await stopBody();
+      return consumeOnSend(await stopBody(), owed);
     } finally {
       if (held) releaseLock(held.lockPath, held.stamp);
+      releaseOwed(owed);
     }
   async function stopBody() {
     const meta = readMeta(childDir(name));
@@ -3455,7 +3634,10 @@ async function piStop(args) {
     if (rec) {
       setState(rec, "stopped", { pid: null });
       appendEvent(rec, "stopped", { was, preAnswered, dropped_queue: dropped, forget, ...(orphanKilled ? { orphanKilled } : {}) }, live ? ch.child.pid : orphanKilled);
-      consume(rec, rec.pending.map((e) => e.seq));
+      // Events nobody was shown yet (a DONE, a failed{orphaned}, an expired
+      // question) ride on this response, as on pi_send_message: they are
+      // consumed once it is written, never dropped unseen.
+      if (hold) owed = takeOwed(name);
     }
     if (!forget) {
       const result = { ok: true, name, was, stopped: true, forgotten: false, preAnswered, dropped_queue: dropped, orphanKilled };
@@ -3618,6 +3800,7 @@ function inlineEvents(names) {
     if (rec.pushedAt.has(e.seq)) marks.push(`(also pushed ${clock(rec.pushedAt.get(e.seq))})`);
     let text = headline(rec.name, e) + (marks.length ? ` ${marks.join(" ")}` : "");
     if (e.type === "question") text += `\n${escBlock(e.data.text)}\n${controlsFor(rec.name, e)}`;
+    if (e.type === "dialog") text += `\n${controlsFor(rec.name, e)}`;
     if (picked.length && used + text.length > INLINE_BUDGET) break;
     picked.push(p);
     lines.push(text);
@@ -3718,7 +3901,7 @@ async function listOne(name, meta, header) {
   };
   const text = [header, view.row];
   for (const a of pendingAsks.filter((x) => !x.answered)) text.push(`question ${a.question_id} (${a.topic}): ${escBlock(a.text)}`);
-  if (pendingQuestion) text.push(`dialog ${pendingQuestion.dialogId} (${pendingQuestion.method}): ${escBlock(oneLine(pendingQuestion.title || ""))}`);
+  if (pendingQuestion) text.push(`dialog ${pendingQuestion.dialogId} (${pendingQuestion.method}): ${escBlock(oneLine(dialogText(pendingQuestion), 300))}`);
   for (const n of notes) text.push(`note [${n.topic}] ${escBlock(oneLine(n.text, 300))}`);
   if (meta.lastTurn) {
     const lt = meta.lastTurn;
@@ -3906,6 +4089,7 @@ function eventLine(e) {
   if (e.type === "done") detail = `ok ${JSON.stringify(oneLine(d.result, 120))}${d.resultFile ? ` (${d.resultFile})` : ""}`;
   else if (e.type === "failed") detail = `${d.reason || "error"}: ${oneLine(d.errorMessage || d.text, 200)}`;
   else if (e.type === "question") detail = `${d.question_id} (${d.topic}): ${d.text}`;
+  else if (e.type === "dialog") detail = `${d.dialog_id} (${d.method}): ${dialogText(d)}`;
   else if (e.type === "answered") detail = `${d.question_id} by ${d.answeredBy}`;
   else if (e.type === "question_expired") detail = `${d.question_id} (${d.reason})`;
   else if (e.type === "note") detail = `[${d.topic}] ${oneLine(d.text, 200)}`;
@@ -4138,34 +4322,81 @@ function releaseDeadLocks() {
 
 function writeUiResponse(ch, id, fields) {
   try { ch.child.stdin.write(JSON.stringify({ type: "extension_ui_response", id, ...fields }) + "\n"); } catch { /* ignore */ }
-  ch.pendingQuestion = null;
+  closeDialog(ch);
 }
 
-// ADR-002 §7: pi dialog -> MCP elicitation/create when the client supports
-// it; otherwise parked as pendingQuestion (a d_* id) for pi_answer. pi's own dialog
-// auto-cancel timeout remains the terminal fallback.
+// The pending dialog is over (answered, or pi resolved it on its own
+// timeout): its event is consumed and the turn clock runs again.
+function closeDialog(ch) {
+  const pq = ch.pendingQuestion;
+  ch.pendingQuestion = null;
+  if (ch.dialogTimer) { clearTimeout(ch.dialogTimer); ch.dialogTimer = null; }
+  trackBlocked(ch);
+  if (!pq || !pq.parked) return;
+  const rec = store.get(ch.name);
+  if (rec && Number.isInteger(pq.seq)) consume(rec, [pq.seq]);
+  if (ch.turnInFlight && !isBlockedOnAsk(ch)) setState(rec, "running");
+}
+
+// ADR-002 §7: a pi dialog (select/confirm/input/editor) goes to the client as
+// MCP elicitation/create when it supports that. Otherwise, or when the client
+// gives no answer, it is parked as pendingQuestion (a d_* id) for pi_answer
+// and a dialog event wakes Claude like a question. pi RPC dialogs have no
+// timeout unless the request sets one; then pi resolves it on its own and
+// says nothing, so the parked dialog is dropped once that time has passed.
 async function handleUiRequest(ch, evt) {
-  ch.pendingQuestion = { id: evt.id, dialogId: dialogIdFor(evt.id), method: evt.method, title: evt.title ?? null, options: evt.options ?? null };
-  if (!clientSupportsElicitation) return;
-  const requestedSchema = evt.method === "confirm"
-    ? { type: "object", properties: { confirmed: { type: "boolean" } }, required: ["confirmed"] }
-    : { type: "object", properties: { value: { type: "string" } }, required: ["value"] };
-  const message = [evt.method, evt.title].filter(Boolean).join(": ") + (Array.isArray(evt.options) ? ` [${evt.options.join(", ")}]` : "");
-  const resp = await serverRequest("elicitation/create", { message, requestedSchema }, 120000);
-  if (!ch.pendingQuestion || ch.pendingQuestion.id !== evt.id) return;
-  if (resp && resp.result && resp.result.action === "accept" && resp.result.content) {
-    const fields = {};
-    if (resp.result.content.value !== undefined) fields.value = resp.result.content.value;
-    if (resp.result.content.confirmed !== undefined) fields.confirmed = resp.result.content.confirmed;
-    writeUiResponse(ch, evt.id, fields);
-  } else if (resp && resp.result) {
-    writeUiResponse(ch, evt.id, { cancelled: true });
+  if (ch.pendingQuestion) closeDialog(ch);
+  const pq = {
+    id: evt.id, dialogId: dialogIdFor(evt.id), method: evt.method, title: evt.title ?? null, message: evt.message ?? null,
+    options: evt.options ?? null, placeholder: evt.placeholder ?? null, prefill: evt.prefill ?? null, parked: false, seq: null
+  };
+  ch.pendingQuestion = pq;
+  if (Number.isFinite(evt.timeout) && evt.timeout > 0) {
+    ch.dialogTimer = setTimeout(() => { if (ch.pendingQuestion === pq) closeDialog(ch); }, evt.timeout + 1000);
+    ch.dialogTimer.unref();
   }
+  if (clientSupportsElicitation) {
+    const requestedSchema = evt.method === "confirm"
+      ? { type: "object", properties: { confirmed: { type: "boolean" } }, required: ["confirmed"] }
+      : { type: "object", properties: { value: { type: "string" } }, required: ["value"] };
+    const message = `${evt.method}: ${dialogText(pq)}`;
+    const resp = await serverRequest("elicitation/create", { message, requestedSchema }, 120000);
+    if (ch.pendingQuestion !== pq) return;
+    if (resp && resp.result && resp.result.action === "accept" && resp.result.content) {
+      const fields = {};
+      if (resp.result.content.value !== undefined) fields.value = resp.result.content.value;
+      if (resp.result.content.confirmed !== undefined) fields.confirmed = resp.result.content.confirmed;
+      writeUiResponse(ch, evt.id, fields);
+      return;
+    }
+    if (resp && resp.result) {
+      writeUiResponse(ch, evt.id, { cancelled: true });
+      return;
+    }
+    // No answer from the client (timeout or error): park it for pi_answer.
+  }
+  pq.parked = true;
+  emitProgress(ch, null, `pi dialog (${pq.method}): ${dialogText(pq).slice(0, 200)}`);
+  setState(store.get(ch.name), "waiting");
+  const e = emitEvent(ch.name, "dialog", { dialog_id: pq.dialogId, question_id: pq.dialogId, method: pq.method, title: pq.title, message: pq.message, options: pq.options },
+    { pid: ch.child && ch.child.pid });
+  if (e) pq.seq = e.seq;
+  for (const w of [...ch.askWaiters]) w();
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function groupAlive(pid) {
   try { process.kill(-pid, 0); return true; } catch (err) { return !!(err && err.code === "EPERM"); }
+}
+// Kills what is left of a dead pi's process group (a daemon it started):
+// SIGTERM, then SIGKILL after KILL_GRACE_MS if a member is still alive. pi is
+// spawned detached, so its pgid is its pid. The server's own group is never a
+// target: a live group's id is never given to a new process.
+function reapGroup(pgid) {
+  if (!Number.isInteger(pgid) || pgid <= 1 || pgid === process.pid || !groupAlive(pgid)) return;
+  try { process.kill(-pgid, "SIGTERM"); } catch { return; }
+  const t = setTimeout(() => { if (groupAlive(pgid)) try { process.kill(-pgid, "SIGKILL"); } catch { /* gone */ } }, KILL_GRACE_MS);
+  t.unref();
 }
 
 // Shutdown (stdin end, SIGTERM, SIGHUP; spec §4.4), owned children only:

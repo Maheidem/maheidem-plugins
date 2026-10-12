@@ -14,8 +14,9 @@
 #     the reply is the header row only, "wake channel (confirmed HH:MM)"; the
 #     child's DONE is then pushed and consumed by the push (a later list
 #     inlines nothing); a wrong nonce confirms nothing
-#   D implicit confirmation: pi_answer naming a question only a push delivered
-#     confirms (and does not block); one a tool response showed does not
+#   D no implicit confirmation: pi_answer naming a question only a push
+#     delivered confirms nothing (the agents pane answers with ids it reads
+#     from disk) and holds the wake; one a tool response showed neither
 #   E pi_wait: the renamed pi_wait_event is refused with a pointer; pi_wait
 #     returns at once once pushes are confirmed; PI_DELEGATE_WAKE=fallback
 #     sends no probe and refuses confirm_push
@@ -183,20 +184,21 @@ JS
 } || true
 
 # ---------------------------------------------------------------------------
-# D. implicit confirmation
+# D. no implicit confirmation: only confirm_push confirms
 # ---------------------------------------------------------------------------
 {
   # A question only a push delivered: the blocking call was cancelled, so the
-  # turn is detached and its question goes out as a push alone.
+  # turn is detached and its question goes out as a push alone. Answering it
+  # proves nothing about pushes: the call holds the wake (fallback).
   PD="$(make_scratch)"; OUT="$(make_scratch)/d.jsonl"
   CLAUDE_PROJECT_DIR="$PD" PI_STUB_ASKS=1 PI_STUB_ASK_DELAY_MS=1500 PI_STUB_SETTLE_MS=1500 feed "$OUT" \
     "$(call 2 pi_agent '{"name":"dd","prompt":"one"}')" "SLEEP 0.8" "$(cancel 2)" "WAIT_FOR \"event\":\"question\" 10" "SLEEP 0.3" \
     "$(send_from "$OUT" 3 pi_answer '({to: "dd", question_id: qid, answer: "yes"})')" "WAIT_FOR \"id\":3 15" \
-    "WAIT_FOR \"event\":\"done\" 15" "SLEEP 0.3" "$(call 4 pi_list_agents '{"doctor":true}')" "WAIT_FOR \"id\":4 5"
+    "SLEEP 0.3" "$(call 4 pi_list_agents '{"doctor":true}')" "WAIT_FOR \"id\":4 5"
   [ "$(inner_for_id "$OUT" 2)" = "{}" ] && pass "D: the cancelled pi_agent got no response" || fail "D: id2 answered"
-  case "$(res_head "$OUT" 3)" in "answered q_"*" for pi:dd; picked up; it continues in the same session.") pass "D: pi_answer from a push-only question: picked up, returned at once" ;; *) fail "D: answer ($(inner_for_id "$OUT" 3))" ;; esac
-  [ "$(field_of "$(res_json "$OUT" 3)" events)" = null ] && [ "$(pushes_of "$OUT" dd done)" = 1 ] && pass "D: the DONE was pushed, not held by pi_answer" || fail "D: done ($(pushes_of "$OUT" dd done) pushes; $(res_json "$OUT" 3))"
-  res_head "$OUT" 4 | grep -qE '^wake: channel \(confirmed [0-9]{2}:[0-9]{2}\) \(by question q_[0-9a-f]{6} answered from a push\)$' && pass "D: doctor: confirmed by the question answered from a push" || fail "D: doctor ($(res_head "$OUT" 4))"
+  case "$(res_head "$OUT" 3)" in "answered q_"*" for pi:dd; picked up; it continues in the same session."*) pass "D: pi_answer from a push-only question: picked up" ;; *) fail "D: answer ($(inner_for_id "$OUT" 3))" ;; esac
+  [ "$(field_of "$(res_json "$OUT" 3)" status)" = done ] && pass "D: pi_answer held the wake and returned the DONE" || fail "D: done ($(res_json "$OUT" 3))"
+  res_head "$OUT" 4 | grep -qE '^wake: fallback$' && pass "D: doctor: still fallback (an answered push-only question confirms nothing)" || fail "D: doctor ($(res_head "$OUT" 4))"
 
   # A question a tool response showed (the fallback pi_agent returned it): no confirmation.
   OUT="$(make_scratch)/d2.jsonl"
@@ -339,15 +341,15 @@ CHAN_LAUNCH="$LBIN/claude $WRAP --model sonnet --dangerously-load-development-ch
   [ "$(field_of "$(res_json "$OUT" 4)" status)" = done ] && pass "I2: pi_answer (no confirmation) held the wake and returned the DONE" || fail "I2: answer ($(res_json "$OUT" 4))"
   case "$(res_head "$OUT" 5)" in *" · wake channel? · "*) pass "I2: still unconfirmed (channel?)" ;; *) fail "I2: header ($(res_head "$OUT" 5))" ;; esac
 
-  # I3: no confirm_push, but the question reached Claude only as a push:
-  # pi_answer naming it confirms implicitly and returns at once.
+  # I3: no confirm_push, and the question went out only as a push: pi_answer
+  # naming it confirms nothing, holds the wake and returns the DONE.
   OUT="$(make_scratch)/i3.jsonl"
   CLAUDE_PROJECT_DIR="$PI_" FEED_LAUNCH="$CHAN_LAUNCH" PI_STUB_ASKS=1 PI_STUB_ASK_DELAY_MS=1500 PI_STUB_SETTLE_MS=1500 feed "$OUT" \
     "$(call 2 pi_agent '{"name":"ic","prompt":"one"}')" "WAIT_FOR \"id\":2 10" "WAIT_FOR \"event\":\"question\" 10" "SLEEP 0.3" \
     "$(send_from "$OUT" 3 pi_answer '({to: "ic", question_id: qid, answer: "yes"})')" "WAIT_FOR \"id\":3 10" \
-    "WAIT_FOR \"event\":\"done\" 15" "SLEEP 0.3" "$(call 4 pi_list_agents '{}')" "WAIT_FOR \"id\":4 5"
-  case "$(res_head "$OUT" 3)" in "answered q_"*" for pi:ic; picked up; it continues in the same session.") pass "I3: pi_answer to a push-only question returned at once" ;; *) fail "I3: answer ($(inner_for_id "$OUT" 3))" ;; esac
-  case "$(res_head "$OUT" 4)" in *"wake channel (confirmed "*) [ "$(pushes_of "$OUT" ic done)" = 1 ] && pass "I3: implicitly confirmed; the DONE came as a push" || fail "I3: done pushes $(pushes_of "$OUT" ic done)" ;; *) fail "I3: header ($(res_head "$OUT" 4))" ;; esac
+    "SLEEP 0.3" "$(call 4 pi_list_agents '{}')" "WAIT_FOR \"id\":4 5"
+  [ "$(field_of "$(res_json "$OUT" 3)" status)" = done ] && pass "I3: pi_answer to a push-only question held the wake and returned the DONE" || fail "I3: answer ($(inner_for_id "$OUT" 3))"
+  case "$(res_head "$OUT" 4)" in *" · wake channel? · "*) pass "I3: not confirmed (only confirm_push confirms)" ;; *) fail "I3: header ($(res_head "$OUT" 4))" ;; esac
 
   # I4: a launch without the flag keeps the blocking fallback (unchanged).
   OUT="$(make_scratch)/i4.jsonl"

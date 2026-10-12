@@ -4,8 +4,10 @@
 # it is parked as a d_* dialog and answered with pi_answer (0.11 §2.3; the
 # former pi_respond).
 #   A elicitation round trip: the client accepts "red", the turn ends picked:red
-#   B no elicitation: status shows the d_* dialog; pi_answer {question_id:d_*,
-#     value} delivers it while pi_agent still holds the wake; picked:blue
+#   B no elicitation: the parked dialog is a dialog event that wakes the
+#     blocking pi_agent (status waiting); status shows the d_* dialog;
+#     pi_answer {question_id:d_*, value} delivers it and holds the wake until
+#     the turn ends: picked:blue
 #   C pi_answer for a dialog with nothing pending fails cleanly
 set -uo pipefail
 
@@ -46,10 +48,13 @@ feed_raw() { # feed_raw <out> <init-json> <entries...>: like feed, with a custom
     "$(call 4 pi_list_agents '{"name":"eb"}')" "SLEEP 0.3" \
     "$(call 5 pi_answer "$(json_obj to eb question_id "$D" value blue)")" "SLEEP 2"
   [ "$(field_of "$(json_for_id "$OUT" 4)" 'pendingQuestion.method + ":" + d.pendingQuestion.dialogId')" = "select:$D" ] && pass "B: status shows the d_* dialog" || fail "B: status ($(json_for_id "$OUT" 4))"
-  [ "$(head_for_id "$OUT" 5)" = "answered dialog $D (select) for pi:eb" ] && pass "B: pi_answer delivered the dialog value" || fail "B: id5 ($(inner_for_id "$OUT" 5))"
   J="$(json_for_id "$OUT" 3)"
+  [ "$(field_of "$J" status)" = waiting ] && [ "$(field_of "$J" 'events[0].type')" = dialog ] && [ "$(field_of "$J" 'events[0].dialog_id')" = "$D" ] \
+    && pass "B: the dialog event woke the blocking pi_agent" || fail "B: id3 ($J)"
+  case "$(head_for_id "$OUT" 5)" in "answered dialog $D (select) for pi:eb"*) pass "B: pi_answer delivered the dialog value" ;; *) fail "B: id5 ($(inner_for_id "$OUT" 5))" ;; esac
+  J="$(json_for_id "$OUT" 5)"
   [ "$(field_of "$J" status)" = done ] && case "$(field_of "$J" text)" in *picked:blue*) true ;; *) false ;; esac \
-    && pass "B: pi_agent held the wake; turn ends picked:blue" || fail "B: id3 ($J)"
+    && pass "B: pi_answer held the wake; turn ends picked:blue" || fail "B: id5 ($J)"
 } || true
 
 {

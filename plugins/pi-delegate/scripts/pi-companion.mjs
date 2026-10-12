@@ -23,7 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { resolveSettings, writeSettings, SETTINGS, settingsLabel } from "./question-settings.mjs";
+import { resolveSettings, writeSettings, SETTINGS, settingsLabel, isSafeArgValue, frontmatterValue } from "./question-settings.mjs";
 export { resolveSettings } from "./question-settings.mjs";
 
 const DEFAULT_TIMEOUT_MS = 600000; // 600s
@@ -71,16 +71,9 @@ function truncateTail(str, max = RAW_TAIL_LIMIT) {
   return { text: text.slice(text.length - max), truncated: true };
 }
 
-// Conservative allowlist for provider/model values that end up in pi's argv or
-// in the project config file: no whitespace, no leading '-', limited charset.
-function isSafeArgValue(v) {
-  return (
-    typeof v === "string" &&
-    v.length > 0 &&
-    !v.startsWith("-") &&
-    /^[A-Za-z0-9._/:@-]+$/.test(v)
-  );
-}
+// isSafeArgValue (the allowlist for provider/model values that reach pi's
+// argv or the project config file) lives in question-settings.mjs, which also
+// warns about pin values it rejects.
 
 // Build a task result with the full stable field set, then overlay specifics.
 // Guarantees every runTask return path exposes the same JSON shape.
@@ -327,9 +320,11 @@ function loadProjectConfig(cwd) {
     if (colonIndex < 0) continue;
 
     const key = line.slice(0, colonIndex).trim();
-    let value = line.slice(colonIndex + 1).trim();
-    // Strip one pair of matching surrounding quotes ('...' or "...").
-    if (/^(['"]).*\1$/.test(value)) value = value.slice(1, -1);
+    // An inline "# comment" is not part of the value, and one pair of
+    // surrounding quotes is stripped (frontmatterValue). A value that still
+    // fails isSafeArgValue is ignored by validPin and reported as a settings
+    // warning (question-settings.mjs resolveSettings).
+    const value = frontmatterValue(line.slice(colonIndex + 1));
     if (key === "provider" && value) config.provider = value;
     if (key === "model" && value) config.model = value;
     if (key === "extensions" && value) {
@@ -1145,9 +1140,14 @@ function detectErrorTurn(events) {
 //     strictly sequentially (no pipelining), so a FIFO queue is sufficient.
 //   - Response envelope: {"type":"response","command":"<verb>","success":bool,
 //     "data"?, "error"?}.
-//   - extension_ui_request events fire continuously as UI noise and do NOT
-//     block agent_settled -- we still auto-reply {"cancelled":true} to each,
-//     defensively, in case a future extension's dialog does block.
+//   - extension_ui_request: the dialog methods (select, confirm, input,
+//     editor) block pi until an extension_ui_response with the same id
+//     arrives, with no timeout unless the request sets one (pi
+//     docs/rpc-extension-ui.md); the fire-and-forget ones (notify, setStatus,
+//     setWidget, setTitle, set_editor_text) expect no reply. This CLI path has
+//     nobody to ask, so it answers {"cancelled":true} to each request, or a
+//     blocking dialog would hang the turn. (The MCP server parks dialogs for
+//     pi_answer instead.)
 //   - Strict LF framing: buffer raw chunks, split on "\n", carry any partial
 //     trailing fragment to the next chunk (same technique as spawnManaged's
 //     trackProgress).

@@ -115,6 +115,13 @@ lacks elicitation, the question parks as `pendingQuestion` (surfaced by
 timeout auto-cancel remains the terminal fallback, unchanged. Fire-and-forget
 UI events (`setStatus` etc.) stay ignored.
 
+> Correction (0.11 engine review): pi RPC dialogs have no default timeout. pi
+> resolves a dialog on its own only when the request carries `timeout` (pi
+> docs/rpc-extension-ui.md). The 0.11 server therefore records a parked dialog
+> as a `dialog` event that wakes Claude, answers it with `pi_answer
+> {question_id:"d_..."}`, and pauses the turn clock while it is open (see
+> ADR-006, ask_parent).
+
 ## 8. Testing / Definition of Done
 
 - New `tests/lib/mcp-client.mjs`: a minimal stdio MCP client (same hand-rolled

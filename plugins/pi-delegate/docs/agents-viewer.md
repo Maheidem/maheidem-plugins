@@ -74,13 +74,20 @@ element), and every cut says how much was left out.
 ## Layout and keys
 
 `/pi-delegate:agents` opens the list: agents grouped Needs input → Working →
-Idle → Ended (newest first; Ended collapses past three rows or 24 h), one line
-each: pointer, state glyph, name, summary, tail word, minute age. Every state
-has its own glyph and word (`? asking`, `✻ working`, `✓ done`, `∙ parked`,
-`◦ stopped`, `✕ failed`, `! can't read`); colour comes from one theme map
-(`C` in `hooks/agents-format.js`). A waiting agent gets an inline answer card
-under the list; others get a one-line peek. Lists taller than the pane are
-windowed around the selection with `… N above / below` edges.
+Idle → Ended (newest first; every row shows, so the list stays stable), one line
+each: pointer, state glyph, name, summary (dim `no task text` when there is none),
+tail word, minute age. The first selection is the first row of the first group.
+Every state has its own glyph and word (`? asking`, `✻ working`, `✓ done`,
+`∙ parked`, `◦ stopped`, `✕ failed`, `! can't read`); colour comes from one
+theme map (`C` in `hooks/agents-format.ts`). A waiting agent gets an answer card
+under the list, cut to the rows that are free; others get one line in plain words.
+Group names show while every row fits; a longer list is a kit list window
+(`hooks/kit/list.tsx`) with dim `↑ N more` / `↓ N more` edge rows.
+
+The pane is built on the mod-forge kit v2, copied byte for byte into `hooks/kit/`
+(do not edit it). `hooks/register.tsx` wires the hooks, `views.tsx` and
+`detail.tsx` draw the screens, `actions.ts` holds what the keys do, and
+`source.ts` reads the disk and calls the MCP tools.
 
 Enter opens the detail view: breadcrumb, facts line, question cards or a
 state-aware composer (Steer / Next turn / Wake and send / Restart and send),
@@ -91,10 +98,36 @@ sentences; Questions holds the full history. In a docked pane at least 110
 columns wide the list and the focused agent's detail sit side by side; on a
 terminal of 240+ columns the pane asks the dock for 112 columns.
 
-Every letter or digit on screen is a hotkey Button: `a` answer, `m` message or
-steer, `x` stop (then `y`/`n`, Cancel focused), `s` settings, `b` back, `r`
-retry or reset. Inline, Esc leaves a field, cancels a confirm or goes back one
-level before it closes the pane; docked, Esc closes and `b` goes back.
+The tab row is one line: the active tab carries `▸` whatever holds the focus.
+The action keys (`a` or `m`, `x`, `s`) are in the kit footer under the body, with
+one dim hint row that always ends with the Esc hint. Every body is cut to the rows
+that are left, so the footer always shows. Activity and Log are kit list windows
+that start on the newest row; Enter expands a row into a card under the list.
+A Result or Questions body longer than the pane becomes a line window, and only
+then does the footer say `↑/↓ to scroll`. Activity never shows
+thinking (the footer counts the hidden blocks), shows `ask_parent` as `note` or
+`asked` rows, and drops a leading `cd <dir> &&` from commands. Questions history
+shows each answer's text from the pi session. Mid-turn, the facts line labels
+the previous turn's cost (`turn 2 cost $0.73`). Expanded Log/Activity cards are
+capped so the header, card and footer stay on screen.
+
+Engine behaviour, not the pane's: a Button under the mouse pointer is drawn
+inverse in addition to the keyboard focus (so two rows can look selected; `❯`
+marks the selection); an open Select repeats its current value above the
+option list; Enter on a closed Select commits the shown value (the pane
+ignores a commit that changes nothing); a focused empty Input draws its cursor
+over the first placeholder cell (after Send the pane moves the focus back to
+the tab row).
+
+Every letter or digit on screen is a hotkey Button: `a` answer, `m` with one
+label for each state (`steer`, `message`, `wake and send`, `restart and send`;
+it shows only when a composer exists), `x` stop (then `y`/`n`, cancel focused),
+`s` settings, `r` retry or reset. The arrows never land on these keys.
+Esc steps back one level in every placement: it dismisses a notice, closes a
+Select, leaves a field, cancels a question, collapses a card, then goes back one
+view (settings to where it came from, the detail to the list). Only Esc in the
+list closes the pane. An Esc while the prompt has the keys (an empty prompt)
+closes the pane at once. There is no `b` key.
 
 Outside the pane: while any agent is live, a one-line band above the prompt
 says what needs attention (warning colour when one is waiting) and an `Open`
@@ -106,8 +139,10 @@ pane opens on its answer card. Done, failed and question events add one transcri
 log line each, and a toast while the pane is closed.
 
 View state (view, selection, tab, drafts per agent and question, notices) lives
-in `$.state` under the contract in `types/index.d.ts`, so it survives a hot
-reload; /clear, /resume and /branch reset it.
+in `$.state` under the contract in `types/index.d.ts` (three cells: `ui`,
+`world`, `drafts`), so it survives a hot reload. A reload drops wait notices,
+busy marks and open questions. /clear, /resume and /branch reset the view to the
+list (the `classic.SessionStart` hook) and read the agents again.
 
 ## Explicit actions
 
@@ -143,10 +178,11 @@ reset custom environment visibility and the overridden list became empty.
 
 ## Settings
 
-`s` opens Settings from the list or detail; `b` (or Esc inline) returns to
+`s` opens Settings from the list, the detail or the error view; Esc returns to
 where you came from. Rows follow `/config`: label, right-aligned value (bold
-when not the default), dim source. Enter edits a number inline (`Save`), and
-Default thinking is a Select. `Save to` (This project / Your user settings)
+when not the default), dim source. The pointer follows the ring. Enter edits a
+number inline (`save`). Default thinking and `Save to` show their value with `▾`;
+the Select opens only when you press Enter on the row. `Save to` (This project / Your user settings)
 sits below the rows. The focused row shows its description, the source chain
 `this project · your settings · default`, and where a save goes. `r` resets
 the focused setting after a confirm with Cancel focused. Invalid values are
@@ -160,21 +196,28 @@ companion `write-config --scope ...` CLI, with normal permission prompts and
 every shell argument quoted. Settings always target the session project from
 `$.session.root()`, not `PI_DELEGATE_VIEW_PROJECT`.
 
-Child data identity comes from read-only profile metadata:
-`plugins/installed_plugins.json`, `known_marketplaces.json`, and each relevant
-directory marketplace's `.claude-plugin/marketplace.json`. Exact installed-root
-matches or directory source entry matches identify the installed key, e.g.
-`pi-delegate@maheidem-plugins`; sanitizing that key gives its data directory.
-Multiple matches or an unmapped root with installed pi-delegate records fail
-visibly. With no installed identity, inline is used. Explicit
-`PI_DELEGATE_VIEW_DATA` still wins.
+A mod gets neither `CLAUDE_PLUGIN_ROOT` nor `CLAUDE_PLUGIN_DATA` (the pane uses
+`$.plugin.root`). The pane reads the data folder of this session's own MCP
+server, in this order:
+
+1. `PI_DELEGATE_VIEW_DATA`, a silent override for development.
+2. `CLAUDE_PLUGIN_DATA` of the `pi-mcp-server.mjs` process that this Claude Code
+   process started from this plugin folder (`ps`).
+3. The rule Claude Code uses: a `--plugin-dir` (or `CLAUDE_CODE_PLUGIN_DIRS`) load
+   is `pi-delegate-inline`, also when an installed directory marketplace serves
+   the same folder (seen live on 2.1.296); an install whose record names this
+   folder is `pi-delegate-<marketplace>`; no record is `pi-delegate-inline`.
+
+The shared rule is in `hooks/shared.mjs`; the text fallback uses it too.
 
 ## Read-only fallback
 
 When plugin hooks modules are disabled (including an off server rollout), the
-Markdown command injects `settings-view.mjs fallback` output. It lists children,
-the six settings and scoped provenance, model pin, warnings and test-mode
-notices without calling MCP or writing anything. This fallback takes a Claude
+Markdown command injects `settings-view.mjs fallback` output: plain lines, no
+tables and no internal keys. It lists the agents by group, the six settings with
+their source, the model pin, warnings and test-mode notices without calling MCP
+or writing anything. Its data folder is `${CLAUDE_PLUGIN_DATA}` (Claude Code fills
+it in for a command), else the rule of `hooks/shared.mjs`. This fallback takes a Claude
 turn and is a text snapshot, not an interactive editor. It uses the Bash
 working directory, not a potentially inherited `CLAUDE_PROJECT_DIR` from the
 parent that launched Claude.

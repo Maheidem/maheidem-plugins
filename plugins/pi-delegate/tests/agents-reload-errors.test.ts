@@ -1,45 +1,49 @@
-import { expect, mock, test } from 'claude-code/testing'
-const PANE = {
-  plugin: 'pi-delegate', component: 'Pane', requestId: 'pi-agents',
-  viewport: { columns: 160, rows: 48 },
-  props: { title: 'pi agents', isFocused: true, bodyColumns: 70, placement: 'inline', scroll: { offset: 0, bodyRows: 40 }, view: {} },
-} as const
+// Errors in plain words: an unreadable agents folder, an unreadable agent record, and an error that clears.
+import { expect, test } from 'claude-code/testing'
+import { RUN, agentMeta, mount, screen, stubs } from './agents-fixture'
+import type { Disk } from './agents-fixture'
 
-test('an unreadable agents folder shows E1 with retry, and retry recovers', async ($, on) => {
-  const clock = mock.clock(on)
-  mock.env(on, { CLAUDE_PLUGIN_DATA: '/data' })
-  let broken = true
-  on('session.root', () => ({ value: '/project' }))
-  on('ui.open', () => ({ value: undefined }))
-  on('fs.list', ($, e) => {
-    if (broken) throw new Error('EACCES: permission denied')
-    return { value: e.path.endsWith('/children') ? [{ name: 'scout', kind: 'directory', isLink: false }] : [] }
-  })
-  on('fs.read', ($, e) => ({ value: e.path.endsWith('meta.json') ? '{"name":"scout","state":"idle","gen":1,"turn":1}' : '' }))
-  await $.command.run({ command: 'pi-delegate:agents', args: '' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: "can't read agents" })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^✕ .+/ })).toBeDefined()
-  expect((await ui.find({ key: 'retry' }))?.props.hotkey).toBe('r')
-  broken = false
-  await ui.press({ key: 'retry' })
+test('an unreadable agents folder shows the error view with retry, and retry recovers', async ($, on) => {
+  const disk: Disk = { metas: { scout: agentMeta('scout', 'idle') }, events: {}, files: {}, listError: () => 'EACCES: permission denied' }
+  const { clock } = stubs(on, disk)
+  await $.command.run(RUN)
+  await clock.settle()
+  const ui = await $.ui.mount(mount())
+  const text = await screen(ui)
+  expect(text).toContain("Can't read agents")
+  expect(text).toMatch(/✕ The agents of this project could not be read\./)
+  expect(text).toContain('r: retry')
+  disk.listError = undefined
+  await ui.press({ key: 'act:r' })
   await clock.settle()
   expect(await ui.find({ key: 'row:scout' })).toBeDefined()
   await ui.unmount()
 })
 
+test('bug 4: the error clears by itself on the next good read', async ($, on) => {
+  let broken = true
+  const disk: Disk = { metas: { scout: agentMeta('scout', 'idle') }, events: {}, files: {}, listError: () => (broken ? 'EACCES: permission denied' : '') }
+  const { clock } = stubs(on, disk)
+  await $.command.run(RUN)
+  await clock.settle()
+  const ui = await $.ui.mount(mount())
+  expect(await screen(ui)).toContain("Can't read agents")
+  broken = false
+  await clock.advance(2000)
+  await clock.settle()
+  expect(await screen(ui)).not.toContain("Can't read agents")
+  expect(await ui.find({ key: 'row:scout' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('an unreadable agent record lists as "can\'t read" while the rest still list', async ($, on) => {
-  mock.clock(on)
-  mock.env(on, { CLAUDE_PLUGIN_DATA: '/data' })
-  on('session.root', () => ({ value: '/project' }))
-  on('ui.open', () => ({ value: undefined }))
-  on('fs.list', ($, e) => ({ value: e.path.endsWith('/children') ? [{ name: 'good', kind: 'directory', isLink: false }, { name: 'broken', kind: 'directory', isLink: false }]
-    : [{ name: 'meta.json', kind: 'file', size: 5, mtimeMs: 1, isLink: false }] }))
-  on('fs.read', ($, e) => ({ value: e.path.includes('/broken/') ? '{not json' : e.path.endsWith('meta.json') ? '{"name":"good","state":"idle","gen":1,"turn":1}' : '' }))
-  await $.command.run({ command: 'pi-delegate:agents', args: '' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const disk: Disk = { metas: { good: agentMeta('good', 'idle'), broken: '{not json' }, events: {}, files: {} }
+  const { clock } = stubs(on, disk)
+  await $.command.run(RUN)
+  await clock.settle()
+  const ui = await $.ui.mount(mount())
   expect(await ui.find({ key: 'row:good' })).toBeDefined()
   expect(await ui.find({ key: 'row:broken' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: "Couldn't read this agent's record" })).toBeDefined()
+  expect(await screen(ui)).toContain("Couldn't read this agent's record")
   await ui.unmount()
 })

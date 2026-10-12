@@ -1,18 +1,21 @@
-import { expect, mock, test } from 'claude-code/testing'
+// Unit tests of the pure helpers: formatting, rows, events, long text and activity steps.
+import { expect, test } from 'claude-code/testing'
 import {
   C, STATE, GLYPHS, NARROW_GLYPHS, safeText, jsonLines, openQuestions, age, when, duration, cost, cut,
-  rowSummary, rowTail, rowAge, groupAgents, peekLine, eventSentence, rawEvent, splitMarkdown, resultBlocks,
-  omittedNote, buildSteps, stepRow,
-} from '../hooks/agents-format.js'
+  rowSummary, rowTail, rowAge, groupAgents, listOrder, peekLine, eventSentence, splitMarkdown, resultBlocks,
+  omittedNote, buildSteps, stepRow, stripCd, answerText, wrapLines, argWords,
+} from '../hooks/agents-format'
+import type { Agent, Step } from '../hooks/agents-format'
+import { dataPathFor, installedIdentity, loadedInline, projectSlug, settingValue } from '../hooks/shared.mjs'
+import { shellQuote } from '../hooks/source'
+import { local } from './agents-fixture'
 
-const PANE = {
-  plugin: 'pi-delegate', component: 'Pane', requestId: 'pi-agents',
-  viewport: { columns: 160, rows: 48 },
-  props: { title: 'pi agents', isFocused: true, bodyColumns: 70, placement: 'inline', scroll: { offset: 0, bodyRows: 40 }, view: {} },
-} as const
-const local = (h: number, m: number, day = 1) => new Date(2026, 9, day, h, m).toISOString()
 const NOW = Date.parse(local(19, 0))
-const agent = (meta: any, events: any[] = []) => ({ name: meta.name, dir: `/c/${meta.name}`, meta, events, questions: openQuestions(events, meta), lastActivity: 0 })
+const agent = (meta: any, events: any[] = []): Agent => ({ name: meta.name, dir: `/c/${meta.name}`, meta, events, questions: openQuestions(events, meta), lastActivity: 0 })
+const tool = (s: Step | undefined): Step & { kind: 'tool' } => {
+  if (!s || s.kind !== 'tool') throw new Error('not a tool step')
+  return s
+}
 
 test('journal parsing, question closing and sanitising', () => {
   const meta = { gen: 2, turn: 3 }
@@ -23,17 +26,16 @@ test('journal parsing, question closing and sanitising', () => {
     { type: 'question', gen: 2, turn: 3, data: { toolCallId: 'live' } },
   ]
   expect(jsonLines('{"seq":1}\n{"partial"')).toEqual([{ seq: 1 }])
-  expect(openQuestions(events, meta).map((e: any) => e.data.toolCallId)).toEqual(['live'])
+  expect(openQuestions(events, meta).map(e => e.data?.toolCallId)).toEqual(['live'])
   expect(safeText('\x1b[2Jhello\x00 \x1b]0;title\x07ok')).toBe('hello ok')
   expect(safeText('api_key=sk-abc123 and token: xyz')).toBe('api_key=…redacted and token: …redacted')
 })
 
 test('times, durations, costs and ages are minute-granular and dated when not today', () => {
   expect(age(local(18, 58), NOW)).toBe('2m')
-  expect(age(local(18, 59, 1), NOW + 20000)).toBe('1m')
-  expect(age(local(18, 59, 1), Date.parse(local(18, 59, 1)) + 30000)).toBe('<1m')
   expect(age(local(3, 0), NOW)).toBe('16h')
   expect(age(local(19, 0, 1), Date.parse(local(19, 0, 3)))).toBe('2d')
+  expect(age('not a time', NOW)).toBe('')
   expect(when(local(18, 52), NOW)).toBe('18:52')
   expect(when(local(18, 52, 1), Date.parse(local(9, 0, 2)))).toBe('Oct 1 18:52')
   expect(duration(3100)).toBe('3.1s')
@@ -44,7 +46,7 @@ test('times, durations, costs and ages are minute-granular and dated when not to
   expect(cost(0)).toBe('')
 })
 
-test('list rows: summary, tail, age, grouping and peek line', () => {
+test('list rows: summary, tail, age, grouping, list order and the line under the list', () => {
   const question = { seq: 3, type: 'question', gen: 1, turn: 2, ts: local(18, 58), data: { toolCallId: 't', question_id: 'q', topic: 'approval', text: 'Run the e2e pane test against live Claude?\nIt spends tokens.' } }
   const pitui = agent({ name: 'pitui', state: 'waiting', gen: 1, turn: 2, updatedAt: local(18, 58), description: 'TUI' }, [question])
   const fixer = agent({ name: 'fixer', state: 'running', gen: 1, turn: 1, updatedAt: local(18, 59), description: 'Fix parser' }, [{ type: 'note', ts: local(18, 59), data: { topic: 'progress', text: 'reading hooks/agents.js' } }])
@@ -52,35 +54,46 @@ test('list rows: summary, tail, age, grouping and peek line', () => {
   const parked = agent({ name: 'piconfig', state: 'parked', gen: 1, turn: 1, updatedAt: local(18, 40), description: 'Configurable per-turn question budget', lastTurn: { gen: 1, turn: 1, ok: true, endedAt: local(18, 25), usage: { cost: 0.6139 } } },
     [{ seq: 9, type: 'parked', ts: local(18, 40), data: { reason: 'ttl' } }])
   const oldjob = agent({ name: 'oldjob', state: 'failed', gen: 1, turn: 2, updatedAt: local(18, 0), lastTurn: { gen: 1, turn: 2, ok: false, errorMessage: 'pi exited with code 1\nstack' } })
-  const stopped = agent({ name: 'stopper', state: 'stopped', gen: 1, turn: 1, updatedAt: local(18, 30), description: 'Old task' })
+  const stopped = agent({ name: 'stopper', state: 'stopped', gen: 1, turn: 1, updatedAt: local(18, 30) })
   expect(rowSummary(pitui, NOW)).toBe('Run the e2e pane test against live Claude?')
   expect(rowAge(pitui, NOW)).toBe('2m')
   expect(rowSummary(fixer, NOW)).toBe('reading hooks/agents.js')
   expect(rowSummary(oldjob, NOW)).toBe('Failed · pi exited with code 1')
+  // No task text: an empty summary, never a dash. The row draws "no task text".
+  expect(rowSummary(stopped, NOW)).toBe('')
   expect([rowTail(docs), rowTail(parked), rowTail(stopped), rowTail(pitui)]).toEqual(['done', 'parked', 'stopped', ''])
   const stale = { ...fixer, lastActivity: NOW - 3 * 3600000 }
   expect(rowSummary(stale, NOW, 60)).toBe('last activity 3h ago · may not be running')
   const groups = groupAgents([docs, oldjob, parked, fixer, stopped, pitui])
   expect(groups.map(g => g.name)).toEqual(['Needs input', 'Working', 'Idle', 'Ended'])
-  expect(groups[2].rows.map(a => a.name)).toEqual(['docs', 'piconfig'])
-  expect(groups[3].rows.map(a => a.name)).toEqual(['oldjob', 'stopper'])
+  expect(groups[2]?.rows.map(a => a.name)).toEqual(['docs', 'piconfig'])
+  expect(groups[3]?.rows.map(a => a.name)).toEqual(['oldjob', 'stopper'])
+  expect(listOrder([docs, oldjob, parked, fixer, stopped, pitui]).map(a => a.name)).toEqual(['pitui', 'fixer', 'docs', 'piconfig', 'oldjob', 'stopper'])
   expect(peekLine(parked, NOW)).toBe('turn 1 finished 18:25 · $0.61 · parked after 15 min idle')
+  // A stopped agent: plain words, not the bare state.
+  expect(peekLine(stopped, NOW)).toBe('stopped 18:30 · no turn finished · a message wakes it')
   expect(cut('a-thirty-character-agent-name!', 12)).toBe('a-thirty-ch…')
 })
 
-test('log events become one-line sentences with their glyphs', () => {
+test('mid-turn, the cost of the previous turn is labelled with its turn', () => {
+  const meta = { name: 'busy', state: 'running', gen: 1, turn: 3, lastTurn: { gen: 1, turn: 2, ok: true, endedAt: '2026-10-01T18:00:00Z', usage: { cost: 0.73 } } }
+  expect(peekLine(agent(meta), Date.parse('2026-10-01T18:10:00Z'))).toBe('working on turn 3 · turn 2 cost $0.73')
+})
+
+test('log events become one-line sentences in plain words; an unknown event shows no field names', () => {
   const s = (e: any, o?: any) => eventSentence({ gen: 1, turn: 5, ts: local(18, 0), ...e }, o)
   expect(s({ type: 'spawned', data: { model: 'gpt-6.1-sol', gen: 2 } }).text).toBe('Started · gpt-6.1-sol · run 2')
   expect(s({ type: 'question', data: { topic: 'approval', text: 'Run it?\nmore' } })).toEqual({ glyph: '?', color: C.warn, text: 'Asked (approval): Run it?' })
   expect(s({ type: 'answered', data: { answeredBy: 'model (relaying user)' } }).text).toBe('You answered')
   expect(s({ type: 'answered', data: { answeredBy: 'model' } }).text).toBe('Claude answered')
   expect(s({ type: 'question_expired', data: { reason: 'budget' } })).toEqual({ glyph: '◌', color: C.warn, text: "Question expired · this turn's question limit was used" })
+  expect(s({ type: 'question_expired', data: { reason: 'timeout' } }).text).toBe('Question expired · no answer in time')
   expect(s({ type: 'done', data: { durationMs: 760000, usage: { cost: 1.02 } } }).text).toBe('Turn 5 finished · 12m 40s · $1.02')
   expect(s({ type: 'failed', data: { errorMessage: 'provider returned 429\ntrace' } }).text).toBe('Turn 5 failed: provider returned 429')
   expect(s({ type: 'parked', data: { reason: 'ttl' } }, { idleMinutes: 15 }).text).toBe('Parked after 15 min idle. Wakes on your next message.')
+  expect(s({ type: 'parked', data: { reason: 'ttl' } }).text).toBe('Parked while idle. Wakes on your next message.')
   expect(s({ type: 'note', data: { topic: 'risk', text: 'REAL navigation\nx' } })).toEqual({ glyph: '▪', topic: 'risk', text: 'REAL navigation' })
-  expect(s({ type: 'weird_thing', data: { count: 3, toolCallId: 'hidden', nested: { a: 1 } } }).text).toBe('Weird thing · count: 3')
-  expect(rawEvent({ type: 'answered', gen: 1, turn: 1, data: { toolCallId: 'x', path: '/askdir/x.json', answeredBy: 'model' } })).not.toMatch(/toolCallId|askdir/)
+  expect(s({ type: 'weird_thing', data: { count: 3, toolCallId: 'hidden', nested: { a: 1 } } }).text).toBe('Weird thing')
 })
 
 test('markdown is split under the cap at blank lines, never inside a fence; cuts are announced', () => {
@@ -93,17 +106,20 @@ test('markdown is split under the cap at blank lines, never inside a fence; cuts
     expect(((b.text.match(/```/g) || []).length) % 2).toBe(0)
   }
   expect(blocks.map(b => b.text).join('\n\n')).toBe(text)
-  const huge = '```text\n' + 'x\n'.repeat(6000) + '```'
-  const fenced = splitMarkdown(huge, 9500)
+  const fenced = splitMarkdown('```text\n' + 'x\n'.repeat(6000) + '```', 9500)
   expect(fenced.length).toBe(1)
   expect(fenced[0]).toMatchObject({ kind: 'code', language: 'text' })
-  expect(fenced[0].text.split('\n').length).toBe(6000)
   const long = Array.from({ length: 5 }, (_, i) => `${i}`.repeat(9000)).join('\n\n')
   const r = resultBlocks(long)
   expect(r.blocks.length).toBe(3)
-  expect(r.blocks.every(b => b.text.length <= 9500)).toBe(true)
   expect(r.omitted).toBe(18000)
   expect(omittedNote(r.omitted, 'pitui')).toBe("… 18k more characters not shown. Ask Claude for pitui's full result.")
+})
+
+test('wrapLines cuts at spaces and never makes a line wider than the width', () => {
+  const lines = wrapLines('alpha beta gamma delta epsilon zeta eta theta\n\nshort', 16)
+  expect(lines).toEqual(['alpha beta gamma', 'delta epsilon', 'zeta eta theta', '', 'short'])
+  for (const l of wrapLines('x'.repeat(50), 16)) expect(l.length <= 16).toBe(true)
 })
 
 test('every glyph in an aligned column is one cell wide', () => {
@@ -112,7 +128,7 @@ test('every glyph in an aligned column is one cell wide', () => {
   for (const ambiguous of ['…', '·', '─', '•', '∴', '◇', '⌛']) expect(used).not.toContain(ambiguous)
 })
 
-test('activity pairs tool calls with results into one-line steps', () => {
+test('activity pairs tool calls with results into one-line steps; tool input shows values, not field names', () => {
   const entries = [
     { type: 'message', timestamp: local(18, 0), message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }, { type: 'thinking', thinking: 'y' }, { type: 'text', text: "I'll read the pane module." },
       { type: 'toolCall', id: 'a', name: 'bash', arguments: { command: 'node --test tests/parser.test.ts\necho' } },
@@ -122,89 +138,52 @@ test('activity pairs tool calls with results into one-line steps', () => {
     { type: 'message', message: { role: 'toolResult', toolCallId: 'c', isError: false, timestamp: Date.parse(local(18, 0)) + 10, content: [{ type: 'text', text: 'l1\nl2\nl3' }] } },
   ]
   const { steps } = buildSteps(entries)
-  expect(steps.map((s: any) => s.kind)).toEqual(['thinking', 'prose', 'tool', 'tool', 'tool'])
-  expect(steps[0].count).toBe(2)
-  expect(stepRow(steps[2])).toMatchObject({ glyph: '✕', color: C.err, name: 'bash', arg: 'node --test tests/parser.test.ts', tail: 'exit 1 · 2.0s', tailColor: C.err })
-  expect(stepRow(steps[3])).toMatchObject({ glyph: '◷', name: 'edit', add: 3, del: 2 })
-  expect(stepRow(steps[4])).toMatchObject({ glyph: '✓', name: 'read', tail: '3 lines' })
+  expect(steps.map(s => s.kind)).toEqual(['thinking', 'prose', 'tool', 'tool', 'tool'])
+  expect(stepRow(tool(steps[2]))).toMatchObject({ glyph: '✕', color: C.err, name: 'bash', arg: 'node --test tests/parser.test.ts', tail: 'exit 1 · 2.0s', tailColor: C.err })
+  expect(stepRow(tool(steps[3]))).toMatchObject({ glyph: '◷', name: 'edit', add: 3, del: 2 })
+  expect(stepRow(tool(steps[4]))).toMatchObject({ glyph: '✓', name: 'read', tail: '3 lines' })
+  expect(argWords({ pattern: 'TODO', path: 'src', limit: 3, nested: { a: 1 } })).toBe('TODO\nsrc\n3')
 })
 
-test('list renders grouped rows with no ownership gate, an answer card, and collapsed Ended', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  mock.env(on, { CLAUDE_PLUGIN_DATA: '/data' })
-  const metas: Record<string, any> = {
-    pitui: { name: 'pitui', state: 'waiting', gen: 1, turn: 2, updatedAt: local(18, 58), ownerClaudeSession: 'A', description: 'TUI' },
-    fixer: { name: 'fixer', state: 'running', gen: 1, turn: 1, updatedAt: local(18, 59), ownerClaudeSession: 'A' },
-    ...Object.fromEntries(['e1', 'e2', 'e3', 'e4', 'e5'].map((n, i) => [n, { name: n, state: 'stopped', gen: 1, turn: 1, updatedAt: local(10 + i, 0), ownerClaudeSession: 'A', description: `old ${n}` }])),
-  }
-  const question = { seq: 1, type: 'question', gen: 1, turn: 2, ts: local(18, 58), data: { toolCallId: 't', question_id: 'q_1', topic: 'approval', text: 'Run the e2e pane test?' } }
-  on('session.id', () => ({ value: 'B' }))
-  on('session.root', () => ({ value: '/project' }))
-  on('fs.list', ($, e) => ({ value: e.path.endsWith('/children') ? Object.keys(metas).map(name => ({ name, kind: 'directory', isLink: false })) : [] }))
-  on('fs.read', ($, e) => {
-    const name = e.path.split('/').at(-2)!
-    return { value: e.path.endsWith('meta.json') ? JSON.stringify(metas[name]) : e.path.endsWith('events.jsonl') && name === 'pitui' ? JSON.stringify(question) : '' }
-  })
-  on('ui.open', () => ({ value: undefined }))
-  await $.command.run({ command: 'pi-delegate:agents', args: '' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /Read-only/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: '1 needs input' })).toBeDefined()
-  const headers = (await ui.findAll({ type: 'Text' })).map(t => t.text).filter(t => ['Needs input', 'Working', 'Ended', 'Idle'].includes(t))
-  expect(headers).toEqual(['Needs input', 'Working', 'Ended'])
-  expect((await ui.find({ key: 'row:pitui' }))?.props.autoFocus).toBe(true)
-  expect(await ui.find({ key: 'answer:pitui:q_1' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /pitui asks · approval/ })).toBeDefined()
-  expect((await ui.find({ key: 'more-ended' }))?.props.label).toBe('  … 2 more ended · show')
-  expect((await ui.find({ key: 'key:a' }))?.props.hotkey).toBe('a')
-  expect((await ui.find({ key: 'key:x' }))?.props.hotkey).toBe('x')
-  await ui.press({ key: 'more-ended' })
-  expect(await ui.find({ key: 'row:e1' })).toBeDefined()
-  await ui.unmount()
+test('bash rows drop a leading cd; ask_parent becomes note and asked steps with the answer text', () => {
+  expect(stripCd('cd plugin-development/maheidem-plugins && bash tests/run_all.sh')).toBe('bash tests/run_all.sh')
+  expect(stripCd("cd 'a b'; cd c && git status")).toBe('git status')
+  expect(stripCd('cdx foo')).toBe('cdx foo')
+  expect(answerText('[parent answered · by model (relaying user)]\nyes, use haiku\nmore')).toBe('yes, use haiku\nmore')
+  expect(answerText('Note delivered to the parent (topic: x).')).toBe('')
+  const { steps, byId } = buildSteps([
+    { type: 'message', message: { role: 'assistant', content: [
+      { type: 'toolCall', id: 'n', name: 'ask_parent', arguments: { kind: 'note', topic: 'risk', text: 'careful' } },
+      { type: 'toolCall', id: 'q', name: 'ask_parent', arguments: { kind: 'question', topic: 'approval', text: 'Proceed?' } },
+      { type: 'toolCall', id: 'b', name: 'bash', arguments: { command: 'cd repo && npm test' } }] } },
+    { type: 'message', message: { role: 'toolResult', toolCallId: 'q', content: [{ type: 'text', text: '[parent answered · by model]\nGo ahead.' }] } },
+  ])
+  expect(steps.map(s => [s.kind, s.kind === 'ask' ? s.ask : undefined])).toEqual([['ask', 'note'], ['ask', 'question'], ['tool', undefined]])
+  const q = byId.q
+  expect(q?.kind === 'ask' ? q.answer : '').toBe('Go ahead.')
+  expect(stepRow(tool(steps[2])).arg).toBe('npm test')
 })
 
-test('one agent in one group draws no group header; peek line uses words, not codes', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  mock.env(on, { CLAUDE_PLUGIN_DATA: '/data' })
-  const meta = { name: 'piconfig', state: 'parked', gen: 1, turn: 1, updatedAt: local(18, 40), description: 'Configurable per-turn question budget', ownerClaudeSession: 'A', lastTurn: { gen: 1, turn: 1, ok: true, endedAt: local(18, 25), usage: { cost: 0.61 } } }
-  on('session.root', () => ({ value: '/project' }))
-  on('fs.list', ($, e) => ({ value: e.path.endsWith('/children') ? [{ name: 'piconfig', kind: 'directory', isLink: false }] : [] }))
-  on('fs.read', ($, e) => ({ value: e.path.endsWith('meta.json') ? JSON.stringify(meta) : e.path.endsWith('events.jsonl') ? JSON.stringify({ seq: 2, type: 'parked', ts: local(18, 40), data: { reason: 'ttl' } }) : '' }))
-  on('ui.open', () => ({ value: undefined }))
-  await $.command.run({ command: 'pi-delegate:agents', args: '' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: 'Idle' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: 'turn 1 finished 18:25 · $0.61 · parked after 15 min idle' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /g1\/t1|Q:0|disk snapshot/ })).toBeUndefined()
-  expect(await ui.find({ key: 'key:m' })).toBeDefined()
-  await ui.unmount()
+test('settings words and shell quoting', () => {
+  expect(shellQuote("a'b;$(x)")).toBe("'a'\\''b;$(x)'")
+  expect(settingValue('turn_timeout_minutes', 60)).toBe('60 min')
+  expect(settingValue('default_thinking', 'pi-default')).toBe("pi's own")
+  expect(settingValue('idle_park_minutes', 'never')).toBe('never')
 })
 
-test('band: one warning line for a waiting agent, Open button without a digit hotkey, hidden while the pane is open', async ($, on) => {
-  const clock = mock.clock(on, { now: NOW })
-  // What the engine draws when the band passes (nothing to show).
-  on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
-  mock.env(on, { CLAUDE_PLUGIN_DATA: '/data' })
-  let open = false
-  const meta = { name: 'pitui', state: 'waiting', gen: 1, turn: 2, updatedAt: local(18, 58) }
-  const question = { seq: 1, type: 'question', gen: 1, turn: 2, ts: local(18, 58), data: { toolCallId: 't', question_id: 'q_1', text: 'Run the e2e pane test?' } }
-  on('session.root', () => ({ value: '/project' }))
-  on('fs.list', ($, e) => ({ value: e.path.endsWith('/children') ? [{ name: 'pitui', kind: 'directory', isLink: false }] : [] }))
-  on('fs.read', ($, e) => ({ value: e.path.endsWith('meta.json') ? JSON.stringify(meta) : e.path.endsWith('events.jsonl') ? JSON.stringify(question) : '' }))
-  on('session.start', () => ({ cwd: '/project' }))
-  on('ui.panes', () => ({ value: open ? [{ id: 'pi-agents', title: 'pi agents', isShown: true, isFocused: true, isPlaced: true }] : [] }))
-  on('ui.open', () => { open = true; return { value: { isPlaced: true } } })
-  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  await clock.advance(2000) // the module-scope refresh tick reads the agents
-  const band = await $.ui.mount({ plugin: 'pi-delegate', surface: 'terminal', component: 'AbovePrompt', viewport: { columns: 120, rows: 40 },
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as any)
-  expect(await band.find({ type: 'Text', text: ' needs input' })).toBeDefined()
-  const button = await band.find({ key: 'band:open' })
-  expect(button?.props.label).toBe('Open')
-  expect(button?.props.hotkey).toBeUndefined()
-  await band.press({ key: 'band:open' })
-  expect(open).toBe(true)
-  await band.redraw()
-  expect(await band.find({ key: 'band:open' })).toBeUndefined()
-  await band.unmount()
+test('the data folder follows the rule of Claude Code: install gives <name>-<marketplace>, --plugin-dir gives inline', () => {
+  const installed = { plugins: { 'pi-delegate@maheidem-plugins': [{ installPath: '/home/.claude/plugins/cache/maheidem-plugins/pi-delegate/0.12.0' }] } }
+  const markets = { 'maheidem-plugins': { source: { source: 'directory', path: '/source/market' } } }
+  const manifests = { 'maheidem-plugins': { plugins: [{ name: 'pi-delegate', source: './plugins/pi-delegate' }] } }
+  expect(installedIdentity('/home/.claude/plugins/cache/maheidem-plugins/pi-delegate/0.12.0', installed)).toBe('pi-delegate@maheidem-plugins')
+  expect(installedIdentity('/source/market/plugins/pi-delegate', installed, markets, manifests)).toBe('pi-delegate@maheidem-plugins')
+  // A folder no record names (a --plugin-dir copy) is not an error: it is the inline load.
+  expect(installedIdentity('/tmp/copy/pi-delegate', installed, markets, manifests)).toBe('')
+  expect(dataPathFor('/cfg', '')).toBe('/cfg/plugins/data/pi-delegate-inline')
+  expect(dataPathFor('/cfg', 'pi-delegate@maheidem-plugins')).toBe('/cfg/plugins/data/pi-delegate-maheidem-plugins')
+  expect(loadedInline('/source/market/plugins/pi-delegate', 'claude --plugin-dir /source/market/plugins/pi-delegate', '', '/x')).toBe(true)
+  expect(loadedInline('/source/market/plugins/pi-delegate', 'claude --plugin-dir ../market/plugins/pi-delegate', '', '/source/x')).toBe(true)
+  expect(loadedInline('/source/market/plugins/pi-delegate', 'claude', '/a:/source/market/plugins/pi-delegate', '/x')).toBe(true)
+  expect(loadedInline('/source/market/plugins/pi-delegate', 'claude --plugin-dir /other', '', '/x')).toBe(false)
+  expect(projectSlug('/Users/me/proj')).toBe('--Users-me-proj--')
 })

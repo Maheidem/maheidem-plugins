@@ -36,7 +36,9 @@ jarg() { node -e 'const a = process.argv.slice(1); const o = {}; for (let i = 0;
 
 ASK_PROMPT='Call the ask_parent tool with kind "question", topic "blocked" and text "Which file name should I use?". Wait for the answer, then create that file.'
 INT_MSG="Stop waiting for that answer. Create the file int.txt in the current directory containing exactly $TOKEN and nothing else, then reply DONE."
-RES_MSG="Append a second line containing exactly $TOKEN2 to int.txt, then reply DONE."
+# The resume turn writes its own file. An append to int.txt was fragile: the first
+# write has no final newline, and `echo >>` then joined both tokens on one line.
+RES_MSG="Create the file res.txt in the current directory containing exactly $TOKEN2 and nothing else, then reply DONE."
 START=$(date +%s)
 CLAUDE_PROJECT_DIR="$PROJ" PI_DELEGATE_WAKE=channel FEED_TIMEOUT=900 feed "$OUT" \
   "$(call 2 pi_agent "$(jarg name int prompt "$ASK_PROMPT")")" "WAIT_FOR \"id\":2 30" \
@@ -63,7 +65,7 @@ grep -F 'notifications/claude/channel' "$OUT" | grep -qF '"event":"question"' &&
 J3="$(json_for_id "$OUT" 3)"
 [ "$(field_of "$J3" delivered)" = interrupt ] && [ "$(field_of "$J3" turn)" = 2 ] && pass "delivered interrupt, turn 2 (respawned: $(field_of "$J3" respawned))" || fail "id3 ($J3)"
 case "$TYPES" in spawned,question,answered,interrupted,*done*) pass "events: question, pre-answer, interrupted, then the new turn's done" ;; *) fail "events ($TYPES)" ;; esac
-[ "$(grep -c . "$PROJ/int.txt" 2>/dev/null)" -ge 1 ] && head -1 "$PROJ/int.txt" | grep -qx "$TOKEN" && pass "the new turn wrote int.txt with the token" || fail "int.txt: $(cat "$PROJ/int.txt" 2>/dev/null)"
+grep -qx "$TOKEN" "$PROJ/int.txt" 2>/dev/null && pass "the new turn wrote int.txt with the token" || fail "int.txt: $(cat "$PROJ/int.txt" 2>/dev/null)"
 [ -n "$SFILE" ] && [ "$(ls "$SESS"/*_int-g1-teststore.jsonl | wc -l | tr -d ' ')" = 1 ] && pass "one session file for gen 1" || fail "session files: $(ls "$SESS" 2>/dev/null)"
 node -e '
   const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map((l) => JSON.parse(l));
@@ -85,7 +87,7 @@ P1="$(awk '{print $1}' "$PS1F")"; P2="$(awk '{print $1}' "$PS2F")"
 # session file continuing (below) is the evidence for --session-id int-g1-teststore.
 [ -n "$P1" ] && [ -n "$P2" ] && [ "$P1" != "$P2" ] && ! kill -0 "$P1" 2>/dev/null \
   && pass "resumed on a new process $P2 (the stopped one, $P1, is gone)" || fail "ps: $(cat "$PS1F") | $(cat "$PS2F")"
-grep -qx "$TOKEN2" "$PROJ/int.txt" && pass "the resumed turn appended its token" || fail "int.txt after resume: $(cat "$PROJ/int.txt" 2>/dev/null)"
+grep -qx "$TOKEN2" "$PROJ/res.txt" 2>/dev/null && pass "the resumed turn wrote res.txt with its token" || fail "res.txt after resume: $(cat "$PROJ/res.txt" 2>/dev/null)"
 [ "$(ls "$SESS"/*_int-g1-teststore.jsonl | wc -l | tr -d ' ')" = 1 ] && grep -qF "$TOKEN2" "$SFILE" && pass "resume continued the same session file" || fail "session after resume"
 node -e '
   const ls = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map((l) => JSON.parse(l));

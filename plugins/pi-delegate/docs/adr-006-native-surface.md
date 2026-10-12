@@ -47,8 +47,11 @@ Clean break: the old names are not listed in `tools/list`. Calling one returns
   data store, so two stores serving one project (installed copy and `--plugin-dir` copy, or two
   profiles) can't resume or forget each other's sessions.
 - The lock is taken before launch and held for the process lifetime, recording
-  `{serverPid, serverStart}`. Another Claude session gets an owner error from every mutating
-  tool and sees the child read-only in `pi_list_agents`.
+  `{serverPid, serverStart}`. While another Claude session's server runs the child (a live pi
+  process) or holds its lock (it launches, resumes or recovers it), this session gets an owner
+  error from every mutating tool and sees the child read-only in `pi_list_agents`. A parked,
+  stopped or failed child has no process and no held lock, so any session can take it over
+  (resume, stop, a new generation).
 - State lives under `${CLAUDE_PLUGIN_DATA}/projects/<cwd-slug>/children/<name>/`:
   `meta.json` (tmp+rename, read back after every write), `events.jsonl` (append-only, per-child
   seq), `results/<gen>-<turn>.md`.
@@ -70,8 +73,10 @@ generation this store recorded and frees the name.
   `task-id` tag, so nothing invites the native TaskStop/SendMessage.
 - **Confirmation.** On the first `pi_agent` of a server lifetime the server pushes a data-only
   probe (`[pi-delegate] push check <nonce>`). The server `instructions` tell Claude to answer
-  with `pi_list_agents {confirm_push:<nonce>}`. A call carrying a seq or question id that only a
-  push delivered also confirms. Confirmation is in memory only; every server start re-probes.
+  with `pi_list_agents {confirm_push:<nonce>}`. Nothing else confirms: a question id in a call
+  proves nothing, because the agents pane reads ids from `events.jsonl` and answers with them
+  also in a session that gets no pushes. Confirmation is in memory only; every server start
+  re-probes.
 - **Unconfirmed, flag present (`wake channel?`).** When Claude's argv names this plugin's channel,
   a background `pi_agent` returns at once instead of blocking. Blocking would defeat the probe:
   Claude Code holds a push that arrives during a tool call until that call returns, and runs
@@ -84,6 +89,12 @@ generation this store recorded and frees the name.
   that child's next waking event, with progress every 20s. Claude Code moves it to the
   background after `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` (about 2 min by default) and wakes Claude
   with a native task-notification when it returns. One wait per child, nothing to re-arm.
+- **The agents pane never holds the wake.** Its tool results go to the pane, not to the model,
+  so a held event would be lost. The pane sends `hold:false` on `pi_answer`, `pi_send_message`
+  and `pi_stop` (`relay_user` is unchanged). Such a call returns at once, starts a detached
+  turn, takes no owed or sibling events, and leaves the child's next event queued for Claude
+  (`pi_wait`, `pi_list_agents`, or a push once confirmed). Claude's own calls default to
+  `hold:true`.
 - `pi_wait` exists only for recovery (compaction, restart, a cancelled call), when a result or the
   `pi_list_agents` header says `wait armed: no`. One waiter per server; a newer one supersedes.
 - `PI_DELEGATE_WAKE=channel|fallback` overrides detection.
@@ -93,7 +104,8 @@ generation this store recorded and frees the name.
 Every event is appended to `events.jsonl` before any push. Consumption (`consumed_seq`) applies
 to owned children only and advances when a confirmed push is written, when a tool response
 carrying the event is written (commit-on-send), when `pi_answer` resolves a question, or when
-`pi_send_message` delivers / `pi_stop` targets the child. Before confirmation a push does not
+`pi_send_message` delivers to the child or `pi_stop` stops it (both carry the child's unshown
+events in their response). Before confirmation a push does not
 consume, so a fallback return may repeat it, marked `(also pushed HH:MM:SS)`. Pushes carry up to
 4000 chars of result; fallback returns and `pi_wait` use a compact form (300 chars), and
 `pi_read` has the rest.
@@ -112,8 +124,18 @@ consume, so a fallback return may repeat it, marked `(also pushed HH:MM:SS)`. Pu
   reports `picked up` only when the child's `tool_execution_end` says `askAnswered`, and lists
   sibling questions from the same batch that are still pending.
 - **The server owns expiry.** Children get a 4h hard cap; the server's soft timer
-  (`question_wait_minutes`, default 10 min) starts once the question is consumed, then writes the
-  fallback answer itself (`model (timeout)`) and emits `question_expired`.
+  (`question_wait_minutes`, default 10 min) starts once the question is consumed (a tool
+  response or a confirmed push carrying it was written), then writes the fallback answer itself
+  (`model (timeout)`) and emits `question_expired`. In channel mode the clock starts at the push
+  write: Claude Code shows a push that arrives during a tool call only after that call returns,
+  and the server cannot see when that happens, so a long tool call uses part of the wait. A
+  question nobody is shown expires after three soft windows (backstop, reason `never shown`).
+- **Extension dialogs** (`select`, `confirm`, `input`, `editor`) block pi until answered and
+  have no timeout unless the request sets one. Without elicitation (or when the client gives no
+  answer) a dialog is parked with a `d_*` id and a `dialog` event (title, message, options)
+  wakes Claude like a question; `pi_answer {question_id:"d_...", value | confirmed |
+  cancelled}` answers it and, in fallback, holds the wake. Like a question, an open dialog
+  pauses the turn clock and keeps the child from being reaped.
 - **Budget per turn**, enforced by the server: `questions_per_turn`, default 5 (D5). The
   6th question in a turn gets an immediate budget answer.
 - A message to a child blocked on a question is refused and shows the full question.
@@ -140,13 +162,21 @@ consume, so a fallback return may repeat it, marked `(also pushed HH:MM:SS)`. Pu
 
 - On server start, records owned by a live server are skipped. For the rest, a still-running
   orphan of this store is killed, its open questions close as `question_expired{orphaned}`, and
-  running/waiting records become `failed{orphaned}` (always pushed, so they reach Claude after
-  re-confirmation or on the next listing).
+  running/waiting records become `failed{orphaned}`. Who gets that event: for this Claude
+  session's own records it is pushed (held until the client is ready; before push wake is
+  confirmed the push does not consume it, so the next listing or `pi_wait` shows it); a record
+  of another Claude session is handed back to that session unpushed and unconsumed; a call that
+  takes the child over (resume, stop, `pi_agent` takeover) records it without a push and carries
+  it in its own response.
 - A `kill -9` of the server loses the child with it (pi 0.99 exits on stdin EOF). That is
   accepted. Recovery records the failure, any toolCall left without a toolResult is paired on
   disk before pi reloads the session, and the child resumes by name.
 - On a clean shutdown owned children have pending asks pre-answered, running ones become
   `failed{claude_exit}`, idle ones `parked`.
+- pi is spawned detached, so its process group is its own. When pi exits, the server marks it
+  dead after a 500 ms drain (`exit`, not `close`: a daemon pi started can hold stdout open), and
+  then kills what is left of that group: SIGTERM, then SIGKILL after 3 s. The same method as
+  `listProviders`. The server's own group is never a target.
 
 ## Owner decisions (2026-10-01)
 

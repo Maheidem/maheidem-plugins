@@ -22,7 +22,7 @@ The 0.11 design and the decisions behind it are in
   Activity (paired tool steps), Log (events as sentences) and Questions tabs;
   `s` opens `/config`-style Settings for all six delegation settings (scope
   select, validated inline edits, confirmed reset, read-back saves). Every key
-  shown is a hotkey; inline, Esc steps back before it closes. A band above the
+  shown is a hotkey; Esc steps back one level, and Esc in the list closes the pane. A band above the
   prompt shows live agents (`ctrl+x tab` then Enter opens the pane), and done/failed/question events add a
   transcript line and a toast. Reads never invoke MCP or consume events; Stop
   (confirmed), messages and answers go through the existing MCP tools with
@@ -45,15 +45,15 @@ The 0.11 design and the decisions behind it are in
 |---|---|---|
 | `pi_agent` | Agent | Start a named child (`prompt`, `name?`, `description?`, `run_in_background?` default true, `tools?`, `exclude_tools?`, `ask?` default true, `thinking?`, `turn_timeout_ms?`; `provider?`/`model?` only when no pin exists). A running or waiting name is refused; an idle or finished one is taken over as a new generation. |
 | `pi_send_message` | SendMessage | `{to, message, interrupt?, mode?}`. Running: steer (or `follow_up`). Idle: new turn. Parked/stopped/failed: respawn on the recorded launch, same session and model. Blocked on a question: refused with the full question. `interrupt:true` pre-answers pending questions, drops queued steers (`dropped_queue`), aborts and prompts. |
-| `pi_answer` | reply to a question | `{to, answer, question_id?, relay_user?}` for an `ask_parent` question, or `value`/`confirmed`/`cancelled` for a `d_*` extension dialog. Reports `picked up` once the child confirms, and lists sibling questions still pending. |
+| `pi_answer` | reply to a question | `{to, answer, question_id?, relay_user?}` for an `ask_parent` question, or `{to, question_id:"d_...", value / confirmed / cancelled}` for an extension dialog (it arrives as a `dialog` event). Reports `picked up` once the child confirms, and lists sibling questions still pending. In fallback, once nothing is left to answer, the call holds the wake. `hold:false` (on `pi_answer`, `pi_send_message` and `pi_stop`) returns at once, holds no wake and leaves every event queued for `pi_wait`, `pi_list_agents` or a push. The agents pane sends it, because its tool results never reach the model. |
 | `pi_stop` | TaskStop | `{name, forget?}`. Pre-answers, clears the queue, aborts, kills the process group. The session is kept; `pi_send_message` resumes it. `forget:true` deletes every generation's session files and frees the name. |
 | `pi_list_agents` | ListAgents | Header (pi version, pin, wake mode, live count, `wait armed`) plus one row per child. Inlines your children's unhandled events. `{name}` for one child in detail, `{doctor:true}` for readiness checks, `{confirm_push}` for the push check. |
 | `pi_read` | TaskOutput | `{name, what?, gen?, turn?, last?}`: `result` (default), `transcript` or `events`. Never starts pi. |
 | `pi_wait` | (recovery) | Re-arms the wake after compaction, a restart or a cancelled call. Only needed when a result or the header says `wait armed: no`. |
 
-Every by-name tool accepts `name`, `to` or `task_id`, strips a leading `pi:`
-and lowercases, so `pi:auth-fix` copied from a push resolves. Names match
-`^[a-z][a-z0-9_-]{0,31}$`.
+Every by-name tool (`pi_wait` too) accepts `name`, `to` or `task_id`, strips
+a leading `pi:` and lowercases, so `pi:auth-fix` copied from a push resolves.
+Names match `^[a-z][a-z0-9_-]{0,31}$`.
 
 The server's `instructions` tell Claude that pi children are not native agents
 (native SendMessage, TaskStop and ListAgents can't see them), how to answer the
@@ -82,7 +82,7 @@ Two modes, picked per server lifetime:
 
 1. **Channel push (confirmed).** The server declares the `claude/channel`
    capability and pushes `notifications/claude/channel` events (`question`,
-   `done`, `failed`). Line 1 is a terminal echo like
+   `dialog`, `done`, `failed`). Line 1 is a terminal echo like
    `[pi:auth-fix] DONE turn 3 ok · 41s`; the `<pi-agent-event>` block below it
    has the result (up to 4000 chars), notes and the controls to use. Claude
    Code only delivers these when the session enabled the channel; during the
@@ -91,7 +91,9 @@ Two modes, picked per server lifetime:
    (`plugin:pi-delegate@inline` with `--plugin-dir`). On the first `pi_agent`
    the server pushes a data-only probe; Claude answers with
    `pi_list_agents {confirm_push:<nonce>}`, and from then on `pi_agent`
-   returns at once and says `Do not poll.` While the flag is there but the
+   returns at once and says `Do not poll.` Nothing else confirms: a question
+   id in a call proves nothing (the agents pane answers with ids it reads
+   from disk, also in a session that gets no pushes). While the flag is there but the
    probe isn't confirmed yet (`wake: channel?`), `pi_agent` also returns at
    once: a blocked call would hold the probe back, and Claude Code queues a
    `confirm_push` behind it. If no probe shows up with that result, call
@@ -133,8 +135,19 @@ asking off. The package's `handoff` tool is always excluded.
   in the prompt that started the child, is the model's: `relay_user` false.
 - **Expiry is the server's.** The child's own cap is 4h. The server's timer
   (`question_wait_minutes`, default 10 min) starts once the question has been
-  shown to Claude; on expiry it answers with the fallback text as
-  `model (timeout)` and a later `pi_answer` is refused.
+  shown to Claude: a tool response carrying it, or a confirmed push of it, was
+  written. Claude Code shows a push that arrives during a tool call only after
+  that call returns, so in channel mode a long tool call uses part of the
+  wait; raise `question_wait_minutes` if that matters. A question nobody is
+  shown expires after three times that wait (reason `never shown`). On expiry
+  the server answers with the fallback text as `model (timeout)` and a later
+  `pi_answer` is refused.
+- **Extension dialogs.** A `select`/`confirm`/`input`/`editor` dialog from a
+  pi extension blocks the child (pi sets no timeout unless the extension does).
+  Claude Code's elicitation answers it when the client supports that;
+  otherwise it becomes a `dialog` event with a `d_*` id, its title, message
+  and options, answered with `pi_answer`. `pi_stop` and `interrupt:true`
+  cancel it.
 - **Budget per turn:** `questions_per_turn`, default 5. The next
   question in that turn gets an immediate "budget exhausted" answer. A new
   turn starts the count over.
@@ -150,7 +163,11 @@ asking off. The package's `handoff` tool is always excluded.
 (`max_live_children`, default 4) needs room; a crash, error or
 `turn_timeout_ms` gives `failed`; `pi_stop` gives `stopped`. A child is never
 reaped mid-turn or while waiting, and its turn clock pauses while a question
-is pending. `pi_send_message` brings any of those back on the same session.
+or a dialog is pending (the time spent waiting is added to the deadline).
+A prompt pi acknowledges late (its preflight can run a compaction) still
+counts: the turn stays tracked until it ends or times out. A prompt pi refuses
+because a compaction is in progress is sent again until pi takes it.
+`pi_send_message` brings any of those back on the same session.
 
 Per child, under
 `${CLAUDE_PLUGIN_DATA}/projects/<cwd-slug>/children/<name>/`:
@@ -163,16 +180,28 @@ each other's sessions. Old generations and stopped sessions stay on disk until
 `pi_stop {forget:true}`.
 
 **Ownership.** The child's lock is taken before launch and held for the
-process lifetime. Another Claude session in the same project sees the child
-read-only and gets an owner error from every tool that would change it.
+process lifetime. While another Claude session in the same project runs the
+child (a live pi process) or holds its lock (it launches, resumes or recovers
+it), this session sees the child read-only and gets an owner error from every
+tool that would change it. A parked, stopped or failed child has no process
+and no held lock, so any session can take it over.
 
 **Restarts.** On start the server skips children whose owning server is still
 alive. Orphans of a dead server are killed, their open questions close as
 `question_expired{orphaned}`, and running/waiting records become
-`failed{orphaned}`; that event is pushed or shown on the next listing. A
+`failed{orphaned}`. For this session's own records that event is pushed (and
+shown on the next listing until push wake is confirmed); another session's
+record goes back to that session unpushed; a call that takes the child over
+carries the event in its own response. A
 server `kill -9` takes the child with it (pi exits on stdin EOF); any toolCall
 left without a toolResult is paired in the session file before resume, and
 the child resumes by name.
+
+**Dead pi, live daemon.** Each pi runs in its own process group (spawned
+detached). When pi exits, the server waits 500 ms for its last output, marks
+it dead, and then kills the rest of that group: SIGTERM, then SIGKILL after 3 s
+if a member is still alive. A daemon that pi started (and that holds its
+stdout) does not stay behind. The server's own group is never a target.
 
 ## Lean children
 
@@ -279,7 +308,10 @@ server: a real child asks for a secret word and must reply with the answer).
 Settings use `.claude/pi-delegate.local.md` frontmatter (project), then
 `$CLAUDE_CONFIG_DIR/pi-delegate.json` (profile; defaults to
 `~/.claude/pi-delegate.json`), then the built-in default. Invalid values warn
-and fall through. No dependencies or pi-global settings changes.
+and fall through. Unknown keys, and a pin `provider`/`model` value that cannot
+be passed to pi, also warn (list header, doctor, the pane); an inline
+`# comment` after a frontmatter value is ignored. No dependencies or
+pi-global settings changes.
 
 | Key / CLI flag (replace underscores with hyphens) | Values | Default |
 |---|---|---|
@@ -292,7 +324,7 @@ and fall through. No dependencies or pi-global settings changes.
 
 `0` questions auto-answers every question as exhausted; notes are unaffected.
 `unlimited` removes the server turn/question cap, not the child's existing
-hard ask cap. Turn clocks still pause while questions are pending. Explicit
+hard ask cap. Turn clocks still pause while questions or dialogs are pending. Explicit
 `pi_agent.turn_timeout_ms` / `thinking` override their configured defaults.
 Question budget is captured each turn; server values refresh at spawn/turn.
 Existing children retain their launch thinking level on resume.
