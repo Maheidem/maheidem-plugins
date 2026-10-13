@@ -472,7 +472,29 @@ def own_sessions(cfg, which=None):
     return [n for n in tmux_ls() if any(r.fullmatch(n) for r in regs)]
 
 
+def trust_state(folder):
+    """True, False or None (unknown). Reads the Claude Code state file; it never writes it.
+    The folder itself must have hasTrustDialogAccepted: a trusted parent folder does not count (the dialog still showed for a child, 2.1.296)."""
+    cdir = os.environ.get('CLAUDE_CONFIG_DIR')
+    path = os.path.join(cdir, '.claude.json') if cdir else os.path.expanduser('~/.claude.json')
+    try:
+        with open(path, encoding='utf-8') as fh:
+            projects = json.load(fh).get('projects') or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    d = os.path.realpath(os.path.abspath(os.path.expanduser(folder)))
+    return bool((projects.get(d) or {}).get('hasTrustDialogAccepted'))
+
+
+def warn_untrusted(cfg):
+    """Warn when the session folder has no trust entry. The run goes on: the on-screen dialog check in live-test.sh decides."""
+    folder = cfg.get('trusted')
+    if folder and trust_state(folder) is False:
+        print(f'warn: {folder} has no trust entry in the Claude Code state file; the run fails if the trust dialog shows', flush=True)
+
+
 def refuse_busy(cfg, which):
+    warn_untrusted(cfg)
     own = own_sessions(cfg, which)
     if own:
         nxt = f'mods.py -C {_WB} clean' if _WB else 'mods.py clean'
@@ -1861,7 +1883,7 @@ def build_parser():
     s.add_argument('--dev-mods', dest='dev_mods', metavar='DIR')
 
     s = add('audit-existing', 'audit an existing mod', [('folder', {})])
-    s.add_argument('--marker', required=True, metavar='STR')
+    s.add_argument('--marker', required=True, metavar='STR', help='text that always shows on the pane, for example its title. A row of live data may be missing')
     s.add_argument('--cmd', dest='cmd_text', metavar='STR')
     s.add_argument('--scratch', default='./.mods', metavar='DIR')
     s.add_argument('--trusted', default=os.getcwd(), metavar='DIR')

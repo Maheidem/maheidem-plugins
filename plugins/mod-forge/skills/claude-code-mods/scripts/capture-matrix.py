@@ -113,7 +113,7 @@ def main():
         with cf.ThreadPoolExecutor(len(variants)) as ex:
             for v, rc, text in ex.map(start, variants):
                 if rc != 0:
-                    print(f'FAIL: session {sess[v]} did not start:\n{text}')
+                    print(f'FAIL: session {sess[v]} live-test.sh failed:\n{text}')
                     return 1
                 print(f'started {sess[v]}')
     for v in variants:

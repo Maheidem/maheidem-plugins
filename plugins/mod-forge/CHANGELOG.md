@@ -2,6 +2,15 @@
 
 Version 1 of the skill lived in `~/.claude/skills/claude-code-mods/` and had no changelog.
 
+## 2.0.1 (2026-10-13)
+
+### Fixed
+- `audit-existing`, `mockups`, `crawl` and `live` no longer report a misleading "session did not start" when the session folder is not trusted. `live-test.sh` detects the trust dialog on screen and fails with `trust dialog: <dir> is not trusted; pass --trusted <a trusted dir>`. The driver warns when the folder has no exact trust entry in the Claude Code state file.
+- The failure label is now `session X live-test.sh failed:` with the real reason under it.
+
+### Changed
+- The `--marker` help and `SKILL.md` say to use text that always shows (for example the pane title). A missing marker prints a hint.
+
 ## 2.0.0 (2026-10-11)
 
 ### Added

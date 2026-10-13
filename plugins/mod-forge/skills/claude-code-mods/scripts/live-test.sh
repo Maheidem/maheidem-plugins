@@ -5,7 +5,7 @@
 # Usage: live-test.sh <mod-dir> <slash-command> <marker> [columns] [trusted-dir]
 #   mod-dir      absolute path to a COPY of the mod (not the hot-reload dev-mods folder)
 #   slash-command  for example /notes-proto
-#   marker       text that only your drawing prints, for example "No tool calls yet"
+#   marker       text that your drawing prints and that always shows, for example the pane title
 #   columns      terminal width, default 150
 #   trusted-dir  a folder Claude Code already trusts, default: the current folder
 #
@@ -69,7 +69,11 @@ tmux new-session -d -s "$S" -x "$COLS" -y "${ROWS:-40}" -c "$TRUSTED" \
 if [ -n "$DEBUG_ARG" ]; then LOGNOTE=$LOG; else LOGNOTE="none (NODEBUG=1)"; fi
 echo "session: $S  log: $LOGNOTE"
 
-wait_for 60 sh -c "tmux capture-pane -p -t '$S' | grep -q '❯'" || fail "no prompt after 60 s (trust dialog? login?)"
+# The trust dialog also shows a "❯" (on its "1. Yes, I trust" row), so look for the dialog first.
+trust_dialog() { tmux capture-pane -p -t "$S" 2>/dev/null | grep -qE 'Yes, I trust|trust this folder'; }
+prompt_or_dialog() { trust_dialog || tmux capture-pane -p -t "$S" 2>/dev/null | grep -q '❯'; }
+wait_for 60 prompt_or_dialog || fail "no prompt after 60 s (login?)"
+trust_dialog && fail "trust dialog: $TRUSTED is not trusted; pass --trusted <a trusted dir>"
 if [ "${NODEBUG:-0}" = 1 ]; then
   sleep 3  # no log to wait on: give the hooks module time to load
 else
@@ -83,7 +87,8 @@ tmux send-keys -t "$S" -l "$CMD"
 sleep 1
 tmux send-keys -t "$S" Enter
 
-wait_for "${MARK_WAIT:-15}" sh -c "tmux capture-pane -p -t '$S' | grep -qF -- '$MARK'" || fail "marker '$MARK' not on screen after ${MARK_WAIT:-15} s"
+wait_for "${MARK_WAIT:-15}" sh -c "tmux capture-pane -p -t '$S' | grep -qF -- '$MARK'" || fail "marker '$MARK' not on screen after ${MARK_WAIT:-15} s
+hint: pick text that always shows on this pane, for example its title (a row of live data may be missing)"
 echo "PASS: marker '$MARK' drawn"
 # A hot reload logs "[<name>] $.ui.log: reloaded (...)": not a failure, so leave it out.
 [ -f "$LOG" ] && grep -E "$NAME: .*(refused|skipped|dropped)|\[$NAME\]" "$LOG" | grep -v '\$\.ui\.log: reloaded' | tail -5

@@ -239,7 +239,7 @@ def main():
             started = list(ex.map(lambda nm: start_session(a, mod_dir, nm, cr.template.format(mod=mod_name, scenario=first['id']), ready), names))
         for nm, (rc, text) in zip(names, started):
             if rc != 0:
-                log(out, f'FAIL: session {nm} did not start:\n{text}')
+                log(out, f'FAIL: session {nm} live-test.sh failed:\n{text}')
                 return 1
             log(out, f'started {nm}')
 

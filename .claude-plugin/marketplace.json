@@ -98,7 +98,7 @@
     {
       "name": "mod-forge",
       "description": "Builds, redesigns and live-tests Claude Code mods (hooks-module plugins: panes, bands, toasts, guards) with a driver, live tmux mockups, a storyboard and a done gate.",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": {
         "name": "maheidem",
         "email": "maheidem@users.noreply.github.com"
